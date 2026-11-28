@@ -166,7 +166,7 @@ flowchart TD
 
 1. **Hub database:** for SQLite, stop the Hub first (or use a SQLite online-backup tool; if copying live, copy `hub.db-wal` and `hub.db-shm` too). For PostgreSQL, MySQL, or compatible SQL servers, use standard database dump tooling (`pg_dump`, `mysqldump`).
 2. **`encryption.key`:** copy at the same time as the database and encrypt backups at rest.
-3. **Each Worker's `state.json`:** preserves the Worker's ID, Hub auth token, and E2EE private keys across host rebuilds (also keep `pending-registration.json` if a registration is mid-flight).
+3. **Each Worker's `state.json`:** preserves the Worker's ID, Hub auth token, and E2EE private keys across host rebuilds (also keep `pending-registration.json` if a registration is in progress).
 4. **Each Worker's `worker.db` (optional):** preserves local agent transcripts and terminal scrollback.
 
 ### Restore runbook
@@ -195,7 +195,7 @@ The Hub loads `encryption.key`, opens the database, and applies any pending migr
 
 ### Disaster-recovery notes
 
-- **Lost `encryption.key`, database intact:** all encrypted Hub columns are permanently unreadable, and generating a new key file also replaces the token pepper (invalidating all sessions, Worker tokens, and API/delegation tokens). Restore both the database and matching `encryption.key` from backup, or re-initialize the Hub and re-register standalone Workers.
+- **Lost `encryption.key`, database intact:** all encrypted Hub columns are permanently unreadable, and generating a new key file also replaces the token pepper (invalidating all sessions, Worker tokens, and API/delegation tokens). If a `captcha.altcha` settings row exists in the database and cannot decrypt, Hub startup aborts until you restore the matching `encryption.key`. Restore both the database and matching `encryption.key` from backup, or re-initialize the Hub and re-register standalone Workers.
 - **Lost Hub database, key intact:** `encryption.key` alone cannot rebuild accounts or workspaces — restore the database from backup.
 - **Lost Worker `state.json`:** deregister the old Worker entry on the Hub and register fresh with a new registration key (creates a new Worker ID, so clients pin it cleanly with no mismatch warning).
 - **Lost Worker `worker.db`:** local transcripts and scrollback are lost, while the Worker's identity in `state.json` stays intact.

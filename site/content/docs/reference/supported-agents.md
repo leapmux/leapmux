@@ -22,3 +22,41 @@ This matrix is generated directly from LeapMux's automated end-to-end (E2E) capa
 ## Feature matrix
 
 {{< matrix >}}
+
+## Detected CLI executables
+
+Each Worker probes `PATH` (and login-shell profiles when `--use-login-shell` is enabled) for these executable names. If a provider does not appear in the picker, confirm that the listed command resolves on that Worker.
+
+| Agent | Command probed on Worker |
+| --- | --- |
+| Claude Code | `claude` |
+| Codex | `codex` |
+| Cursor | `cursor-agent` |
+| GitHub Copilot | `copilot` |
+| Kilo | `kilo` |
+| OpenCode | `opencode` |
+| Goose | `goose` |
+| Pi | `pi` |
+| Reasonix | `reasonix` |
+| ZCode | `zcode` on `PATH`, or its desktop application |
+| Codewhale | `codewhale` |
+| Kimi Code | `kimi` |
+| MiMo Code | `mimo` |
+| Qwen Code | `qwen` |
+| Oh My Pi | `omp` |
+| Grok Build | `grok` |
+| Kiro | `kiro-cli-chat` |
+| Amp | `amp` |
+| Cline | `cline` |
+| CodeBuddy Code | `codebuddy` or `cbc` |
+| Junie | `junie` |
+| Letta Code | `letta` |
+| Dirac | `dirac` |
+| Qoder CLI | `qodercli` |
+| Factory Droid | `droid` |
+| Fast Agent | `fast-agent` |
+| Command Code | `command-code`, `commandcode`, or `cmdc` |
+| DeepSeek Harness | `dsh` |
+| Gemini CLI | `gemini` |
+| Muse Code | `muse` |
+| Antigravity CLI | `agy` |

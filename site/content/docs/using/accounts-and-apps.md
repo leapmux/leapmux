@@ -3,9 +3,6 @@ title: "Accounts & Connected Apps"
 description: "Sign in to LeapMux across run modes, manage your profile, passkeys, linked OAuth providers, and account recovery, and control authorized CLI tools and connected apps."
 type: docs
 weight: 11
-aliases:
-  - /docs/using/accounts/
-  - /docs/using/connected-apps/
 ---
 
 Every LeapMux account owns its workspaces, agents, and terminals privately — there is no cross-account sharing. Whether you see a sign-in screen depends on how LeapMux is running. This chapter explains how accounts behave in each run mode, how to sign in, verify your email, manage passkeys and recovery, and authorize or revoke connected apps.
@@ -20,7 +17,7 @@ Every LeapMux account owns its workspaces, agents, and terminals privately — t
 | **`hub` (without SMTP)** | Multi-user (first user becomes admin via `/setup`) | Yes | Off (emails stored unverified; no self-service recovery) | Full OAuth 2.1 app authorization |
 | **`hub` (with SMTP)** | Multi-user (first user becomes admin via `/setup`) | Yes | Automatic verification required for non-admins; email recovery enabled | Full OAuth 2.1 app authorization |
 
-In **solo mode**, profile name, email, and OAuth provider actions are disabled; **Preferences → Account → Password** is kept so you can set or update the `solo` password when enabling network access. For Hub administrator setup — initial `/setup`, enabling open sign-up, configuring SMTP or OAuth/OIDC providers, and admin password resets — see [Configuration](/docs/admin/configuration/), [Security & Authentication](/docs/admin/security-and-auth/), [Admin CLI](/docs/admin/admin-cli/), and [Recovery](/docs/admin/recover/).
+In **solo mode**, profile name, email, and OAuth provider actions are disabled; **Preferences → Account → Password** is kept so you can set or update the `solo` password when enabling network access. For Hub administrator setup — initial `/setup`, enabling open sign-up, configuring SMTP or OAuth/OIDC providers, and admin password resets — see [Configuration Guide](/docs/admin/configuration/), [Configuration Reference](/docs/admin/configuration-reference/#instance-settings-database), [Security & Authentication](/docs/admin/security-and-auth/), [Admin CLI](/docs/admin/admin-cli/), and [Recovery](/docs/admin/recover/).
 
 ## Signing up and signing in
 
@@ -51,7 +48,7 @@ Removing your **last** passkey on a passwordless account (or clicking **Disable 
 
 When SMTP is configured, click **Can't sign in?** on `/login` (or visit `/recover-account`) and enter your username or email. Any account with a **verified email address** receives a single-use recovery link valid for **1 hour** (5-attempt budget) that lets you set a new password or enroll a new passkey — covering a lost password, lost passkey, or lost OAuth provider alike.
 
-Completing recovery clears existing passkeys and revokes all other sessions and app tokens while keeping linked OAuth providers intact. If your account has no verified email address, ask a Hub administrator to reset your password (see [Admin CLI](/docs/admin/admin-cli/) or [Recovery](/docs/admin/recover/)).
+Completing recovery clears existing passkeys and revokes all other sessions and app tokens while keeping linked OAuth providers intact. Completing recovery by enrolling a passkey also removes the account's existing password. If your account has no verified email address, ask a Hub administrator to reset your password (see [Admin CLI](/docs/admin/admin-cli/) or [Recovery](/docs/admin/recover/)).
 
 ## Managing your account
 
@@ -110,4 +107,4 @@ Under **Preferences → Apps → App registrations**, click **Register an app** 
 - [CLI Guide](/docs/using/cli-guide/) — signing in with `leapmux auth login` and managing credentials.
 - [Settings & Preferences](/docs/using/settings/) — all Preferences categories and scope tiers.
 - [Security & Authentication](/docs/admin/security-and-auth/) — session elevation, OAuth providers, and threat model.
-- [Configuration](/docs/admin/configuration/) — Hub administrator settings for sign-up, SMTP, and network access.
+- [Configuration Guide](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/#instance-settings-database) — Hub administrator settings for sign-up, SMTP, and network access.

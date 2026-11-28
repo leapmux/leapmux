@@ -15,7 +15,7 @@ LeapMux integrates {{< agent-provider-count >}} coding-agent providers and detec
 
 {{< agent-logos >}}
 
-Every provider supports live chat and streamed tool calls. LeapMux disables built-in CLI self-updaters during active sessions so a binary never swaps out underneath a running conversation; update CLIs with your normal package manager between sessions. Check the **[Supported Agents & Feature Matrix](/docs/reference/supported-agents/)** to compare approval prompts, session resume, images, goals, and permission modes across providers.
+Every provider supports live chat and streamed tool calls. LeapMux disables built-in CLI self-updaters during active sessions so a binary is never replaced while a conversation is running; update CLIs with your normal package manager between sessions. Check the **[Supported Agents & Feature Matrix](/docs/reference/supported-agents/)** to compare approval prompts, session resume, images, goals, and permission modes across providers.
 
 ## Opening an agent
 
@@ -147,6 +147,7 @@ The status bar beneath the composer displays chips for the current git branch, m
 Most setting changes apply live; when a change requires a different CLI launch flag (such as changing permission mode or switching to a model that does not support the current effort level), LeapMux restarts the provider cleanly in place.
 
 - **Permission shortcuts:** Where supported, **Smart permissions** enables the provider's safety-assisted reviewer (logging automated decisions in the transcript, with an **Approve** override for denied main-agent calls), and **Bypass permissions** disables prompts for trusted directories.
+  - **Codex notes:** Clicking **Approve** on a Codex Smart-permissions denial records authorization in the thread's original context without executing the action or enforcing a one-use limit. Enabling **Bypass permissions** in Codex also retroactively approves pending requests queued before the switch and records the approved count in the transcript.
 - **Reasoning effort:** Defaults to **Auto**, omitting explicit effort flags so the provider's CLI picks its default tier.
 - **Plan mode:** Press `Shift+Tab` inside the composer to toggle plan mode on supported providers.
 

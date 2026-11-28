@@ -3,13 +3,11 @@ title: "Workspaces"
 description: "Create, organize, archive, delete, and sync workspaces across devices in LeapMux."
 type: docs
 weight: 1
-aliases:
-  - /docs/using/device-sync/
 ---
 
 A **workspace** is the top-level container you work inside. It holds a tiling layout of coding agent, terminal, file, and image tabs. Each tab runs on a Worker (machine) in a working directory, usually on its own git branch or worktree. Workspaces persist across restarts and sync live across every browser and desktop app where you sign in.
 
-For how workspaces relate to Hubs, Workers, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For everything inside a workspace — tabs, splits, grids, and floating windows — see [Tabs & Layout](/docs/using/tabs-and-layout/).
+For how workspaces relate to Hubs, Workers, tiles, and tabs, see [Concepts & Topologies](/docs/getting-started/concepts/). For everything inside a workspace — tabs, splits, grids, and floating windows — see [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ## What a workspace holds
 
@@ -118,7 +116,7 @@ Your browser remembers the last active workspace per account and restores it on 
 LeapMux keeps every open workspace in sync across all browsers and desktop apps signed in to your account. Open the same workspace on a laptop and a phone, or in two browser windows, and structural changes stay aligned automatically with no toggle or manual sync step.
 
 {{< callout type="info" >}}
-**Solo Desktop** binds only to a local socket by default. To sync across a second device, enable **Network access** in [Configuration](/docs/admin/configuration/) or connect LeapMux Desktop to a remote Hub in Distributed mode.
+**Solo Desktop** binds only to a local socket by default. To sync across a second device, enable **Network access** in [Configuration Guide](/docs/admin/configuration/) or connect LeapMux Desktop to a remote Hub in Distributed mode.
 {{< /callout >}}
 
 ### What syncs and what stays local

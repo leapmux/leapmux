@@ -263,10 +263,7 @@ type Worker struct {
 	// running bundled desktop worker. An administrator can remove an offline one,
 	// such as the row that a launch leaves behind when its state file was lost.
 	AutoRegistered bool
-	// DeregisteringAt is when the worker was deregistered, or nil. Status is
-	// derived from it and DeletedAt (see WorkerStatusOf).
-	DeregisteringAt *time.Time
-	DeletedAt       *time.Time
+	DeletedAt      *time.Time
 	// RegistrationAttemptID is the durable attempt identity a
 	// registration-key Register carried, or "" when the row was not
 	// created by one (the solo launcher's in-process bypass). With it
@@ -277,20 +274,16 @@ type Worker struct {
 	RegistrationKeyHash   []byte
 }
 
-// WorkerStatusOf derives a worker's lifecycle state from its two timestamps.
-// No column stores the status, so this is the one place the mapping lives:
-//   - DELETED when deletedAt is set, whatever deregisteringAt holds;
-//   - DEREGISTERING when only deregisteringAt is set;
+// WorkerStatusOf derives a worker's lifecycle state from its soft-delete
+// timestamp. No column stores the status, so this is the one place the mapping
+// lives:
+//   - DELETED when deletedAt is set;
 //   - ACTIVE otherwise.
-func WorkerStatusOf(deregisteringAt, deletedAt *time.Time) leapmuxv1.WorkerStatus {
-	switch {
-	case deletedAt != nil:
+func WorkerStatusOf(deletedAt *time.Time) leapmuxv1.WorkerStatus {
+	if deletedAt != nil {
 		return leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
-	case deregisteringAt != nil:
-		return leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING
-	default:
-		return leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
 	}
+	return leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
 }
 
 // PageCursor returns the keyset position for worker listings (ListByUserID
@@ -957,23 +950,22 @@ type GetOwnedWorkerParams struct {
 
 type ListWorkersAdminParams struct {
 	UserID *string
-	// Status narrows the listing to one derived state; nil lists every live
-	// (ACTIVE or DEREGISTERING) worker. See WorkerAdminListStatusOf.
+	// Status narrows the listing to one derived state; nil lists every active
+	// (live) worker. See WorkerAdminListStatusOf.
 	Status     *leapmuxv1.WorkerStatus
 	IDPrefix   string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
 	PageParams        // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
 }
 
 // WorkerAdminListStatusOf validates the optional state filter once for every
-// dialect. An absent filter returns UNSPECIFIED for the internal all-live
-// query choice. Explicit UNSPECIFIED and unknown values are invalid.
+// dialect. An absent filter returns UNSPECIFIED for the internal live query
+// choice. Explicit UNSPECIFIED and unknown values are invalid.
 func WorkerAdminListStatusOf(status *leapmuxv1.WorkerStatus) (leapmuxv1.WorkerStatus, error) {
 	if status == nil {
 		return leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED, nil
 	}
 	switch *status {
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
-		leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
 		leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
 		return *status, nil
 	default:

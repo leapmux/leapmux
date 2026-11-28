@@ -26,7 +26,7 @@ Click **Open System Settings** on the card, enable **LeapMux Desktop** under **P
 Running `leapmux` in a terminal prints `command not found` after installing LeapMux Desktop.
 
 **Cause**
-On macOS, the Desktop app installs the `/usr/local/bin/leapmux` symlink only after you accept the prompt upon entering a Solo workspace. (On Linux, the `.deb` package installs `/usr/bin/leapmux` automatically; `.AppImage` and Windows `.msi` do not add a global CLI binary.)
+On macOS, the Desktop app installs the `/usr/local/bin/leapmux` symlink only after you accept the prompt upon entering a Solo workspace. (On Linux, the `.deb` package installs `/usr/bin/leapmux` automatically, and on Windows, the `.msi` installer installs `cli\leapmux.exe` and adds it to your user `PATH`; only the Linux `.AppImage` does not add a global CLI binary.)
 
 **Fix**
 Enter a Solo workspace in LeapMux Desktop on macOS and accept the CLI symlink prompt, or download the standalone `leapmux` binary from the [Releases page](https://github.com/leapmux/leapmux/releases) and place it on your `PATH`.

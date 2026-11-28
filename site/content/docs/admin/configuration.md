@@ -240,7 +240,7 @@ Captcha and rate-limit rules are `hot` database settings managed through `leapmu
 
 Operational notes:
 
-- **External captcha providers** (`recaptcha_v3`, `turnstile`) require both `--site-key` and `--secret` and perform an outbound verification call on every non-empty token. Built-in ALTCHA requires no outbound network access.
+- **External captcha providers** (`recaptcha_v3`, `turnstile`) require both `--site-key` and `--secret` and verify online with no per-client throttle before rate limiting: every login or sign-up attempt carrying a non-empty token makes one outbound `siteverify` request to Google or Cloudflare, so scripted garbage tokens can exhaust your external API quota. Built-in ALTCHA requires no outbound network access.
 - **Unpublished Hubs skip ALTCHA silently** (logging a server warning) so browsers on plain HTTP LAN addresses are not blocked, while the honeypot and Argon2id password hashing remain active. Setting an HTTPS `public_url` restores ALTCHA automatically.
 
 ### Passkeys

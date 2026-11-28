@@ -144,17 +144,6 @@ CREATE TABLE workers (
     slhdsa_public_key BYTEA NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at  TIMESTAMPTZ,
-    -- Set when the worker is deregistered; the persisted deregistration intent.
-    -- The store derives the reported WorkerStatus from this column and
-    -- deleted_at, and no column stores it:
-    --   ACTIVE:        deregistering_at IS NULL     AND deleted_at IS NULL
-    --   DEREGISTERING: deregistering_at IS NOT NULL AND deleted_at IS NULL
-    --   DELETED:       deleted_at IS NOT NULL
-    -- A deregistering worker is told to stop whenever it is connected, and a
-    -- valid acknowledgement deletes it. The cleanup loop deletes a worker
-    -- still deregistering after the grace period
-    -- (CompleteStaleDeregistrations).
-    deregistering_at TIMESTAMPTZ,
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
     -- worker. The owner's deregistration path refuses these, and the admin
@@ -171,6 +160,8 @@ CREATE TABLE workers (
     -- multiple NULLs and rejects duplicate non-NULL values.
     registration_attempt_id TEXT COLLATE "C" DEFAULT NULL UNIQUE,
     registration_key_hash BYTEA DEFAULT NULL UNIQUE,
+    -- Soft-delete timestamp. See the sqlite migration for the lifecycle
+    -- state mapping (ACTIVE vs DELETED).
     deleted_at    TIMESTAMPTZ,
     CONSTRAINT workers_registration_attempt CHECK (
         (registration_attempt_id IS NULL AND registration_key_hash IS NULL)
@@ -194,14 +185,6 @@ CREATE INDEX idx_workers_created_at ON workers(created_at DESC, id DESC) WHERE d
 CREATE INDEX idx_workers_registered_by_deleted_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_workers_deleted_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
-CREATE INDEX idx_workers_deregistering ON workers(deregistering_at) WHERE deregistering_at IS NOT NULL AND deleted_at IS NULL;
-
--- Exact live states need their own ordered populations. A residual state
--- filter would scan every worker of the other live state before a rare match.
-CREATE INDEX idx_workers_active_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
-CREATE INDEX idx_workers_registered_by_active_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
-CREATE INDEX idx_workers_deregistering_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
-CREATE INDEX idx_workers_registered_by_deregistering_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
 
 -- Active worker registration keys.
 --

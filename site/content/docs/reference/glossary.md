@@ -45,7 +45,7 @@ The Hub page displayed when an app requests access. It shows the app's name, war
 
 ### Control CLI
 
-`leapmux` (and its short alias `lmx`): the command-line tool for driving a running Hub and its Workers from scripts or inside spawned tabs — managing workspaces, tabs, agents, terminals, layouts, files, git, and live events. External shells sign in with `leapmux auth login` or auto-discover a local `solo`/`dev` Hub; spawned tabs receive credentials automatically via `LEAPMUX_CONTROL_*` environment variables. See [CLI Guide](/docs/using/cli-guide/).
+`leapmux` (and its short alias `lmx`): the command-line tool for driving a running Hub and its Workers from scripts or inside spawned tabs — managing workspaces, tabs, agents, terminals, layouts, files, git, and live events. External shells sign in with `leapmux auth login` or auto-discover a local `solo`, `dev`, or standalone `hub` socket; spawned tabs receive credentials automatically via `LEAPMUX_CONTROL_*` environment variables. See [CLI Guide](/docs/using/cli-guide/).
 
 ## D
 
@@ -71,7 +71,7 @@ A tab popped out of the main tiled layout into a movable, resizable overlay with
 
 ### Frontend
 
-The web interface — running in your browser or bundled inside LeapMux Desktop — that renders workspaces, tiling layouts, agent chats, terminals, and the file browser. Workers hold authoritative agent and terminal state while the browser caches rendered messages locally in IndexedDB. One of the three core components alongside the **Hub** and **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
+The web interface — running in your browser or bundled inside LeapMux Desktop — that renders workspaces, tiling layouts, agent chats, terminals, and the file browser. Workers hold authoritative agent and terminal state while the browser caches rendered messages locally in IndexedDB. One of the three core components alongside the **Hub** and **Worker**. See [Concepts & Topologies](/docs/getting-started/concepts/).
 
 ## G
 
@@ -83,7 +83,7 @@ A tile divided into a fixed `rows × cols` matrix of panes (up to 20 × 20) with
 
 ### Hub
 
-The central service (`leapmux daemon hub start`) that authenticates users, stores accounts, workspaces, and tiling layouts, issues Worker registration keys, and relays end-to-end encrypted traffic between Frontends and Workers. Its default listen port is `4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The central service (`leapmux daemon hub start`) that authenticates users, stores accounts, workspaces, and tiling layouts, issues Worker registration keys, and relays end-to-end encrypted traffic between Frontends and Workers. Its default listen port is `4327`. See [Concepts & Topologies](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## I
 
@@ -121,7 +121,7 @@ A pseudo-terminal — the operating-system primitive backing each LeapMux termin
 
 ### Quake-mode terminal
 
-A drop-down shell overlay scoped to one working directory, toggled with `Ctrl+\`` (or `Ctrl` plus the key under `Esc`) from any tab. One shell is shared per `(Worker, working directory)` across all tabs in that directory and across your devices, while panel visibility stays per-device. It closes when you exit the shell or close the last tab in that directory. See [Terminals](/docs/using/terminals/).
+A drop-down shell overlay scoped to one working directory, toggled with ``Ctrl+` `` (or `Ctrl` plus the key under `Esc`) from any tab. One shell is shared per `(Worker, working directory)` across all tabs in that directory and across your devices, while panel visibility stays per-device. It closes when you exit the shell or close the last tab in that directory. See [Terminals](/docs/using/terminals/).
 
 ## R
 
@@ -149,7 +149,13 @@ Delivering the **input queue**'s first waiting item into an agent's currently ru
 
 ### Step-up
 
-A verification ceremony that proves a factor (password or passkey) and opens a {{< duration elevation-window >}} elevation window on an existing session or app credential without issuing a new token. Browsers verify directly on the Hub; remote-Hub Desktop sessions and browser-issued CLI credentials use a local loopback ceremony; device-code and admin-issued credentials use `/oauth/step-up`. See [Security & Authentication](/docs/admin/security-and-auth/).
+A verification ceremony that proves a factor (password or passkey) and opens an elevation window of {{< duration elevation-window >}} on an existing session or app credential without issuing a new token:
+
+- Browsers verify directly on the Hub.
+- Remote-Hub Desktop sessions and browser-issued CLI credentials use a local loopback ceremony (`GET /oauth/authorize?step_up=...`).
+- Device-code and admin-issued credentials call `POST /oauth/step-up` and approve on `/oauth/device`.
+
+See [Security & Authentication](/docs/admin/security-and-auth/).
 
 ## T
 

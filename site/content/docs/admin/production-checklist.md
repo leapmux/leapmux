@@ -39,7 +39,7 @@ A Hub database supports **one running Hub process at a time**. The Hub holds a s
 
 ### 1. Provision the Hub host and storage backend
 
-Choose a dedicated host or container for the Hub and pick a storage backend from the [Storage Backend Decision Matrix](/docs/admin/configuration/#storage-backends-overview):
+Choose a dedicated host or container for the Hub and pick a storage backend from the [Storage Backend Decision Matrix](/docs/admin/configuration/#storage-backend-decision-matrix):
 
 - **Small teams on one host:** embedded SQLite (`storage.type: sqlite`, default) works with zero external infrastructure.
 - **Shared team deployments with managed backups:** **PostgreSQL** is the recommended external database.
@@ -74,7 +74,7 @@ Place Caddy, nginx, Traefik, HAProxy, or Apache in front of `127.0.0.1:4327` on 
 
 - Terminates TLS on port `443` and redirects port `80` to HTTPS
 - Forwards HTTP/1.1 WebSocket upgrades on `/ws/` with an inactivity timeout of at least 1 minute
-- Sends `Host` and forwarding headers (`Forwarded` or `X-Forwarded-For` / `X-Forwarded-Proto`)
+- Sends `Host`, strips client-supplied `Forwarded` and `X-Forwarded-*` headers, and sets forwarding headers (`Forwarded` or `X-Forwarded-For` / `X-Forwarded-Proto`)
 - Blocks `/metrics` from external clients so unauthenticated Prometheus metrics remain host-local
 
 Use one of the tested configurations in [Reverse Proxy](/docs/admin/reverse-proxy/).

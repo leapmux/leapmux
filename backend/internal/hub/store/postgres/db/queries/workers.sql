@@ -23,12 +23,12 @@ SELECT * FROM workers WHERE auth_token_hash = $1;
 
 -- name: RotateWorkerAuthToken :execrows
 UPDATE workers SET auth_token_hash = sqlc.arg(auth_token_hash)
-WHERE id = sqlc.arg(id) AND deleted_at IS NULL AND deregistering_at IS NULL
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL
   AND auth_token_hash = sqlc.arg(expected_auth_token_hash);
 
 -- name: ListWorkersByUserID :many
 SELECT * FROM workers
-WHERE registered_by = sqlc.arg(registered_by) AND deleted_at IS NULL AND deregistering_at IS NULL
+WHERE registered_by = sqlc.arg(registered_by) AND deleted_at IS NULL
   AND (sqlc.narg(cursor_time)::timestamptz IS NULL
        OR created_at < sqlc.narg(cursor_time)::timestamptz
        OR (created_at = sqlc.narg(cursor_time)::timestamptz AND id < sqlc.narg(cursor_id)))
@@ -36,12 +36,12 @@ ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('limit');
 
 -- name: DeregisterWorker :execresult
-UPDATE workers SET deregistering_at = NOW()
-WHERE id = $1 AND registered_by = $2 AND deregistering_at IS NULL AND deleted_at IS NULL;
+UPDATE workers SET deleted_at = NOW()
+WHERE id = $1 AND registered_by = $2 AND deleted_at IS NULL;
 
 -- name: ForceDeregisterWorker :execresult
-UPDATE workers SET deregistering_at = NOW()
-WHERE id = $1 AND deregistering_at IS NULL AND deleted_at IS NULL;
+UPDATE workers SET deleted_at = NOW()
+WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: MarkWorkerDeleted :exec
 UPDATE workers SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL;
@@ -81,76 +81,6 @@ WITH worker_page AS (
     SELECT w.id
     FROM workers w
     WHERE w.deleted_at IS NULL
-      AND w.registered_by = sqlc.arg(user_id)
-      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-    ORDER BY w.created_at DESC, w.id DESC
-    LIMIT sqlc.arg('limit')
-)
-SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM worker_page p
-JOIN workers w ON w.id = p.id
-LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-ORDER BY w.created_at DESC, w.id DESC;
-
--- name: ListWorkersAdminActive :many
-WITH worker_page AS (
-    SELECT w.id
-    FROM workers w
-    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NULL
-      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-    ORDER BY w.created_at DESC, w.id DESC
-    LIMIT sqlc.arg('limit')
-)
-SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM worker_page p
-JOIN workers w ON w.id = p.id
-LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-ORDER BY w.created_at DESC, w.id DESC;
-
--- name: ListWorkersAdminActiveByUser :many
-WITH worker_page AS (
-    SELECT w.id
-    FROM workers w
-    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NULL
-      AND w.registered_by = sqlc.arg(user_id)
-      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-    ORDER BY w.created_at DESC, w.id DESC
-    LIMIT sqlc.arg('limit')
-)
-SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM worker_page p
-JOIN workers w ON w.id = p.id
-LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-ORDER BY w.created_at DESC, w.id DESC;
-
--- name: ListWorkersAdminDeregistering :many
-WITH worker_page AS (
-    SELECT w.id
-    FROM workers w
-    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL
-      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-    ORDER BY w.created_at DESC, w.id DESC
-    LIMIT sqlc.arg('limit')
-)
-SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM worker_page p
-JOIN workers w ON w.id = p.id
-LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-ORDER BY w.created_at DESC, w.id DESC;
-
--- name: ListWorkersAdminDeregisteringByUser :many
-WITH worker_page AS (
-    SELECT w.id
-    FROM workers w
-    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL
       AND w.registered_by = sqlc.arg(user_id)
       AND (sqlc.narg(cursor_time)::timestamptz IS NULL
            OR w.created_at < sqlc.narg(cursor_time)::timestamptz
@@ -206,19 +136,6 @@ WITH to_delete AS (
 )
 DELETE FROM workers WHERE id IN (SELECT id FROM to_delete);
 
--- name: CompleteStaleDeregistrations :execresult
--- Deletes every worker that has waited longer than the grace period for its
--- DEREGISTER instruction: a lost acknowledgement, a failed deletion, or a hub
--- that restarted without the worker. CTE form (not LIMIT in a subquery) for
--- CockroachDB, as HardDeleteWorkersBefore; the caller drains until a pass
--- changes nothing.
-WITH to_complete AS (
-    SELECT w.id FROM workers w
-    WHERE w.deregistering_at IS NOT NULL AND w.deregistering_at < sqlc.arg(cutoff) AND w.deleted_at IS NULL
-    LIMIT 1000
-)
-UPDATE workers SET deleted_at = NOW() WHERE id IN (SELECT id FROM to_complete);
-
 -- GetWorkerAdmin is the single-row form of the admin listing: the same
 -- LEFT JOIN, so a soft-deleted owner reports the same empty username and
 -- owner_deleted=true that the list reports. Soft-deleted workers are
@@ -238,8 +155,7 @@ SELECT
 FROM (SELECT 1 AS anchor) AS anchor
 LEFT JOIN workers w
   ON w.registered_by = sqlc.arg(user_id)
- AND w.deleted_at IS NULL
- AND w.deregistering_at IS NULL;
+ AND w.deleted_at IS NULL;
 
 -- name: AdvanceWorkerEnrollment :exec
 INSERT INTO worker_enrollment_revisions (user_id, revision)
@@ -250,14 +166,12 @@ ON CONFLICT (user_id) DO UPDATE SET revision = worker_enrollment_revisions.revis
 SELECT * FROM workers
 WHERE registered_by = sqlc.arg(registered_by)
   AND deleted_at IS NULL
-  AND deregistering_at IS NULL
   AND id = sqlc.arg(id)::text;
 
 -- name: ListWorkersByUserIDPrefix :many
 SELECT * FROM workers
 WHERE registered_by = sqlc.arg(registered_by)
   AND deleted_at IS NULL
-  AND deregistering_at IS NULL
   AND id >= sqlc.arg(id_lo)::text
   AND id < sqlc.arg(id_hi)::text
   AND id > sqlc.arg(id_gt)::text
@@ -272,9 +186,8 @@ WHERE w.id = sqlc.arg(id)::text
   AND (sqlc.arg(user_id)::text = '' OR w.registered_by = sqlc.arg(user_id)::text)
   AND (
     (sqlc.arg(status_filter)::int = 0 AND w.deleted_at IS NULL)
-    OR (sqlc.arg(status_filter)::int = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
-    OR (sqlc.arg(status_filter)::int = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
-    OR (sqlc.arg(status_filter)::int = 3 AND w.deleted_at IS NOT NULL)
+    OR (sqlc.arg(status_filter)::int = 1 AND w.deleted_at IS NULL)
+    OR (sqlc.arg(status_filter)::int = 2 AND w.deleted_at IS NOT NULL)
   );
 
 -- name: ListWorkersAdminByIDPrefix :many
@@ -287,9 +200,8 @@ WHERE w.id >= sqlc.arg(id_lo)::text
   AND (sqlc.arg(user_id)::text = '' OR w.registered_by = sqlc.arg(user_id)::text)
   AND (
     (sqlc.arg(status_filter)::int = 0 AND w.deleted_at IS NULL)
-    OR (sqlc.arg(status_filter)::int = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
-    OR (sqlc.arg(status_filter)::int = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
-    OR (sqlc.arg(status_filter)::int = 3 AND w.deleted_at IS NOT NULL)
+    OR (sqlc.arg(status_filter)::int = 1 AND w.deleted_at IS NULL)
+    OR (sqlc.arg(status_filter)::int = 2 AND w.deleted_at IS NOT NULL)
   )
 ORDER BY w.id ASC
 LIMIT sqlc.arg('limit');

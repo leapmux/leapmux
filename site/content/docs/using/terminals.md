@@ -5,7 +5,7 @@ type: docs
 weight: 5
 ---
 
-LeapMux gives you full interactive shell terminals running on any Worker and streamed into your browser or desktop app over the same end-to-end encrypted (E2EE) channel as your coding agents. Terminal tabs tile, float, move across workspaces, survive page refreshes, and automatically wire up the `leapmux` control CLI inside every shell.
+LeapMux gives you full interactive shell terminals running on any Worker and streamed into your browser or desktop app over the same end-to-end encrypted (E2EE) channel as your coding agents. Terminal tabs tile, float, move across workspaces, survive page refreshes, and automatically configure the `leapmux` control CLI inside every shell.
 
 For tiling and tab management, see [Tabs & Layout](/docs/using/tabs-and-layout/). For git worktree creation, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
@@ -81,7 +81,7 @@ When a shell exits, LeapMux appends an exit notice with the exit code (also read
 ## Automatic remote control
 
 {{< callout type="info" >}}
-Remote control requires no checkbox or setup. Every terminal LeapMux spawns is automatically wired to the `leapmux` CLI whenever Worker remote control is enabled.
+Remote control requires no checkbox or setup. Every terminal LeapMux spawns is automatically configured for the `leapmux` CLI whenever Worker remote control is enabled.
 {{< /callout >}}
 
 The Worker injects `LEAPMUX_CONTROL_*` environment variables — including `LEAPMUX_CONTROL_CLI` pointing at the Worker's matching `leapmux` binary — and strips any inherited parent variables so nested terminals always target themselves. For the complete environment variable table and CLI version-matching rules, see [CLI Guide — Inside a managed tab](/docs/using/cli-guide/#inside-a-managed-tab).

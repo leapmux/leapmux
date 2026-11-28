@@ -184,9 +184,8 @@ func (s *Suite) testWorkerEnrollmentRevision(t *testing.T) {
 		slices.Sort(wantBefore)
 		assert.Equal(t, wantBefore, before.WorkerIDs)
 
-		// MarkDeleted without prior Deregister sets deleted_at while leaving
-		// deregistering_at NULL. InventorySnapshot must still omit the worker
-		// and keep Revision unchanged.
+		// MarkDeleted sets deleted_at directly; InventorySnapshot must still
+		// omit the worker and keep Revision unchanged.
 		require.NoError(t, st.Workers().MarkDeleted(ctx, liveWorker.ID))
 		afterOne := snapshot(directOwner)
 		assert.Equal(t, int64(2), afterOne.Revision)

@@ -356,9 +356,6 @@ func (s *WorkerManagementService) GetWorker(
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
-	if worker.DeregisteringAt != nil {
-		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
-	}
 
 	return &leapmuxv1.GetWorkerResponse{
 		Worker: s.workerToProto(worker),
@@ -399,9 +396,7 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 	}
 
-	if err := s.deregisterEffects.Apply(ctx, req.GetWorkerId(), user.ID.String()); err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
+	s.deregisterEffects.Apply(ctx, req.GetWorkerId(), user.ID.String())
 
 	return &leapmuxv1.DeregisterWorkerResponse{}, nil
 }

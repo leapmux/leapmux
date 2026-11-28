@@ -88,7 +88,7 @@ func serveRegisterEnv(t *testing.T, st store.Store, address string) *registerEnv
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 30 * time.Second })
-	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return 30 * time.Second }, nil)
+	notif := notifier.New(wMgr, pendingReqs, func() time.Duration { return 30 * time.Second })
 	connector := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             st,
 		WorkerManager:     wMgr,

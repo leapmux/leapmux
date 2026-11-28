@@ -125,7 +125,8 @@ func TestPhase1B_AdminLeavesDeclareEnumsAndCompletions(t *testing.T) {
 	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, dir)
 
 	// Enum annotations exist on admin enum flags.
-	assert.Contains(t, leaves["worker list"].Flags().Lookup("status").Annotations["leapmux_enum"], "deregistering")
+	assert.Contains(t, leaves["worker list"].Flags().Lookup("status").Annotations["leapmux_enum"], "deleted")
+	assert.NotContains(t, leaves["worker list"].Flags().Lookup("status").Annotations["leapmux_enum"], "deregistering")
 	assert.Contains(t, leaves["idp add"].Flags().Lookup("type").Annotations["leapmux_enum"], "github")
 	assert.Contains(t, leaves["app register"].Flags().Lookup("type").Annotations["leapmux_enum"], "confidential")
 	assert.Contains(t, leaves["app register"].Flags().Lookup("visibility").Annotations["leapmux_enum"], "private")

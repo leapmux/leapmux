@@ -258,11 +258,10 @@ type WorkerStore interface {
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Worker, error)
 	// GetByAuthTokenHashIncludeDeleted returns the worker with this token digest whatever
 	// its state. Ordinary authentication refuses a row with DeletedAt set;
-	// self-deregistration confirms deletion of the retained row. A deregistering
-	// worker remains admitted until Connect tells it to stop.
+	// self-deregistration confirms deletion of the retained row.
 	GetByAuthTokenHashIncludeDeleted(ctx context.Context, hash []byte) (*Worker, error)
-	// RotateAuthToken replaces only an active Worker's token digest. Deleted,
-	// deregistering and missing rows return zero without changing the digest.
+	// RotateAuthToken replaces only an active Worker's token digest. Deleted
+	// and missing rows return zero without changing the digest.
 	RotateAuthToken(ctx context.Context, p RotateWorkerAuthTokenParams) (int64, error)
 	// GetByRegistrationAttemptID returns the worker a durable registration
 	// attempt created, deleted rows included: recovery must tell a
@@ -284,10 +283,10 @@ type WorkerStore interface {
 	// them for status=WORKER_STATUS_DELETED.
 	GetAdmin(ctx context.Context, id string) (*WorkerWithOwner, error)
 	UpdateLastSeen(ctx context.Context, id string) error
-	// Deregister stamps deregistering_at on an ACTIVE worker the caller
+	// Deregister soft-deletes (sets deleted_at on) an ACTIVE worker the caller
 	// registered and reports the rows it changed: 0 for a worker that is
-	// already deregistering or deleted. ForceDeregister is the same without
-	// the registrant check, for administrators.
+	// already deleted. ForceDeregister is the same without the registrant
+	// check, for administrators.
 	Deregister(ctx context.Context, p DeregisterWorkerParams) (int64, error)
 	ForceDeregister(ctx context.Context, id string) (int64, error)
 	// MarkDeleted soft-deletes a live worker; a second call is a no-op.
@@ -984,14 +983,6 @@ type CleanupStore interface {
 	HardDeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error)
 	HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error)
-	// CompleteStaleDeregistrations deletes (sets deleted_at on) every worker
-	// that has been deregistering since before cutoff, in capped passes (the
-	// caller drains until a pass changes nothing). It recovers every way a
-	// deregistration can fail to finish: a lost acknowledgement, a failed
-	// deletion after a valid one, and a hub restart while the worker was
-	// offline. It is cross-owner by design: a worker that never reconnects has
-	// no session to scope the sweep to.
-	CompleteStaleDeregistrations(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	// DeleteUserOpBatchesBeforePhysical hard-deletes CRDT op batches whose HLC
@@ -1110,14 +1101,6 @@ type TestHelper interface {
 	// pinned in the implementations rather than caller-supplied -- a
 	// wrong-entity call is inexpressible.
 	SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error
-
-	// SetDeregisteringAt backdates a worker's deregistering_at. Only workers
-	// carry the column, so the table is pinned as SetLastActiveAt's is.
-	SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error
-
-	// ClearWorkerDeregisteringAt restores a live worker to ACTIVE for test setup.
-	// Deleted and missing workers remain unchanged.
-	ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error
 
 	// ListAllOwnedTabs returns every workspace_tab_owned row, unfiltered by
 	// owner, ordered by (user_id, tab_id).

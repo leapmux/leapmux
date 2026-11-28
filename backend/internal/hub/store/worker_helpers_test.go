@@ -2,9 +2,49 @@ package store
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
+
+func TestWorkerStatusOf(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, WorkerStatusOf(nil))
+	now := time.Now().UTC()
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, WorkerStatusOf(&now))
+}
+
+func TestWorkerAdminListStatusOf(t *testing.T) {
+	t.Parallel()
+
+	got, err := WorkerAdminListStatusOf(nil)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED, got)
+
+	for _, status := range []leapmuxv1.WorkerStatus{
+		leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
+		leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED,
+	} {
+		s := status
+		got, err := WorkerAdminListStatusOf(&s)
+		require.NoError(t, err)
+		assert.Equal(t, status, got)
+	}
+
+	for _, invalid := range []leapmuxv1.WorkerStatus{
+		leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED,
+		leapmuxv1.WorkerStatus(3),
+		leapmuxv1.WorkerStatus(-1),
+	} {
+		s := invalid
+		_, err := WorkerAdminListStatusOf(&s)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	}
+}
 
 func TestAssembleWorkerInventorySnapshot(t *testing.T) {
 	t.Parallel()

@@ -115,34 +115,6 @@ func listWorkersAdminLiveByUserParams(userID string, cursor string, limit int64)
 	})
 }
 
-// listWorkersAdminActiveParams builds the typed cursor for ListWorkersAdminActive.
-func listWorkersAdminActiveParams(cursor string, limit int64) (gendb.ListWorkersAdminActiveParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminActiveParams {
-		return gendb.ListWorkersAdminActiveParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminActiveByUserParams builds the typed cursor for ListWorkersAdminActiveByUser.
-func listWorkersAdminActiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminActiveByUserParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminActiveByUserParams {
-		return gendb.ListWorkersAdminActiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringParams builds the typed cursor for ListWorkersAdminDeregistering.
-func listWorkersAdminDeregisteringParams(cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeregisteringParams {
-		return gendb.ListWorkersAdminDeregisteringParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringByUserParams builds the typed cursor for ListWorkersAdminDeregisteringByUser.
-func listWorkersAdminDeregisteringByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeregisteringByUserParams {
-		return gendb.ListWorkersAdminDeregisteringByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
 // listWorkersAdminDeletedParams builds the typed cursor for ListWorkersAdminDeleted.
 func listWorkersAdminDeletedParams(cursor string, limit int64) (gendb.ListWorkersAdminDeletedParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeletedParams {

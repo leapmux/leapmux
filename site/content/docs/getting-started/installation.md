@@ -135,7 +135,7 @@ docker pull ghcr.io/leapmux/leapmux:latest
 {{< /tab >}}
 {{< /tabs >}}
 
-Use `dev` rather than `solo` for an all-in-one container because `solo` listens on loopback (`127.0.0.1:4327`) by default. For image variants, Worker containers, and configuration options, see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/).
+Use `dev` rather than `solo` for an all-in-one container because `solo` listens on loopback (`127.0.0.1:4327`) by default. For image variants, Worker containers, and configuration options, see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration Guide](/docs/admin/configuration/).
 
 {{< callout type="warning" >}}
 The Hub does not terminate Transport Layer Security (TLS) itself. Place an HTTPS reverse proxy in front of any network-reachable Hub and follow the [Production Checklist](/docs/admin/production-checklist/) and [Reverse Proxy](/docs/admin/reverse-proxy/) guides.

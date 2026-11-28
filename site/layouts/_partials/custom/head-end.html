@@ -35,7 +35,7 @@
 
 {{- /* Emit the Default (Dimidium) asciinema-player terminal theme from contracts/theme-default.json only on cli-cast pages. */ -}}
 {{- if .HasShortcode "cli-cast" -}}
-  {{- $theme := site.Data.theme_default -}}
+  {{- $theme := hugo.Data.theme_default -}}
   {{- if not (and $theme $theme.light $theme.dark $theme.terminal $theme.terminal.light $theme.terminal.dark) -}}
     {{- errorf "head-end.html: missing data/theme_default.json terminal theme contract" -}}
   {{- end -}}

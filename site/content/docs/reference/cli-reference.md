@@ -39,7 +39,7 @@ Control commands and `leapmux admin` resolve the Hub in this order:
 | 3 | `LEAPMUX_HUB` | Environment variable for external shells and scripts. |
 | 4 | `context.json` | Default set via `leapmux context use --hub <url>` or `leapmux auth use <url>`. |
 | 5 | Stored credential default | Used when only one stored credential exists. |
-| 6 | Local auto-discovery | Live local `solo` or `dev` IPC socket when no credential file exists. |
+| 6 | Local auto-discovery | Live local `solo`, `dev`, or standalone `hub` IPC socket (checked in that order) when no credential file exists. |
 
 ## Top-level command groups and global flags
 
@@ -140,6 +140,7 @@ See [Configuration Reference](/docs/admin/configuration-reference/) for complete
 | `--dev-frontend` / `--log-level` | empty / `info` | Dev frontend proxy URL; log level (`debug`, `info`, `warn`, `error`). |
 | `--storage-sqlite-max-conns` / `-cache-size` / `-mmap-size` | `4` / `0` / `0` | SQLite pool, page cache (`+` pages / `-` KiB), mmap bytes. |
 | `--encryption-mode` / `--use-login-shell` | `post-quantum` / `true` | Bundled Worker E2EE (`post-quantum`/`classic`) and login-shell wrap. |
+| `--max-incomplete-chunked` | `0` (`4`) | Max in-flight chunked sequences per channel on bundled Worker. |
 | `--agent-startup-concurrency` | `0` (`min(4, CPUs)`) | Concurrent agent restarts on bundled Worker. |
 
 Binding `solo` to a non-loopback address logs a warning because the first TCP caller can claim an unset `solo` password. `public_url` also applies in `solo` for startup URLs and **Register worker** commands.
@@ -173,6 +174,7 @@ Standalone outbound-only Worker (`daemon worker register` once, then `start`/`re
 | `--name` | hostname | Worker display name. |
 | `--data-dir` / `--config` | `~/.config/leapmux/worker` (`worker.yaml`) | Data dir (`state.json`, `worker.db`) and config file. |
 | `--encryption-mode` / `--use-login-shell` / `--log-level` | `post-quantum` / `true` / `info` | E2EE mode, login-shell wrap, log level. |
+| `--max-incomplete-chunked` | `0` (`4`) | Max in-flight chunked sequences per channel. |
 | `--max-message-size` | `0` (`16 MiB`) | Max payload size in bytes. |
 | `--agent-startup-timeout` / `--api-timeout` | `5m` / `10s` | Agent startup and JSON-RPC timeouts. |
 | `--agent-startup-concurrency` | `0` (`min(4, CPUs)`) | Concurrent agent restorations on restart. |
@@ -256,9 +258,9 @@ Missing YAML config files are skipped silently.
 | `hub` | `~/.config/leapmux/hub/hub.yaml` | `~/.config/leapmux/hub` |
 | `worker` | `~/.config/leapmux/worker/worker.yaml` | `~/.config/leapmux/worker` |
 | `dev` | `~/.config/leapmux/dev/dev.yaml` | `~/.config/leapmux/dev` (`hub/`, `worker/`) |
-| `control` | `<ConfigDir>/<hub-key>.json` (`0600`), `context.json`, `<hub-key>/pins.json` | — |
+| `control` | `<ConfigDir>/credentials/<hub-key>.json` (`0600`), `context.json`, `<hub-key>/pins.json` | — |
 
-**Managed files inside `<data-dir>`** (internal schema; use `status --json` in scripts; see [Managing Workers](/docs/admin/managing-workers/) for backups):
+**Managed files inside `<data-dir>`** (internal schema — use `status --json` in scripts, and see [Managing Workers](/docs/admin/managing-workers/) for backups):
 
 | Path | Mode | Holds |
 |---|---|---|

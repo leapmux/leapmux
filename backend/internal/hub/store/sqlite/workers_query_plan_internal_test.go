@@ -27,7 +27,6 @@ func TestWorkerAdminStateQueriesUseSelectiveOrderedIndexes(t *testing.T) {
 		require.NoError(t, st.Workers().MarkDeleted(context.Background(), deleted.ID))
 	}
 	active := leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
-	deregistering := leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING
 	deleted := leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
 	for _, state := range []struct {
 		name   string
@@ -35,8 +34,7 @@ func TestWorkerAdminStateQueriesUseSelectiveOrderedIndexes(t *testing.T) {
 		index  string
 	}{
 		{"all live", nil, "created_at"},
-		{"active", &active, "active_created"},
-		{"deregistering", &deregistering, "deregistering_created"},
+		{"active", &active, "created_at"},
 		{"deleted", &deleted, "deleted_created"},
 	} {
 		for _, ownerFiltered := range []bool{false, true} {
@@ -54,7 +52,7 @@ func TestWorkerAdminStateQueriesUseSelectiveOrderedIndexes(t *testing.T) {
 				if ownerFiltered {
 					params.UserID = &owner.ID
 					index = "idx_workers_registered_by_" + state.index
-					if state.status == nil {
+					if state.status == nil || *state.status == active {
 						index = "idx_workers_registered_by_created"
 					}
 				}

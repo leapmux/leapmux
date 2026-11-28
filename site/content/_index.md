@@ -73,7 +73,7 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
     <div class="lm-showcase-copy">
       <div class="lm-showcase-eyebrow">Parallel Worktrees &amp; Layout</div>
       <h2 class="lm-showcase-title">Parallel agents, zero collisions</h2>
-      <p class="lm-showcase-text">Open each agent in its own git worktree and branch from one dialog. Tile agents beside a syntax-highlighted diff viewer and live PTY terminals, steer running turns mid-flight, and clean up worktrees safely when you close the last tab.</p>
+      <p class="lm-showcase-text">Open each agent in its own git worktree and branch from one dialog. Tile agents beside a syntax-highlighted diff viewer and live PTY terminals, steer active turns before they finish, and clean up worktrees safely when you close the last tab.</p>
       <ul class="lm-showcase-list">
         <li>Create isolated git worktrees in one click</li>
         <li>Queue prompts and steer or preempt mid-turn</li>
@@ -147,11 +147,11 @@ leapmux agent messages "$A1" --json | \
     </details>
     <details class="lm-home-faq-item">
       <summary>Can the Hub read my code, chats, or terminal output?</summary>
-      <p>No. Clients and Workers establish hybrid post-quantum end-to-end encrypted (E2EE) channels directly. The Hub relays ciphertext only and cannot read agent chats, terminal output, or files.</p>
+      <p>No. Clients and Workers establish hybrid post-quantum end-to-end encrypted (E2EE) channels directly. The Hub relays ciphertext only and cannot read agent chats, terminal output, or files. See <a href="/docs/admin/security-and-auth/#what-the-hub-can-and-cannot-see">What the Hub can and cannot see</a> for the full breakdown.</p>
     </details>
     <details class="lm-home-faq-item">
       <summary>Do my remote devboxes need inbound firewall ports open?</summary>
-      <p>No. Workers dial out to the Hub over HTTPS and WebSockets, so remote servers, cloud VMs, and GPU boxes stay behind NAT with zero inbound firewall ports open.</p>
+      <p>No. Workers dial out to the Hub over HTTPS and WebSockets, so remote servers, cloud VMs, and GPU boxes stay behind NAT with zero inbound firewall ports open. See <a href="/docs/recipes/remote-devbox/">Connect a Remote Devbox Behind NAT</a> for the walkthrough.</p>
     </details>
     <details class="lm-home-faq-item">
       <summary>What is the difference between Solo Desktop, Solo Daemon, and Distributed mode?</summary>

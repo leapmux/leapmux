@@ -52,10 +52,10 @@ leapmux daemon worker register \
   --hub https://hub.example.com \
   --registration-key <key>
 
-leapmux daemon worker start --name gpu-box
+leapmux daemon worker start --name gpu-box --startup=boot
 ```
 
-The first command generates the Worker's identity keys and pairs it with your Hub. The second command installs and starts the Worker as a background service that reconnects automatically after network drops or reboots.
+The first command generates the Worker's identity keys and pairs it with your Hub. The second command installs and starts the Worker as a boot-level OS service (required on headless Linux servers without a graphical desktop login) that reconnects automatically after network drops or reboots.
 
 Confirm from your laptop that the Worker is online and check end-to-end encrypted latency:
 

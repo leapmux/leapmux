@@ -379,7 +379,7 @@ leapmux admin worker list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--status string` | worker status filter (one of: active, deregistering, deleted, all; default: active) |
+| `--status string` | worker status filter (one of: active, deleted, all; default: active) |
 
 _Common: `--user` (see [common arguments and flags](#common-arguments-and-flags))._
 

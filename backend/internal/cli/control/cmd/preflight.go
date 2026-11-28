@@ -58,10 +58,10 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 // worker that is not the caller's. One GetWorker round-trip per call.
 //
 // The check reads only whether GetWorker finds the row. GetWorker hides a
-// deregistering worker as ListWorkers does, so such a worker answers
-// not_found here too. The hub stays the authority on whether the worker is
-// usable now: its reach gate refuses a channel to a worker that is not ACTIVE,
-// and the CRDT validator refuses a tab bound to one.
+// deleted worker as ListWorkers does, so such a worker answers not_found here
+// too. The hub stays the authority on whether the worker is usable now: its
+// reach gate refuses a channel to a worker that is not ACTIVE, and the CRDT
+// validator refuses a tab bound to one.
 //
 // A FAILED lookup is not fatal: the command proceeds unvalidated.
 // This check is advisory (see the file header -- the hub independently

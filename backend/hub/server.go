@@ -773,7 +773,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 
 	// A deletion the notifier completes tells the owner's /ws/userevents
 	// subscribers that its worker list changed.
-	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, crdtRegistry.BroadcastWorkersChanged)
+	notifierSvc := notifier.New(wMgr, pendingReqs, apiTimeout)
 
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
 	// deregistration (evict); see auth.DelegationScopeCache.
@@ -1447,7 +1447,7 @@ func (s *Server) ReissueLocalWorkerToken(ctx context.Context, workerID string) (
 		if readErr != nil {
 			return "", fmt.Errorf("read local worker after token replacement: %w", readErr)
 		}
-		if current.DeletedAt != nil || current.DeregisteringAt != nil {
+		if current.DeletedAt != nil {
 			return "", fmt.Errorf("reissue local worker %s: %w", workerID, store.ErrNotFound)
 		}
 		return "", fmt.Errorf("reissue local worker %s: token changed concurrently: %w", workerID, store.ErrConflict)
@@ -1458,18 +1458,7 @@ func (s *Server) ReissueLocalWorkerToken(ctx context.Context, workerID string) (
 // RetireLocalWorker removes the solo launcher's unusable local worker row at
 // once, then runs the deregistration effects for it.
 //
-// MarkDeleted, not Deregister: the launcher owns the worker process and knows it
-// is not running, so the 7-day deregistration grace would only keep a token
-// valid that sits in the preserved .corrupt-* state file. A row that is already
-// gone is a no-op -- there is nothing to retire.
-//
-// The Apply error is logged, not returned. The row is already deleted, so a
-// returned error would fail the launch and keep state.json, and the next launch
-// would find no row and take the not-found branch -- the retry the error
-// promises never happens. At launch the retired Worker holds no connection, so a
-// failed Apply can skip only the owner's workers-changed broadcast, and the next
-// listing omits the deleted row anyway. See admin_user_service.go's DeleteUser
-// for the same rule.
+// A row that is already gone is a no-op -- there is nothing to retire.
 func (s *Server) RetireLocalWorker(ctx context.Context, workerID string) error {
 	w, err := s.store.Workers().GetByID(ctx, workerID)
 	if err != nil {
@@ -1484,10 +1473,7 @@ func (s *Server) RetireLocalWorker(ctx context.Context, workerID string) error {
 	if err := s.store.Workers().MarkDeleted(ctx, workerID); err != nil {
 		return fmt.Errorf("retire local worker %s: %w", workerID, err)
 	}
-	if err := s.workerEffects.Apply(ctx, workerID, w.RegisteredBy); err != nil {
-		slog.Warn("retired a local worker but could not run its deregistration effects",
-			"worker_id", workerID, "error", err)
-	}
+	s.workerEffects.Apply(ctx, workerID, w.RegisteredBy)
 	return nil
 }
 

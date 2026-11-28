@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -656,15 +655,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 	// would leave a worker told it was deleted when it was not.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
 	for _, workerID := range workerIDs {
-		if err := s.workerEffects.Apply(ctx, workerID, user.ID); err != nil {
-			// The user IS deleted and its workers ARE soft-deleted. A worker
-			// that missed its stop instruction is refused at its next
-			// connect, because its row is deleted, so this is worth a log,
-			// not a failed response that invites a retry of an
-			// already-committed deletion.
-			slog.Warn("user deleted but one worker was not told to stop",
-				"user_id", user.ID, "worker_id", workerID, "error", err)
-		}
+		s.workerEffects.Apply(ctx, workerID, user.ID)
 	}
 	return &leapmuxv1.DeleteUserResponse{}, nil
 }
@@ -697,8 +688,6 @@ func liveWorkerIDs(ctx context.Context, st store.Store, owner userid.UserID) ([]
 	cursor := ""
 	ownerID := owner.String()
 	for {
-		// The ordinary owner listing excludes deregistering workers. Deletion
-		// must tell those workers too when an earlier stop instruction failed.
 		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
 			UserID:     &ownerID,
 			PageParams: normalizePageParams(cursor, contracts.MaxPageLimit),

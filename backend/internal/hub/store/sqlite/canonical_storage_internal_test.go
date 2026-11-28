@@ -206,10 +206,10 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// worker_registration_keys: created_at DEFAULT + Go-bound expires_at.
 	storetest.SeedRegistrationKey(t, st, user.ID, future)
 
-	// workers.deregistering_at via ForceDeregister's strftime, on a worker of
+	// workers.deleted_at via ForceDeregister's strftime, on a worker of
 	// its own so the fixtures above keep a live worker.
-	deregistering := storetest.SeedWorker(t, st, user.ID)
-	deregistered, err := st.Workers().ForceDeregister(ctx, deregistering.ID)
+	deregisteredWorker := storetest.SeedWorker(t, st, user.ID)
+	deregistered, err := st.Workers().ForceDeregister(ctx, deregisteredWorker.ID)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, deregistered)
 

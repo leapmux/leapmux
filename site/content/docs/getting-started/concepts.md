@@ -3,8 +3,6 @@ title: "Concepts & Topologies"
 description: "Choose a LeapMux deployment topology and learn how the Hub, Worker, Frontend, workspaces, worktrees, end-to-end encryption, and persistence fit together."
 type: docs
 weight: 4
-aliases:
-  - /docs/getting-started/ways-to-run/
 ---
 
 Every LeapMux setup runs the same three components — **Frontend**, **Hub**, and **Worker** — with the same end-to-end encryption (E2EE). Topologies differ only in where those components run, how you sign in, and how many machines hold your repositories.
@@ -43,7 +41,7 @@ flowchart TD
 
 Notes on Solo Desktop:
 
-- Closing the **LeapMux Desktop** window minimizes it to the system tray so live agents and terminals keep running. Quitting the app stops its embedded sidecar's live processes; use **Solo Daemon** (`leapmux up`) or **Distributed** mode when you want agents and shells to keep running across app quits or logouts.
+- By default, closing the **LeapMux Desktop** window quits the app and stops its embedded sidecar's live processes. Enable **Tray icon** / **Menu bar icon** in **Preferences → Desktop** if you want closing the window to hide LeapMux to the tray while live agents and terminals keep running; use **Solo Daemon** (`leapmux up`) or **Distributed** mode when you want agents and shells to keep running across app quits or logouts.
 - Cross-device layout sync requires **Network Access** enabled in Solo mode or a **Distributed** Hub.
 - The Linux `.AppImage` package bundles no `leapmux` CLI. Use the `.deb` package or the standalone binary on Linux if you want the control CLI or Agent Skills.
 
@@ -59,7 +57,7 @@ The **Hub** and the **Worker** are roles of one Go binary (`leapmux`). The **Fro
 
 **Your repositories, agent transcripts, and terminal output live on the Worker, never on the Hub.**
 
-The Hub relays encrypted traffic and cannot read agent chats, terminal output, or files. A compromised Hub still controls identity and could serve modified browser client code unless you run the desktop app (which ships its own Frontend) or pin trusted origins. See [Security & Auth](/docs/admin/security-and-auth/).
+The Hub relays encrypted traffic and cannot read agent chats, terminal output, or files. A compromised Hub still controls identity and could serve modified browser client code unless you run the desktop app (which ships its own Frontend) or pin trusted origins. See [Security & Authentication](/docs/admin/security-and-auth/).
 
 ## How outbound Workers work
 
@@ -83,7 +81,7 @@ When you open a tab, you choose which Worker hosts it so filesystem and git oper
 
 Everything in the LeapMux interface fits into one nested hierarchy:
 
-- **Owner (user account)** — You own every workspace, agent, and terminal you create. Workspaces are strictly owner-only with no cross-user sharing, even on a multi-user Hub. See [Accounts & Apps](/docs/using/accounts-and-apps/).
+- **Owner (user account)** — You own every workspace, agent, and terminal you create. Workspaces are strictly owner-only with no cross-user sharing, even on a multi-user Hub. See [Accounts & Connected Apps](/docs/using/accounts-and-apps/).
 - **Workspace** — The top-level container for a unit of work, grouped under **In progress** and **Archived** in the left sidebar. See [Workspaces](/docs/using/workspaces/).
 - **Tiling layout and floating windows** — Inside a workspace, the center panel arranges panes into **tiles** (a single tab bar and active view), horizontal or vertical **splits**, multi-pane **grids**, and movable **floating windows**. See [Tabs & Layout](/docs/using/tabs-and-layout/).
 - **Tab** — Holds an **Agent** chat, a **Terminal** shell, a **File** viewer or git diff, or an **Image** viewer. Each tab runs on a specific Worker and can use its own linked git worktree and branch. Creating a tab saves its placement on the Hub, starts the resource on the Worker, and syncs it to your other open clients.
@@ -96,7 +94,7 @@ All Frontend-to-Worker traffic is **end-to-end encrypted** with a hybrid post-qu
 
 Each Worker keeps a persistent static keypair that every client pins via **trust on first use (TOFU)**. If a Worker's presented key ever changes, the Frontend blocks the connection and displays a **Worker public key changed** dialog with four-word fingerprints so you can verify out of band before re-trusting it.
 
-For trust boundaries, authentication rules, handshake details, and Hub encryption at rest, see [Security & Auth](/docs/admin/security-and-auth/), [Cryptography](/docs/admin/cryptography/), and [Encryption & Data](/docs/admin/encryption-and-data/).
+For trust boundaries, authentication rules, handshake details, and Hub encryption at rest, see [Security & Authentication](/docs/admin/security-and-auth/), [Cryptography & Key Architecture](/docs/admin/cryptography/), and [Encryption & Data](/docs/admin/encryption-and-data/).
 
 {{< callout type="warning" >}}
 If Solo Daemon listens on a non-loopback address before setup completes, another host on that network can claim the `solo` account by setting its first password. Set the password over a trusted connection and restrict network access with a firewall, VPN, or Secure Shell (SSH) tunnel.
@@ -116,6 +114,6 @@ The only presence signal LeapMux tracks is which of your own windows is active, 
 
 - [Installation](/docs/getting-started/installation/) — install the desktop app, standalone binary, or Docker image.
 - [Quick Start](/docs/getting-started/quick-start/) — launch Solo mode and run two parallel agents in under five minutes.
-- [Connect a Remote Devbox](/docs/recipes/remote-devbox/) — attach a remote Linux or GPU machine behind NAT.
+- [Connect a Remote Devbox Behind NAT](/docs/recipes/remote-devbox/) — attach a remote Linux or GPU machine behind NAT.
 - [Production Checklist](/docs/admin/production-checklist/) — prepare a Distributed Hub for daily team use.
 - [Glossary](/docs/reference/glossary/) — look up LeapMux terms.

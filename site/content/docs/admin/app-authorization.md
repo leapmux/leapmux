@@ -86,7 +86,7 @@ The warning disappears, and the app's row under **Preferences → Apps** identif
 
 ## Elevation opt-in
 
-Sensitive writes require a recently proven factor (a browser step-up ceremony at `/oauth/step-up`). New custom app registrations have elevation **disabled** by default; the three built-in registrations ship with elevation enabled. Enable elevation for a trusted app with:
+Sensitive writes require a recently proven factor (a loopback browser step-up ceremony at `GET /oauth/authorize?step_up=...`, or a device-code ceremony initiated at `POST /oauth/step-up` and approved at `/oauth/device`). New custom app registrations have elevation **disabled** by default; the three built-in registrations ship with elevation enabled. Enable elevation for a trusted app with:
 
 ```bash
 leapmux admin app allow-elevation <client_id>

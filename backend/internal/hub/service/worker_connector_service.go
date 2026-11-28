@@ -738,29 +738,23 @@ func (s *WorkerConnectorService) serveWorkerStream(reqCtx context.Context, worke
 		slog.Info("worker disconnected", "worker_id", worker.ID, "reason", exitReason)
 	}()
 
-	// A deregistering worker is told to stop on every connect: its persisted
-	// deregistering_at is the intent, and this connection is the delivery. A
-	// worker deleted with its user while it connected is told to stop too.
-	// The delivery runs beside the main loop rather than before it, because
-	// the DEREGISTER instruction reaches the wire through the loop's drain and
-	// its acknowledgement through the loop's receive (pending.Complete only
-	// runs from the loop). notifyDone ends the connection once the delivery
-	// returns, whatever its outcome. An ACTIVE worker starts no delivery
-	// goroutine.
+	// A worker deleted between bearer authentication and stream registration
+	// is told to stop on connect. The delivery runs beside the main loop rather
+	// than before it, because the DEREGISTER instruction reaches the wire
+	// through the loop's drain and its acknowledgement through the loop's
+	// receive (pending.Complete only runs from the loop). notifyDone ends the
+	// connection once delivery returns, whatever its outcome. An ACTIVE worker
+	// starts no delivery goroutine.
 	var notifyDone chan struct{} // nil for a normal worker: a nil select case blocks forever
 	if s.notifier != nil && current.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
 		notifyDone = make(chan struct{})
-		// Delivery owns a detached MarkDeleted write after acknowledgement.
-		// Every return joins it before unregistering, so store shutdown cannot
-		// leave the worker's local registration gone and its Hub row pending.
-		// Cancel first to release SendAndWait when no acknowledgement arrived.
 		defer func() {
 			cancelConn()
 			<-notifyDone
 		}()
 		go func() {
 			defer close(notifyDone)
-			s.notifier.DeliverOnConnect(ctx, current, conn)
+			s.notifier.DeliverOnConnect(ctx, current.ID, conn)
 		}()
 	}
 

@@ -23,7 +23,7 @@ This device override (if set)  →  Account default  →  Built-in default
 - **This device** — overrides a dual-tier setting in the current browser or desktop install only. Click the row's scope chip to switch between **Use account default** and **Override on this device**. Clearing browser site data removes local overrides while keeping your account defaults intact.
 
 {{< callout type="info" >}}
-**Hub administrators** also see an **ADMINISTRATION** section below the user categories (**General**, **Sign-up & Access**, **Network access**, **Email (SMTP)**, **Hub-wide Apps**, **Bot Protection**, **Rate Limits**, **Limits & Timeouts**, and **Advanced**). For all instance-level Hub settings, see [Configuration](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/).
+**Hub administrators** also see an **ADMINISTRATION** section below the user categories (**General**, **Sign-up & Access**, **Network access**, **Email (SMTP)**, **Hub-wide Apps**, **Bot Protection**, **Rate Limits**, **Limits & Timeouts**, and **Advanced**). For all instance-level Hub settings, see [Configuration Guide](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/).
 {{< /callout >}}
 
 ## Account and Apps
@@ -43,7 +43,7 @@ Every row in **Appearance** is dual-tier (account default with optional per-devi
 - **Terminal theme** — defaults to **Match UI**, following your app theme automatically. Pick any other palette to detach terminal colors (all sixteen ANSI colors, background, foreground, cursor, and selection stay coordinated).
 - **Syntax theme** — controls code highlighting in chat, diffs, and the file viewer. Defaults to **Match UI** and can be detached independently.
 - **Diff view** — sets the default layout for new diffs (**Unified** or **Side by side**; default **Unified**). Individual diffs still keep their own toggle.
-- **Custom UI fonts / Custom monospace fonts** — enable an ordered priority list (up to 32 fonts per family; drag handles reorder, double-click edits). Monospace appends LeapMux's bundled **Hack NF** stack (`"Hack NF", Hack, "SF Mono", Consolas, monospace`) as a fallback so Nerd Font icons render out of the box.
+- **Custom UI fonts / Custom monospace fonts** — enable an ordered priority list (up to 32 fonts per family; drag handles reorder, double-click edits). Monospace appends LeapMux's bundled **Hack NF** stack (`"Hack NF", Hack, "SF Mono", Consolas, monospace`) as a fallback so Nerd Font icons render by default.
 
 ## Notifications
 
@@ -111,5 +111,5 @@ Device-local settings for external editors, downloads, and the directory picker:
 
 - [Accounts & Connected Apps](/docs/using/accounts-and-apps/) — profile, passkeys, recovery, and app authorization.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — complete shortcut catalog.
-- [Configuration](/docs/admin/configuration/) — Hub administrator settings.
+- [Configuration Guide](/docs/admin/configuration/) — Hub administrator settings.
 - [Configuration Reference](/docs/admin/configuration-reference/) — flags, environment variables, and Hub setting keys.

@@ -126,9 +126,9 @@ Separately from channel E2EE, the Hub encrypts sensitive database columns at res
 
 Fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example `deep-idea-obey-tack`), drawn from a shared 256-word list so you can compare them aloud out of band.
 
-Every Worker logs `key_fingerprint` in its `worker initialized` startup line. To inspect the desktop app's bundled Worker log on macOS or Linux, launch the desktop binary from a terminal (`"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"` on macOS, or the AppImage/`leapmux-desktop` on Linux) and inspect `desktop-sidecar:` stderr output.
+Every Worker logs `key_fingerprint` in its `worker initialized` startup line. To inspect the desktop app's bundled Worker log on macOS or Linux, launch the desktop binary from a terminal (`"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"` on macOS, or the AppImage or `/usr/lib/leapmux-desktop/leapmux-desktop` on Linux `.deb` installs) and inspect `desktop-sidecar:` stderr output.
 
-On a mismatch, the Frontend halts and shows **Worker public key changed** with **Expected** and **Actual** fingerprints and **Reject** / **Accept** buttons (dismissing fails closed). Reject by default and accept only after out-of-band confirmation against the Worker's startup log.
+On a mismatch, the Frontend halts and shows **Worker public key changed** with **Expected** and **Actual** fingerprints and **Reject** / **Accept** buttons (dismissing fails closed). Reject by default and accept only after out-of-band confirmation against the Worker's startup log. If you click **Reject**, the Frontend refuses that Worker for the rest of the session without prompting again — even if you clear the pin in Preferences — until you reload the page or restart LeapMux Desktop.
 
 ### Tunnel key trust
 

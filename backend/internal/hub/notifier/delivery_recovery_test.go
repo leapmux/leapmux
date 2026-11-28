@@ -14,87 +14,45 @@ import (
 )
 
 func TestEveryDeregisterAttemptEndsItsSelectedConnection(t *testing.T) {
-	for _, deleted := range []bool{false, true} {
-		for _, response := range []string{"acknowledged", "send failed", "nil response", "wrong payload"} {
-			name := response
-			if deleted {
-				name += " after deletion"
-			}
-			t.Run(name, func(t *testing.T) {
-				e := newEnv(t)
-				if deleted {
-					require.NoError(t, e.st.Workers().MarkDeleted(context.Background(), e.worker))
+	for _, response := range []string{"acknowledged", "send failed", "nil response", "wrong payload"} {
+		t.Run(response, func(t *testing.T) {
+			const workerID = "worker-selected"
+			registry := newFakeRegistry(t, workerID, true)
+			sender := &fakeSender{respond: func(ctx context.Context) (*leapmuxv1.ConnectRequest, error) {
+				switch response {
+				case "acknowledged":
+					return ackSender().respond(ctx)
+				case "send failed":
+					return nil, errInjected
+				case "wrong payload":
+					return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}}, nil
+				default:
+					return nil, nil
 				}
-				registry := newFakeRegistry(t, e.worker, true)
-				sender := &fakeSender{respond: func(ctx context.Context) (*leapmuxv1.ConnectRequest, error) {
-					switch response {
-					case "acknowledged":
-						return ackSender().respond(ctx)
-					case "send failed":
-						return nil, errInjected
-					case "wrong payload":
-						return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}}, nil
-					default:
-						return nil, nil
-					}
-				}}
-				require.NoError(t, e.notifier(e.st, registry, sender).SendDeregister(context.Background(), e.worker))
-				assertConnectionEnded(t, registry.conn)
-				if deleted || response == "acknowledged" {
-					assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, e.status(t))
-				} else {
-					assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, e.status(t))
-				}
-			})
-		}
+			}}
+			newTestNotifier(registry, sender).SendDeregister(context.Background(), workerID)
+			assertConnectionEnded(t, registry.conn)
+		})
 	}
 }
 
-func TestFailedDeregisterReadEndsTheConnectionWithoutLosingIntent(t *testing.T) {
-	e := newEnv(t)
-	registry := newFakeRegistry(t, e.worker, true)
-	workers := &faultyWorkers{WorkerStore: e.st.Workers(), getIncludeDeleted: errInjected}
-	sender := ackSender()
-	err := e.notifier(faultyStore{Store: e.st, workers: workers}, registry, sender).SendDeregister(context.Background(), e.worker)
-	require.ErrorIs(t, err, errInjected)
-	assertConnectionEnded(t, registry.conn)
-	assert.Zero(t, sender.callCount())
-	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, e.status(t))
-}
-
 func TestLateDeregisterFailureCannotEndAReplacementConnection(t *testing.T) {
-	for _, stage := range []string{"read", "send"} {
-		t.Run(stage, func(t *testing.T) {
-			e := newEnv(t)
-			registry := newFakeRegistry(t, e.worker, true)
-			selected := registry.conn
-			replacement := workermgrtest.NewConn(t, e.worker)
-			replace := func() {
-				registry.mu.Lock()
-				registry.conn = replacement
-				registry.mu.Unlock()
-			}
-			workers := &faultyWorkers{WorkerStore: e.st.Workers()}
-			sender := &fakeSender{respond: func(context.Context) (*leapmuxv1.ConnectRequest, error) {
-				replace()
-				return nil, errInjected
-			}}
-			if stage == "read" {
-				workers.beforeGet, workers.getIncludeDeleted = replace, errInjected
-			}
-			err := e.notifier(faultyStore{Store: e.st, workers: workers}, registry, sender).SendDeregister(context.Background(), e.worker)
-			if stage == "read" {
-				require.ErrorIs(t, err, errInjected)
-			} else {
-				require.NoError(t, err)
-			}
-			assertConnectionEnded(t, selected)
-			select {
-			case <-replacement.Done():
-				t.Error("a late delivery failure ended the replacement connection")
-			default:
-			}
-		})
+	const workerID = "worker-replaced"
+	registry := newFakeRegistry(t, workerID, true)
+	selected := registry.conn
+	replacement := workermgrtest.NewConn(t, workerID)
+	sender := &fakeSender{respond: func(context.Context) (*leapmuxv1.ConnectRequest, error) {
+		registry.mu.Lock()
+		registry.conn = replacement
+		registry.mu.Unlock()
+		return nil, errInjected
+	}}
+	newTestNotifier(registry, sender).SendDeregister(context.Background(), workerID)
+	assertConnectionEnded(t, selected)
+	select {
+	case <-replacement.Done():
+		t.Error("a late delivery failure ended the replacement connection")
+	default:
 	}
 }
 
@@ -103,35 +61,33 @@ func assertConnectionEnded(t *testing.T, connection *workermgr.Conn) {
 	select {
 	case <-connection.Done():
 	default:
-		t.Error("the selected connection must end so persisted deregistration can resume on reconnect")
+		t.Error("the selected connection must end so the deleted worker stops")
 	}
 }
 
 func TestLateConnectDeliveryCannotEndAReplacementConnection(t *testing.T) {
-	e := newEnv(t)
+	const workerID = "worker-late-connect"
 	registry := workermgr.New(workermgr.DenyAllReach())
-	selected := workermgrtest.NewConn(t, e.worker)
+	selected := workermgrtest.NewConn(t, workerID)
 	_, err := registry.Register(selected)
 	require.NoError(t, err)
-	replacement := workermgrtest.NewConn(t, e.worker)
+	replacement := workermgrtest.NewConn(t, workerID)
 	_, err = registry.Register(replacement)
 	require.NoError(t, err)
-	t.Cleanup(func() { registry.Unregister(e.worker, replacement) })
+	t.Cleanup(func() { registry.Unregister(workerID, replacement) })
 	assertConnectionEnded(t, selected)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	worker, err := e.st.Workers().GetByIDIncludeDeleted(context.Background(), e.worker)
-	require.NoError(t, err)
 	sender := &canceledConnectSender{}
-	n := New(e.st, registry, sender, func() time.Duration { return time.Second }, nil)
-	n.DeliverOnConnect(ctx, worker, selected)
+	n := New(registry, sender, func() time.Duration { return time.Second })
+	n.DeliverOnConnect(ctx, workerID, selected)
 	assert.Same(t, selected, sender.connection, "the delayed invocation must retain its handler's connection")
 	select {
 	case <-replacement.Done():
 		t.Error("the old handler's canceled delivery ended its replacement")
 	default:
 	}
-	assert.True(t, registry.IsDeregistering(e.worker), "the persisted worker-wide intent still contains the replacement")
+	assert.True(t, registry.IsDeregistering(workerID), "containment still applies to the replacement connection")
 }
 
 type canceledConnectSender struct {
@@ -139,17 +95,14 @@ type canceledConnectSender struct {
 }
 
 func TestConnectDeliveryWithoutASelectedConnectionDoesNothing(t *testing.T) {
-	e := newEnv(t)
-	registry := newFakeRegistry(t, e.worker, true)
+	const workerID = "worker-nil-conn"
+	registry := newFakeRegistry(t, workerID, true)
 	sender := ackSender()
-	worker, err := e.st.Workers().GetByIDIncludeDeleted(context.Background(), e.worker)
-	require.NoError(t, err)
 	assert.NotPanics(t, func() {
-		e.notifier(e.st, registry, sender).DeliverOnConnect(context.Background(), worker, nil)
+		newTestNotifier(registry, sender).DeliverOnConnect(context.Background(), workerID, nil)
 	})
 	assert.Zero(t, sender.callCount())
 	assert.Empty(t, registry.marked)
-	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, e.status(t))
 	select {
 	case <-registry.conn.Done():
 		t.Error("an absent selected connection must not end another connection")

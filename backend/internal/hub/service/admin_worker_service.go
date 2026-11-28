@@ -125,9 +125,7 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 	if n == 0 {
 		return nil, connect.Errorf(connect.CodeNotFound, "worker %s not found or not active", req.GetId())
 	}
-	if err := s.deregisterEffects.Apply(ctx, req.GetId(), w.RegisteredBy); err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
+	s.deregisterEffects.Apply(ctx, req.GetId(), w.RegisteredBy)
 	return &leapmuxv1.AdminWorkerServiceDeregisterWorkerResponse{}, nil
 }
 

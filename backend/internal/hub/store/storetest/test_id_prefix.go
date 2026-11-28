@@ -863,19 +863,18 @@ func (s *Suite) testIDPrefix(t *testing.T) {
 		})
 		require.ErrorIs(t, err, store.ErrInvalidArgument)
 
-		// ListAdmin: default (live = active + deregistering) excludes deleted.
+		// ListAdmin: default (live = active) excludes deleted/deregistered.
 		liveAdminIDs, liveAdminPages := collectIDPrefixPages(t, 2, func(cursor string) (store.Page[store.WorkerWithOwner], error) {
 			return st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
 				IDPrefix:   "pfxA",
 				PageParams: store.PageParams{Cursor: cursor, Limit: 2},
 			})
 		})
-		assert.Equal(t, []string{w1, w2, wDereg, w3, wBob}, liveAdminIDs)
-		assert.Equal(t, 3, liveAdminPages)
+		assert.Equal(t, []string{w1, w2, w3, wBob}, liveAdminIDs)
+		assert.Equal(t, 2, liveAdminPages)
 
 		// ListAdmin: status filters compose with IDPrefix (both range and exact).
 		activeStatus := leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
-		deregStatus := leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING
 		deletedStatus := leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
 
 		activeIDs, _ := collectIDPrefixPages(t, 2, func(cursor string) (store.Page[store.WorkerWithOwner], error) {
@@ -886,15 +885,6 @@ func (s *Suite) testIDPrefix(t *testing.T) {
 			})
 		})
 		assert.Equal(t, []string{w1, w2, w3, wBob}, activeIDs)
-
-		deregPage, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
-			Status:     &deregStatus,
-			IDPrefix:   "pfxA",
-			PageParams: store.PageParams{Limit: 10},
-		})
-		require.NoError(t, err)
-		require.Len(t, deregPage.Rows, 1)
-		assert.Equal(t, wDereg, deregPage.Rows[0].ID)
 
 		delHidden, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
 			IDPrefix:   wDel,
@@ -912,6 +902,15 @@ func (s *Suite) testIDPrefix(t *testing.T) {
 		require.Len(t, delShown.Rows, 1)
 		assert.Equal(t, wDel, delShown.Rows[0].ID)
 
+		deregShown, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			Status:     &deletedStatus,
+			IDPrefix:   wDereg,
+			PageParams: store.PageParams{Limit: 10},
+		})
+		require.NoError(t, err)
+		require.Len(t, deregShown.Rows, 1)
+		assert.Equal(t, wDereg, deregShown.Rows[0].ID)
+
 		// ListAdmin: UserID filter composes with IDPrefix.
 		aliceAdmin, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
 			UserID:     &alice.ID,
@@ -919,7 +918,7 @@ func (s *Suite) testIDPrefix(t *testing.T) {
 			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, []string{w1, w2, wDereg, w3}, func() []string {
+		assert.Equal(t, []string{w1, w2, w3}, func() []string {
 			out := make([]string, len(aliceAdmin.Rows))
 			for i, r := range aliceAdmin.Rows {
 				out[i] = r.ID

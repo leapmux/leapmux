@@ -149,7 +149,7 @@ Common dev flags:
 | `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` for the bundled Worker |
 | `--config` | `~/.config/leapmux/dev/dev.yaml` | Config file path |
 
-Like `solo`, `dev` also accepts the Hub storage flags and `--dev-frontend`; see [Configuration Reference](/docs/admin/configuration-reference/).
+Like `solo`, `dev` also accepts `--dev-frontend` and the three SQLite tuning flags (`--storage-sqlite-max-conns`, `--storage-sqlite-cache-size`, and `--storage-sqlite-mmap-size`) on the CLI. Configure `storage.type`, `storage.sqlite.path`, or an external database DSN in `dev.yaml` (or `solo.yaml`); see [Configuration Reference](/docs/admin/configuration-reference/).
 
 ## Running under Docker
 

@@ -190,7 +190,7 @@ POST /oauth/token
 
 Confidential clients also authenticate with HTTP Basic or `client_secret` in the form body. To redeem a step-up code, also send the target credential: the target session cookie in `Cookie`, or the target access token in `Authorization: Bearer <access_token>` (a confidential client presenting a bearer sends `client_secret` in the form body).
 
-**One-shot consumption and replay revocation:** A successful exchange consumes the code. Replaying a consumed code is rejected with `400` `invalid_grant`; if the replay passes client authentication and matches the original `redirect_uri` and PKCE verifier while the code row still exists, the Hub revokes the credential issued by the first exchange (RFC 6749 section 4.1.2).
+**One-shot consumption and replay revocation:** A successful exchange consumes the code. Replaying a consumed code is rejected with `400` `invalid_grant`; if the replay passes client authentication and matches the original `redirect_uri` and PKCE verifier while the code row still exists, the Hub revokes the credential issued by the first exchange (RFC 6749 section 4.1.2) — including revoking the newly issued desktop session when a `leapmux-desktop` sign-in code is replayed.
 
 | Code kind | Response |
 |---|---|
@@ -199,6 +199,7 @@ Confidential clients also authenticate with HTTP Basic or `client_secret` in the
 | Step-up code with matching target credential | `200 OK` with `{"elevated": true}`. Opens an elevation window on the existing credential and issues no new token. |
 | Step-up code with missing or rejected credential | `401` `invalid_token`. The code stays valid so the client can retry. |
 | Step-up code with mismatched credential or un-elevatable target | `400` `invalid_grant`. The code stays valid. |
+| Step-up code when Hub fails to read the target credential | `500` `server_error`. The code is not consumed and stays valid so the client can retry. |
 
 ## Device authorization
 
@@ -244,7 +245,7 @@ POST /oauth/token
 | Error code (`400`) | Meaning |
 |---|---|
 | `authorization_pending` | User has not answered yet. Continue polling. |
-| `slow_down` | Polled faster than `interval`. Wait longer before the next poll. |
+| `slow_down` | Polled faster than `interval` (5 seconds). Add 5 seconds to your polling interval per RFC 8628 section 3.5 and continue. |
 | `access_denied` | User refused. Stop polling. |
 | `expired_token` | Grant expired after {{< duration device-code-ttl >}}. Start a new flow. |
 

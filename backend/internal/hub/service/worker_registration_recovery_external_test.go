@@ -229,5 +229,5 @@ func TestRecoveryRefusesADeregistrationAfterItsLivenessRead(t *testing.T) {
 	unchanged, err := env.store.Workers().GetByAuthTokenHashIncludeDeleted(t.Context(), hubtestutil.TestSecretHasher().Hash(fixture.original.GetAuthToken()))
 	require.NoError(t, err)
 	assert.Equal(t, fixture.original.GetWorkerId(), unchanged.ID)
-	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, unchanged.Status)
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, unchanged.Status)
 }

@@ -13,7 +13,7 @@ You can run everything locally. Solo mode (`leapmux up` or `leapmux daemon solo 
 
 You only need a separate Hub when you want multiple users, remote Workers, or full sign-in. In that case, run a Hub (`leapmux daemon hub start`) and connect one or more standalone Workers (`leapmux daemon worker start`) to it.
 
-See [Running LeapMux](/docs/admin/running-leapmux/) for run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for solo vs. distributed deployments.
+See [Running LeapMux](/docs/admin/running-leapmux/) for run modes and [Concepts & Topologies](/docs/getting-started/concepts/) for solo vs. distributed deployments.
 
 ## Is solo mode multi-user?
 
@@ -55,7 +55,7 @@ In solo mode, the Hub and Worker run in one process; once `solo` has a password,
 
 ## Which coding agents are supported?
 
-LeapMux supports {{< agent-provider-count >}} coding-agent providers. Every provider is first-class and uses the same interface where the underlying CLI supports it: chat, streamed tool calls, permission prompts, plan tracking, and session resume. See [Supported Agents](/docs/reference/supported-agents/) for the E2E-verified capability matrix.
+LeapMux supports {{< agent-provider-count >}} coding-agent providers. Every provider uses the same interface where the underlying CLI supports it: chat, streamed tool calls, permission prompts, plan tracking, and session resume. See [Supported Agents](/docs/reference/supported-agents/) for the E2E-verified capability matrix.
 
 {{< agent-logos >}}
 

@@ -3,9 +3,6 @@ title: "Security & Authentication"
 description: "LeapMux trust model, what the Hub sees, solo-mode boundaries, session elevation, CLI step-up, passkeys, OAuth security, app and delegation tokens, rate limits, and revocation."
 type: docs
 weight: 10
-aliases:
-  - "/docs/admin/security/"
-  - "/docs/admin/authentication-security/"
 ---
 
 This page defines the LeapMux trust model and authentication architecture: what the Hub can and cannot see, how solo mode differs from a multi-user Hub, how session elevation and CLI step-up protect sensitive actions, and how passkeys, OAuth flows, app tokens, delegation tokens, bot protection, and credential revocation work.
@@ -48,7 +45,7 @@ flowchart LR
 | Account preferences and active presence (active workspace, client, timing) | Any plaintext inside Frontend↔Worker channels |
 | Channel transport metadata (channel ID, correlation ID, ciphertext size, timing) | — |
 
-Traffic analysis (message timing, sizes, and active Worker mappings) remains visible to the Hub host. Separately, `leapmux auth login` labels CLI credentials with `user@host` by default; pass `--device-name` to choose another label.
+Traffic analysis (message timing, sizes, and active Worker mappings) remains visible to the Hub host. Separately, `leapmux auth login` labels CLI credentials with `user@host` by default; pass `--device-name` to choose another label. Step-up verification always sends the default `user@host` label regardless of the `--device-name` chosen at login.
 
 ## Worker identity and TOFU pinning
 
@@ -97,8 +94,8 @@ flowchart TD
 
     SoloIPC -->|"Unrestricted solo admin"| Allowed["Authorized Action"]
     Browser -->|"Verify factor (elevation window)"| Allowed
-    CLILoop -->|"Admin scope + loopback browser\nstep-up via /oauth/step-up"| Allowed
-    CLIDevice -->|"Admin scope + browser approval\nat /oauth/step-up"| Allowed
+    CLILoop -->|"Admin scope + loopback browser\nstep-up via /oauth/authorize"| Allowed
+    CLIDevice -->|"Admin scope + browser approval\nvia /oauth/step-up and /oauth/device"| Allowed
     SvcTok -->|"Most admin actions:\nadmin scope + /oauth/step-up"| Allowed
     SvcTok -->|"5 durable-authority user actions\nrefused"| Denied["Denied"]
     Deleg -->|"Never elevated;\nadmin commands refused"| Denied
@@ -106,7 +103,7 @@ flowchart TD
 
 ## Session elevation
 
-Sensitive account changes, app authorizations, and Hub administration require a **recently proven factor**, not only a live session cookie. Proving a factor elevates the session for **{{< duration elevation-window >}}**, sliding forward on each sensitive write up to a hard cap of **{{< duration elevation-cap >}}** from the original proof. Signing in with a password or passkey starts a **{{< duration fresh-authentication-window >}}** window under the same rules.
+Sensitive account changes, app authorizations, and Hub administration require a **recently proven factor**, not only a live session cookie. Proving a factor elevates the session for **{{< duration elevation-window >}}**, sliding forward on each sensitive write up to a hard cap of **{{< duration elevation-cap >}}** from the original proof. Signing in with a password or passkey starts a window of **{{< duration fresh-authentication-window >}}** under the same rules.
 
 In the browser, elevated sessions show their remaining deadline and an **End now** button at the top of **Account** and **Administration** panels.
 
@@ -130,26 +127,26 @@ Access-reducing app actions (**disconnecting** an app, **retiring** a registrati
 | Linked OAuth provider only (no password, no passkey) | Re-authenticate at that provider. |
 | No password, passkey, or linked provider | Add a first password or passkey within {{< duration fresh-authentication-window >}} of sign-in (requires a verified email or linked provider). |
 
-Provider re-authentication is offered only when an account has neither a password nor a passkey; add a password or passkey for a stronger factor.
+Provider re-authentication is offered only when an account has neither a password nor a passkey. OAuth and OIDC provider elevation proves only that the browser still holds a live provider session: no OIDC provider reports `auth_time` reliably enough to enforce, and GitHub has no `prompt=login` parameter (LeapMux sends `prompt=select_account` only), so GitHub cannot be asked for fresh credential entry. Add a password or passkey as a real second factor.
 
 ### Verifying a command-line credential
 
-CLI credentials cannot prove a factor in the terminal. When an admin or sensitive CLI command needs elevation, `leapmux` automatically initiates browser step-up through `/oauth/step-up` (provided the app registration allows elevation; built-in CLI and service-account apps allow it by default):
+CLI credentials cannot prove a factor in the terminal. When an admin or sensitive CLI command needs elevation, `leapmux` initiates a browser step-up ceremony (provided the app registration allows elevation; built-in CLI and service-account apps allow it by default):
 
-- **Loopback ceremony** (default `leapmux auth login` credentials): opens your local browser, prompts you to verify your identity if needed, and redeems the authorization code on a loopback listener before retrying the command.
-- **Device-code ceremony** (`leapmux auth login --device-code` and `leapmux admin api-token issue` credentials): prints a verification URL and short user code to approve from any elevated browser session.
+- **Loopback ceremony** (default `leapmux auth login` credentials): opens your local browser to `GET /oauth/authorize?step_up=token:<id>`, prompts you to verify your identity if needed, and redeems the authorization code on a loopback listener before retrying the command. Calling `POST /oauth/step-up` with a loopback-issued credential is rejected (`browser_step_up_required`).
+- **Device-code ceremony** (`leapmux auth login --device-code` and `leapmux admin api-token issue` credentials): calls `POST /oauth/step-up` and prints a verification URL (`/oauth/device`) and short user code to approve from any elevated browser session.
 
 Key security rules:
 
-- **A credential cannot approve its own step-up.** Only an elevated browser session can approve `/oauth/step-up`, so a stolen CLI credential file cannot self-elevate.
+- **A credential cannot approve its own step-up.** Only an elevated browser session can approve a browser step-up or `/oauth/device` ceremony, so a stolen CLI credential file cannot self-elevate.
 - **Durable-authority user actions require an elevated browser session or interactive CLI credential.** `admin user create`, `reset-password`, `grant-admin`, `revoke-admin`, and `update --email`/`--email-verified` work from an elevated `leapmux auth login` credential (loopback or `--device-code`) that holds `admin:users` scope. Service-account tokens (`api-token issue`) and third-party OAuth apps can elevate for other admin actions, but the Hub refuses them for these five user actions.
-- **Desktop remote-Hub mode** uses the same browser step-up flow through your system browser.
+- **Desktop remote-Hub mode** uses the loopback browser step-up flow (`GET /oauth/authorize?step_up=session:<id>`) through your system browser.
 
 ### Additional account-change safeguards
 
 - Registering a new passkey always requires a browser (WebAuthn ceremony).
 - Changing a password revokes every other session, API token, and delegation token; only the credential performing the change survives.
-- Self-service account recovery and `reset-password` delete every passkey on the account. Review and deregister unknown Workers separately after a suspected compromise, because Workers retain their own credentials.
+- Self-service account recovery and `reset-password` delete every passkey on the account. Completing recovery with a passkey also clears the account's existing password. Review and deregister unknown Workers separately after a suspected compromise, because Workers retain their own credentials.
 
 ## Passkeys, OAuth, and app credentials
 

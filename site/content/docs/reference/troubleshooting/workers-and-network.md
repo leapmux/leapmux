@@ -187,7 +187,7 @@ The proxy's direct peer address is not listed in `trusted_proxy_ranges`, or the 
 **Fix**
 Add the proxy's address or CIDR range under **Preferences → Administration → Network access → Trusted reverse proxies**, strip client-supplied forwarding headers at the proxy, and fix or remove any malformed `Forwarded` header. See [Configuration Reference](/docs/admin/configuration-reference/).
 
-### Login cookies do not stick behind a proxy
+### Login cookies do not persist behind a proxy
 
 **Symptom**
 Signing in succeeds briefly or redirects unexpectedly when the Hub sits behind TLS termination.
@@ -196,7 +196,7 @@ Signing in succeeds briefly or redirects unexpectedly when the Hub sits behind T
 The Hub does not terminate TLS directly and needs its external origin (`public_url`) and `secure_cookies` enabled.
 
 **Fix**
-Set both Hub settings (changes apply within ~30 seconds without restarting):
+Set both Hub settings (`hot` settings apply immediately on commit without restarting):
 
 ```bash
 leapmux admin settings set public_url "https://hub.example.com"

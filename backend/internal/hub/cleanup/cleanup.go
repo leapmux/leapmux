@@ -18,16 +18,6 @@ const (
 	// Limited like maxRevocationCompactionBatches so one pass cannot monopolize
 	// the cleanup goroutine; the next tick picks up whatever is left.
 	maxOpBatchSweepBatches = 100
-	// deregisterGracePeriod is how long a deregistering worker may wait for
-	// its DEREGISTER instruction before the hub deletes it without telling
-	// it. A worker offline for longer is refused with WORKER_DELETED at its next
-	// connect, as a worker of a deleted user is. The worker then stops
-	// connecting, and a standalone worker also clears its state. Once the row is
-	// hard-deleted (cleanupRetention later), the hub no longer knows the token,
-	// so a worker that connects after that retries until an operator stops it.
-	deregisterGracePeriod = 7 * 24 * time.Hour
-	// Limited like the sweeps above.
-	maxStaleDeregistrationBatches = 100
 )
 
 // StartLoop starts a background goroutine that periodically hard-deletes
@@ -61,14 +51,6 @@ func run(ctx context.Context, st store.Store) {
 	}
 	step("expired sessions", func() (int64, error) { return cs.HardDeleteExpiredSessions(ctx, now) })
 	step("workspaces", func() (int64, error) { return cs.HardDeleteWorkspacesBefore(ctx, cutoff) })
-	// Before the hard delete, so a worker deleted here waits out the normal
-	// retention like every other soft-deleted worker.
-	deregisterCutoff := now.Add(-deregisterGracePeriod)
-	step("stale deregistrations", func() (int64, error) {
-		return DrainUntilEmpty(ctx, maxStaleDeregistrationBatches, func() (int64, error) {
-			return cs.CompleteStaleDeregistrations(ctx, deregisterCutoff)
-		})
-	})
 	step("workers", func() (int64, error) { return cs.HardDeleteWorkersBefore(ctx, cutoff) })
 	step("expired registration keys", func() (int64, error) { return cs.HardDeleteExpiredRegistrationKeysBefore(ctx, cutoff) })
 	step("stale pending emails", func() (int64, error) { return cs.ClearStalePendingEmails(ctx, cutoff) })

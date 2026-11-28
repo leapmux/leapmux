@@ -108,12 +108,12 @@ func TestAdminRowsUseEffectiveVerificationAndEnumTokens(t *testing.T) {
 	assert.NotContains(t, string(wire), "verified_at", "a built-in has no verification timestamp")
 	assert.NotContains(t, string(wire), "client_secret")
 
-	worker := adminWorkerRowOf(&leapmuxv1.AdminWorker{Status: leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING})
+	worker := adminWorkerRowOf(&leapmuxv1.AdminWorker{Status: leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED})
 	encoded, err := json.Marshal(worker)
 	require.NoError(t, err)
 	var record struct {
 		Status string `json:"status"`
 	}
 	require.NoError(t, json.Unmarshal(encoded, &record))
-	assert.Equal(t, "deregistering", record.Status)
+	assert.Equal(t, "deleted", record.Status)
 }

@@ -98,16 +98,11 @@ func (s *WorkerConnectorService) recoveryWorker(ctx context.Context, attemptID, 
 }
 
 // refuseUnrecoverableWorker rejects a worker that no recovery may turn
-// back into an active registration: deleted or deregistering rows, and
-// rows whose owner is gone.
+// back into an active registration: deleted rows, and rows whose owner is gone.
 func (s *WorkerConnectorService) refuseUnrecoverableWorker(ctx context.Context, worker *store.Worker) error {
 	if worker.DeletedAt != nil {
 		return connect.Errorf(connect.CodeFailedPrecondition,
 			"this worker was deleted and cannot be recovered")
-	}
-	if worker.DeregisteringAt != nil {
-		return connect.Errorf(connect.CodeFailedPrecondition,
-			"this worker is being deregistered and cannot be recovered")
 	}
 	// The owner's liveness is re-read, not trusted from the worker row:
 	// a user deleted after the registration committed owns nothing the
@@ -166,7 +161,7 @@ func (s *WorkerConnectorService) GetRegistrationChallenge(
 // RecoverRegistration replaces the token of a committed attempt after the caller
 // proves possession of the pinned private keys. The Worker keeps its identity.
 // It rechecks that the Worker and its owner remain live before issuing a token.
-// The final write refuses a deleted or deregistering Worker.
+// The final write refuses a deleted Worker.
 func (s *WorkerConnectorService) RecoverRegistration(
 	ctx context.Context,
 	req *leapmuxv1.RecoverRegistrationRequest,
@@ -232,7 +227,7 @@ func (s *WorkerConnectorService) RecoverRegistration(
 		if readErr != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, readErr)
 		}
-		if current.DeletedAt != nil || current.DeregisteringAt != nil {
+		if current.DeletedAt != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, "this worker can no longer be recovered")
 		}
 		if err := s.refuseUnrecoverableWorker(ctx, current); err != nil {

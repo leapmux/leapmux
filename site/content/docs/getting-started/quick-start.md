@@ -36,7 +36,7 @@ leapmux up
 
 `leapmux up` is a shortcut for `leapmux daemon solo start`. On the first run, LeapMux asks whether to start automatically at login or boot. Open **`http://127.0.0.1:4327`** in your browser and set a password for the single `solo` account; subsequent browser visits require that password.
 
-For custom listen addresses, data directories, and daemon options, see [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Auth](/docs/admin/security-and-auth/).
+For custom listen addresses, data directories, and daemon options, see [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Authentication](/docs/admin/security-and-auth/).
 {{< /tab >}}
 {{< /tabs >}}
 
@@ -76,7 +76,7 @@ Because each agent runs in its own linked worktree and branch, their edits never
 {{% /steps %}}
 
 {{< callout type="info" >}}
-**Persistence and sync in Solo Desktop:** Closing the **LeapMux Desktop** window minimizes it to the system tray so live agents and terminals keep running. Quitting the desktop app completely stops the embedded sidecar's live processes; when you relaunch, your workspace layout, agent transcripts, and last terminal screens return (press **Enter** in a terminal to start a fresh shell). For background persistence across app quits or logouts, run `leapmux up` (`leapmux daemon solo start`) or Distributed mode. For live cross-device layout sync, enable **Network Access** in Solo mode or connect your devices to a Distributed Hub.
+**Persistence and sync in Solo Desktop:** By default, closing the **LeapMux Desktop** window quits the app and stops the embedded sidecar's live processes. Enable **Tray icon** / **Menu bar icon** in **Preferences → Desktop** if you want closing the window to hide LeapMux to the tray while live agents and terminals keep running. When you relaunch after quitting, your workspace layout, agent transcripts, and last terminal screens return (press **Enter** in a terminal to start a fresh shell). For background persistence across app quits or logouts, run `leapmux up` (`leapmux daemon solo start`) or Distributed mode. For live cross-device layout sync, enable **Network Access** in Solo mode or connect your devices to a Distributed Hub.
 {{< /callout >}}
 
 ## Where to go next

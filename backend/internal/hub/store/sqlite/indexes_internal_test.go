@@ -142,23 +142,6 @@ func TestWorkersDeletedKeysetIndexes(t *testing.T) {
 	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_registered_by_deleted_created", "registered_by, created_at DESC, id DESC", "WHERE deleted_at IS NOT NULL")
 }
 
-// TestWorkersDeregisteringIndex pins the stale-deregistration sweep's index:
-// partial on the sweep's own predicate, so it holds only the few workers in
-// mid-deregistration.
-func TestWorkersDeregisteringIndex(t *testing.T) {
-	_, db := newSessionTestStore(t)
-	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_deregistering", "deregistering_at", "WHERE deregistering_at IS NOT NULL AND deleted_at IS NULL")
-	details := explainPlan(t, db, loadQuerySQL(t, "workers.sql", "CompleteStaleDeregistrations"))
-	assert.Condition(t, func() bool {
-		for _, d := range details {
-			if strings.Contains(d, "INDEX idx_workers_deregistering") {
-				return true
-			}
-		}
-		return false
-	}, "the sweep must seek idx_workers_deregistering; plan: %v", details)
-}
-
 // TestWorkersCreatedAtIndex pins idx_workers_created_at: the all-user live
 // admin listing (ListWorkersAdminLive) filters `deleted_at IS NULL`, so the
 // index must be partial on it (matching the query exactly so the planner can
@@ -248,7 +231,7 @@ func TestPaginatedListingsRideTheirKeysetIndexes(t *testing.T) {
 	cases := []struct{ file, query, index string }{
 		{"users.sql", "ListAllUsers", "idx_users_created_at"},
 		{"users.sql", "SearchUsers", "idx_users_created_at"},
-		{"workers.sql", "ListWorkersByUserID", "idx_workers_registered_by_active_created"},
+		{"workers.sql", "ListWorkersByUserID", "idx_workers_registered_by_created"},
 		{"worker_registration_keys.sql", "ListRegistrationKeysAdmin", "idx_worker_registration_keys_created_at"},
 		{"user_sessions.sql", "ListUserSessionsByUserID", "idx_user_sessions_user_last_active"},
 		{"user_sessions.sql", "ListAllActiveSessions", "idx_user_sessions_last_active"},

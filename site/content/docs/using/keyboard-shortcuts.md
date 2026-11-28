@@ -122,7 +122,42 @@ Open **Preferences → Keyboard Shortcuts** (`⌘,` / `Ctrl+,`) to remap any wor
 
 `Esc` stays reserved for dismissing menus and dialogs, and core desktop shortcuts (Zoom, Web Inspector, Quit) stay fixed. On macOS Desktop, remapping **Open Preferences** to a single keystroke updates the native menu bar automatically.
 
-## Keyboard layouts and IME
+{{< callout type="warning" >}}
+**Chords cannot become macOS menu accelerators.** Binding **Open Preferences** to a two-step chord (such as `$mod+k $mod+s`) still works as a workspace shortcut, but the accelerator is omitted from the macOS native menu bar item.
+{{< /callout >}}
+
+### Scripting keybindings (`keybindings` JSON and `when` contexts)
+
+Preferences writes custom bindings to the account-level `keybindings` setting, which you can also manage via `leapmux settings set keybindings '<json>'`. The value is a JSON array of up to 200 objects (`command`, `key`, and optional `when`; an empty `key` unbinds the command, and omitting `when` inherits the command's default clause):
+
+```json
+[
+  { "command": "app.newAgent", "key": "$mod+Shift+a" },
+  { "command": "app.closeActiveTab", "key": "" },
+  { "command": "app.toggleHiddenFiles", "key": "$mod+k $mod+h" }
+]
+```
+
+**Available `when` context keys** (supports `||`, `&&`, `!`, parentheses, `==`/`!=`, strings, and `true`/`false`): `isDesktop`, `platform` (`"mac"`, `"windows"`, `"linux"`), `dialogOpen`, `sidebarVisible`, `activeTabType` (`"agent"`, `"terminal"`, `"file"`, `"image"`), `inputFocused`, `editorFocused`, `chatInputFocused`, `chatInputEmpty`, and `terminalFocused`.
+
+**Bindable workspace command IDs:**
+
+| Command ID | Action |
+| --- | --- |
+| `app.newAgent`, `app.newTerminal`, `app.closeActiveTab` | New Agent, New Terminal, Close Active Tab |
+| `app.newAgentDialog`, `app.newTerminalDialog`, `app.newWorkspaceDialog` | New Agent / Terminal / Workspace Dialog |
+| `app.toggleFloatingTab`, `app.openPreferences`, `app.openInExternalApp` | Toggle Floating Tab, Open Preferences, Open in External App |
+| `app.refreshDirectoryTree`, `app.toggleHiddenFiles` | Refresh Directory Tree, Toggle Hidden Files |
+| `app.switchToTab1` … `app.switchToTab9` | Switch to Tab 1–9 |
+| `app.previousTab`, `app.nextTab` | Previous / Next Tab |
+| `app.scrollActiveTabPageUp`, `app.scrollActiveTabPageDown` | Scroll Active Tab Up / Down One Page |
+| `app.splitTileHorizontal`, `app.splitTileVertical` | Split Tile Horizontally / Vertically |
+| `app.toggleLeftSidebar`, `app.toggleRightSidebar` | Toggle Left / Right Sidebar |
+| `chat.sendMessage`, `chat.advanceInputQueue` | Send Message, Resume Queue and Steer or Preempt |
+| `terminal.toggleQuake`, `terminal.openQuake`, `terminal.closeQuake` | Toggle / Open / Close Quake Terminal |
+| `terminal.lineStart`, `terminal.lineEnd`, `terminal.wordLeft`, `terminal.wordRight` | Go to Line Start / End, Previous / Next Word (macOS) |
+
+## Keyboard layouts and input methods
 
 - **Layout-independent:** Shortcuts match physical key positions rather than printed characters, so bindings like ``⌃` `` / ``Ctrl+` `` and `⌥⌘N` work consistently across non-US layouts.
 - **Safe while typing:** Unmodified single-letter bindings never fire inside text inputs, while modifier shortcuts and function keys (`F1`–`F12`) remain active.

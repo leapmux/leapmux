@@ -174,17 +174,6 @@ CREATE TABLE workers (
     slhdsa_public_key BLOB NOT NULL,
     created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     last_seen_at  DATETIME(3),
-    -- Set when the worker is deregistered; the persisted deregistration intent.
-    -- The store derives the reported WorkerStatus from this column and
-    -- deleted_at, and no column stores it:
-    --   ACTIVE:        deregistering_at IS NULL     AND deleted_at IS NULL
-    --   DEREGISTERING: deregistering_at IS NOT NULL AND deleted_at IS NULL
-    --   DELETED:       deleted_at IS NOT NULL
-    -- A deregistering worker is told to stop whenever it is connected, and a
-    -- valid acknowledgement deletes it. The cleanup loop deletes a worker
-    -- still deregistering after the grace period
-    -- (CompleteStaleDeregistrations).
-    deregistering_at DATETIME(3),
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
     -- worker. The owner's deregistration path refuses these, and the admin
@@ -201,6 +190,8 @@ CREATE TABLE workers (
     -- multiple NULLs and rejects duplicate non-NULL values.
     registration_attempt_id VARCHAR(32) COLLATE utf8mb4_bin DEFAULT NULL UNIQUE,
     registration_key_hash VARBINARY(32) DEFAULT NULL UNIQUE,
+    -- Soft-delete timestamp. See the sqlite migration for the lifecycle
+    -- state mapping (ACTIVE vs DELETED).
     deleted_at    DATETIME(3),
     FOREIGN KEY (registered_by) REFERENCES users(id),
     CONSTRAINT workers_registration_attempt CHECK (
@@ -220,16 +211,12 @@ CREATE TABLE workers (
 ) COLLATE=utf8mb4_bin;
 -- The ordinary owner index serves foreign-key checks and the hard-delete probe.
 CREATE INDEX idx_workers_registered_by ON workers(registered_by);
--- MySQL has no partial indexes. Functional equality prefixes select each state
--- in creation order without adding visible columns. The all-live indexes omit
--- the deregistration expression so both live states share creation order.
-CREATE INDEX idx_workers_state_created ON workers((deleted_at IS NOT NULL), (deleted_at IS NULL AND deregistering_at IS NOT NULL), created_at DESC, id DESC);
-CREATE INDEX idx_workers_registered_by_state_created ON workers(registered_by, (deleted_at IS NOT NULL), (deleted_at IS NULL AND deregistering_at IS NOT NULL), created_at DESC, id DESC);
+-- MySQL has no partial indexes. Functional equality prefixes select active
+-- (`= FALSE`) and deleted (`= TRUE`) workers in creation order without adding
+-- visible columns.
 CREATE INDEX idx_workers_live_created ON workers((deleted_at IS NOT NULL), created_at DESC, id DESC);
 CREATE INDEX idx_workers_registered_by_live_created ON workers(registered_by, (deleted_at IS NOT NULL), created_at DESC, id DESC);
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at);
--- The stale-deregistration sweep (CompleteStaleDeregistrations).
-CREATE INDEX idx_workers_deregistering_at ON workers(deregistering_at);
 
 -- Active worker registration keys.
 --

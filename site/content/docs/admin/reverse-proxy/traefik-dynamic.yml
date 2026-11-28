@@ -7,8 +7,15 @@ http:
     leapmux:
       rule: Host(`hub.example.com`) && !Path(`/metrics`)
       entryPoints: [websecure]
+      middlewares: [strip-forwarded]
       service: leapmux
       tls: {}
+
+  middlewares:
+    strip-forwarded:
+      headers:
+        customRequestHeaders:
+          Forwarded: ""
 
   services:
     leapmux:

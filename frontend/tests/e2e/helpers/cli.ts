@@ -46,7 +46,7 @@ export interface CLITokenSource {
 
 /**
  * Permissions for the test CLI credential, using the scope format from RFC 6749 section 3.3.
- * Admin procedures require admin scopes even when the credential belongs to an administrator. See operating/security.md.
+ * Admin procedures require admin scopes even when the credential belongs to an administrator. See site/content/docs/admin/security-and-auth.md.
  * The remaining scopes match the default grant. An unscoped elevated session can issue this requested set.
  * The request and credential file share this list, so auth status cannot report permissions absent from the stored grant.
  */

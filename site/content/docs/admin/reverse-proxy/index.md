@@ -13,8 +13,8 @@ The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, place a reve
 | --- | --- | --- | --- | --- | --- |
 | **Caddy** | Built-in (Let's Encrypt / ZeroSSL) | Caddy 2 | Unlimited by default | Automatic on `reverse_proxy` | `respond /metrics 404` |
 | **nginx** | External (for example Certbot) | 1.25.1 (`http2 on;`) | Must set `client_max_body_size 0` (1 MiB default rejects bulk RPCs) | Explicit `proxy_http_version 1.1` + `Upgrade` / `Connection` map | `location = /metrics { return 404; }` |
-| **Traefik** | Built-in via certificate resolvers | Traefik v3 | Unlimited by default | Automatic on HTTP router; default read timeout allows long streams | `!Path(\`/metrics\`)` in router rule |
-| **HAProxy** | External (combined PEM chain + key) | HAProxy 2.4+ | Unlimited by default | HTTP/1.1 backend carries upgrades; set `timeout tunnel` ≥ 1m | `http-request deny deny_status 404 if { path /metrics }` |
+| **Traefik** | Built-in via certificate resolvers | Traefik v3 | Unlimited by default | Automatic on HTTP router; default read timeout allows long streams | `` !Path(`/metrics`) `` in router rule |
+| **HAProxy** | External (combined PEM chain + key) | HAProxy 2.4+ | Unlimited by default | HTTP/1.1 backend carries upgrades; set `timeout tunnel` ≥ 1m | `http-request deny deny_status 404 if { path,url_dec /metrics }` |
 | **Apache httpd** | External (for example Certbot) | 2.4.47 (`upgrade=websocket`) | Unlimited by default | Single `ProxyPass / ... upgrade=websocket` handles HTTP and WS | `ProxyPass /metrics !` + `Require all denied` |
 
 ## What the proxy must carry
@@ -31,7 +31,7 @@ The Hub pings each WebSocket, including Worker streams, every 10 seconds. Config
 Every proxy must also:
 
 - Forward WebSocket upgrades on `/ws/`.
-- Preserve `Host` and set forwarding headers (`Forwarded`, or `X-Forwarded-For` and `X-Forwarded-Proto`).
+- Preserve `Host`, strip any client-supplied `Forwarded` and `X-Forwarded-*` headers, and set forwarding headers (`Forwarded`, or `X-Forwarded-For` and `X-Forwarded-Proto`) from the proxy's own peer connection.
 - Serve LeapMux at the root of its own hostname or subdomain — sub-path prefixes such as `https://example.com/leapmux` are unsupported and rejected by `public_url`.
 - **Block `/metrics` from external clients.** The Hub exposes Prometheus metrics at `/metrics` without authentication so host-local scrapers can read them. All five proxy examples below deny `/metrics` externally; scrape `http://127.0.0.1:4327/metrics` directly on the Hub host instead.
 
@@ -75,7 +75,7 @@ If you put `cloudflare` or `cloudfront` in `trusted_proxy_ranges`, LeapMux trust
 
 ## Proxy configurations
 
-Each configuration below serves `hub.example.com` on port `443`, redirects port `80` to HTTPS, blocks `/metrics` externally, and forwards all other traffic — including WebSocket upgrades — to `127.0.0.1:4327` over HTTP/1.1. Replace the hostname, certificate paths, and Hub address with your own. The first comment line of each file shows its install path.
+Each configuration below serves `hub.example.com` on port `443`, redirects port `80` to HTTPS, blocks `/metrics` externally, strips client-supplied `Forwarded` headers (and overwrites `X-Forwarded-For` with the real peer address), and forwards all other traffic — including WebSocket upgrades — to `127.0.0.1:4327` over HTTP/1.1. Replace the hostname, certificate paths, and Hub address with your own. The first comment line of each file shows its install path.
 
 {{< tabs >}}
 {{< tab name="nginx" >}}

@@ -41,7 +41,7 @@ leapmux auth login --hub https://hub.example.com --scope "admin:read admin:setti
 
 Every Hub administration command — including reads — requires an administrator account and an active **step-up elevation window** ({{< duration elevation-window >}}, extended by writes up to {{< duration elevation-cap >}}). Listing, retiring (`revoke`), and deleting unused app registrations under `leapmux admin app` require no elevation.
 
-When your CLI credential lacks a current window, `leapmux` automatically triggers browser step-up via `/oauth/step-up` (loopback browser prompt for `leapmux auth login`, or verification URL + code for `--device-code` and service-account tokens) and retries the command once approved. **Durable-authority user commands — `admin user create`, `reset-password`, `grant-admin`, `revoke-admin`, and `update --email`/`--email-verified` — require either an elevated browser session or an elevated `leapmux auth login` CLI credential holding `admin:users` (service-account tokens and third-party OAuth apps are refused).** See [Security & Authentication — Verifying a command-line credential](/docs/admin/security-and-auth/#verifying-a-command-line-credential).
+When your CLI credential lacks a current window, `leapmux` triggers browser step-up automatically (a loopback browser prompt via `GET /oauth/authorize?step_up=...` for `leapmux auth login`, or `POST /oauth/step-up` with a verification URL at `/oauth/device` and user code for `--device-code` and service-account tokens) and retries the command once approved. **Durable-authority user commands — `admin user create`, `reset-password`, `grant-admin`, `revoke-admin`, and `update --email`/`--email-verified` — require either an elevated browser session or an elevated `leapmux auth login` CLI credential holding `admin:users` (service-account tokens and third-party OAuth apps are refused).** See [Security & Authentication — Verifying a command-line credential](/docs/admin/security-and-auth/#verifying-a-command-line-credential).
 
 ## Hub settings
 
@@ -173,7 +173,7 @@ leapmux admin api-token issue ci-bot --installation-name "ci-runner-3" \
   --scope "admin:read admin:workers" --ttl 86400
 ```
 
-Save the printed `access_token` (`lmx_a<id>_<secret>`) in a credential file under `LEAPMUX_CONTROL_CONFIG_DIR` (see [CLI Guide](/docs/using/cli-guide/)) or pass it in `Authorization: Bearer`.
+Save the printed `access_token` (`lmx_a<id>_<secret>`) in a credential file at `LEAPMUX_CONTROL_CONFIG_DIR/credentials/<hub-key>.json` (see [CLI Guide](/docs/using/cli-guide/)) or pass it in `Authorization: Bearer`.
 
 - Service tokens belong to the built-in **service account** registration and appear under the user's connected apps.
 - A credential issued by another CLI credential does not renew and expires no later than its issuer, capping delegation chains.

@@ -30,7 +30,7 @@ Tabs inside a workspace are grouped into a two-level tree:
 - **Repository group** — displays the repository name (derived from the git origin URL, or the directory name for a local repository with no origin). Hover for the full origin URL or repository root path.
 - **Branch group** — displays the branch name, a checkout icon (branch icon for the main checkout, folder-with-arrow icon for a linked worktree), and a diff-stats badge (`+N -M *U`). Hover for **Worktree branch** or **Branch**, **Directory**, and **Worker** (when the same branch exists on multiple Workers).
 
-Tabs are grouped by branch name, Worker, and repository path together, so two clones of the same repository stay distinct. A repository with no commits yet (or a tab still starting up) appears as **`(no branch)`**, and a detached HEAD shows its short commit SHA (for example, `a1b2c3d`).
+Tabs are grouped by branch name, Worker, and repository path together, so two clones of the same repository stay distinct. A repository with no commits yet (or a tab still starting up) appears as **`(no branch)`**, and a detached HEAD shows its short commit hash (for example, `a1b2c3d`).
 
 ### The branch context menu
 
@@ -122,7 +122,7 @@ Open a branch group's **`⋯`** menu and choose **Delete worktree...** or **Dele
 
 ### Deleting a linked worktree
 
-**Delete worktree** stops every tab in the group, removes the linked worktree directory (`git worktree remove`), and deletes its branch (unless another worktree still has that branch checked out). Worktrees you created manually outside LeapMux or still referenced by another tab stay on disk.
+**Delete worktree** stops every tab in the group, removes the linked worktree directory (`git worktree remove`), and deletes its branch (unless another worktree still has that branch checked out). Worktrees you created manually outside LeapMux or that another tab still points at stay on disk.
 
 If git refuses removal (for example, the worktree is locked), the dialog stays open with the error and offers **Close tabs, keep worktree** to close the tabs while leaving the directory intact.
 

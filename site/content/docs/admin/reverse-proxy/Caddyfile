@@ -6,5 +6,7 @@ hub.example.com {
 	# Scrape http://127.0.0.1:4327/metrics directly on the host instead.
 	respond /metrics 404
 
-	reverse_proxy 127.0.0.1:4327
+	reverse_proxy 127.0.0.1:4327 {
+		header_up -Forwarded
+	}
 }

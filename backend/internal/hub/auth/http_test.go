@@ -244,15 +244,16 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 		assert.False(t, auth.IsWorkerCredentialError(err), "a store failure must not read as a rejected token")
 	})
 
-	t.Run("still resolves a deregistering worker", func(t *testing.T) {
+	t.Run("refuses a deregistered worker immediately", func(t *testing.T) {
 		leaving, leavingToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: leaving.ID, RegisteredBy: userid.MustNew(owner.ID)})
 		require.NoError(t, err)
 		require.Equal(t, int64(1), n)
 
 		got, err := auth.AuthenticateWorkerBearer(ctx, st, hubtestutil.TestSecretHasher(), "Bearer "+leavingToken)
-		require.NoError(t, err, "a deregistering worker keeps its calls until it is told to stop")
-		assert.Equal(t, leaving.ID, got.ID)
+		assert.ErrorIs(t, err, auth.ErrWorkerDeleted, "deregistering revokes the bearer token immediately")
+		assert.Nil(t, got)
+		assert.True(t, auth.IsWorkerCredentialError(err))
 	})
 
 	t.Run("refuses a deleted worker", func(t *testing.T) {

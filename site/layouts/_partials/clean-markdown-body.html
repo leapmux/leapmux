@@ -229,4 +229,8 @@
 {{- /* Clean stray leading indentation left by unwrapped HTML blocks outside fences. */ -}}
 {{- $body = replaceRE `\n{3,}` "\n\n" $body -}}
 {{- $body = strings.TrimSpace $body -}}
+{{- $dupTitle := printf "# %s" (strings.TrimSpace .Title) -}}
+{{- if or (eq $body $dupTitle) (strings.HasPrefix $body (printf "%s\n" $dupTitle)) -}}
+  {{- $body = strings.TrimSpace (strings.TrimPrefix $dupTitle $body) -}}
+{{- end -}}
 {{- return $body -}}

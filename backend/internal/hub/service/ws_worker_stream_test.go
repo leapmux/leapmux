@@ -99,17 +99,17 @@ func TestWorkerStream_ClosesADeletedWorkerWithItsReason(t *testing.T) {
 	assert.False(t, env.wMgr.OnlineForTrustedPath(worker.ID))
 }
 
-func TestWorkerStream_AdmitsADeregisteringWorker(t *testing.T) {
+func TestWorkerStream_RefusesADeregisteredWorkerWithWorkerDeleted(t *testing.T) {
 	t.Parallel()
 	env := setupRegKeyEnv(t)
 	worker := registerStreamWorker(t, env)
 	_, err := env.store.Workers().ForceDeregister(t.Context(), worker.ID)
 	require.NoError(t, err)
 	peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.token)
-	require.NoError(t, peer.Send(helloRequest(postQuantumHello(0x31))))
-	first, err := peer.Receive()
-	require.NoError(t, err)
-	require.NotNil(t, first.GetWorkerIdentity())
+	_, err = peer.Receive()
+	require.Error(t, err)
+	requireWorkerClose(t, err, websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonDeleted)
+	assert.False(t, env.wMgr.OnlineForTrustedPath(worker.ID))
 }
 
 func TestWorkerStream_RefusesAMalformedFrame(t *testing.T) {

@@ -16,7 +16,7 @@ layout: hextra-home
     <div class="lm-download-hero-eyebrow" id="lm-download-eyebrow">Latest release on GitHub</div>
     <h2 class="lm-download-hero-title" id="lm-download-title">Download LeapMux Desktop</h2>
     <p class="lm-download-hero-desc" id="lm-download-desc">
-      Includes the native desktop workspace, local solo mode, and bundled CLI on macOS (`.dmg`), Debian/Ubuntu (`.deb`), and Windows (`.msi`).
+      Includes the native desktop workspace, local solo mode, and bundled CLI on macOS (<code>.dmg</code>), Debian/Ubuntu (<code>.deb</code>), and Windows (<code>.msi</code>).
     </p>
     <div class="lm-download-hero-actions">
       <a class="lm-btn-primary" id="lm-download-primary" href="https://github.com/leapmux/leapmux/releases">Download from GitHub Releases</a>

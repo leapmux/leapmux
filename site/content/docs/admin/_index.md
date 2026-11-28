@@ -19,7 +19,7 @@ LeapMux exposes three administration surfaces. Choose the surface that matches w
 | **Network listeners** (live TCP/IPC status, solo extra addresses) | Yes (**Network access**) | `leapmux admin network status`, `settings set extra_listen_addresses` | — |
 | **Sign-in providers** (GitHub, Google, Apple, OIDC) | — | `leapmux admin idp` (add, list, enable, disable, rotate-secret, remove) | — |
 | **Hub-wide apps** (register, verify, elevation, retire) | Yes (**Hub-wide Apps**) | `leapmux admin app` | — |
-| **Users** (create, update, admin role, password reset, delete) | Yes (**Users**) | `leapmux admin user` (elevated CLI credential) | `create-admin` (first admin only), `reset-password` (break-glass) |
+| **Users** (create, update, admin role, password reset, delete) | — | `leapmux admin user` (elevated CLI credential) | `create-admin` (first admin only), `reset-password` (break-glass) |
 | **Sessions & tokens** (sessions, API tokens, delegation tokens) | — | `leapmux admin session`, `api-token`, `delegation-token` | — |
 | **Workers & registration keys** | Sidebar (**Workers**) | `leapmux admin worker`, `worker reg-key` | — |
 | **Encryption keys & pepper** (`encryption.key`) | — | — | `leapmux recover encryption-key` (`rotate`, `reencrypt`, `remove`, `rotate-pepper`) |

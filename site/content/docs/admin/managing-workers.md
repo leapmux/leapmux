@@ -162,7 +162,7 @@ leapmux daemon worker stop
 leapmux daemon worker deregister
 ```
 
-When deregistered online, a standalone Worker shuts down gracefully, clears `state.json`, and exits while keeping `worker.db`. Run `leapmux daemon worker disable` afterward if you want to remove the OS service.
+Deregistration immediately marks the Worker `deleted` and rejects its bearer token on every Hub endpoint. An online standalone Worker receives a `DEREGISTER` instruction, clears `state.json`, and exits while keeping `worker.db`. An offline Worker that reconnects within the 7-day soft-delete retention window receives `worker_deleted`, clears `state.json`, and exits without ever holding a usable token. Run `leapmux daemon worker disable` afterward if you want to remove the OS service.
 
 ## TOFU key pinning
 
@@ -210,7 +210,7 @@ Administrators manage all Workers and registration keys on a running Hub with `l
 
 | Command | Purpose |
 | --- | --- |
-| `leapmux admin worker list` | List Workers. Filters: `--user` (username, `username:<name>`, `id:<id>`, or unique 4+ character ID prefix), `--status` (`active`, `deregistering`, `deleted`, `all`; default `active`). |
+| `leapmux admin worker list` | List Workers. Filters: `--user` (username, `username:<name>`, `id:<id>`, or unique 4+ character ID prefix), `--status` (`active`, `deleted`, `all`; default `active`). |
 | `leapmux admin worker get <worker>` | Inspect one Worker's details (includes soft-deleted entries for audit). |
 | `leapmux admin worker deregister <worker>` | Force-deregister a Worker. |
 | `leapmux admin worker reg-key list` | List live registration keys (`--include-expired` includes revoked/expired keys). |
@@ -218,6 +218,19 @@ Administrators manage all Workers and registration keys on a running Hub with `l
 | `leapmux admin worker reg-key purge-expired` | Hard-delete expired or revoked registration keys. |
 
 `leapmux admin` deliberately has no `reg-key create`: registration keys are minted only by the owning user (via the **Register worker** dialog or `leapmux worker key create`).
+
+## Tunnels (desktop app)
+
+In **LeapMux Desktop**, right-click any online Worker you own in the sidebar and choose **Add tunnel...** (or **Delete all tunnels...**) to reach TCP services through that Worker's encrypted channel:
+
+- **Port forward:** maps a local loopback port to a target address and port reachable from the Worker (`targetAddr` defaults to `127.0.0.1`; `bindPort` defaults to `targetPort`; valid ports are `1`–`65535`).
+- **SOCKS5 proxy:** exposes a local SOCKS5 listener (default `127.0.0.1:1080`) that dials destinations from the Worker's network.
+
+Security invariants for desktop tunnels:
+
+- **Loopback bind only:** The bind address must be a loopback address (`127.0.0.1` or `::1`) because the local tunnel listener is unauthenticated. Non-loopback bind addresses such as `0.0.0.0` are rejected.
+- **Sign-out teardown:** In remote-Hub mode, signing out immediately terminates all active desktop tunnels.
+- **Shared key pin:** Desktop tunnels share the account's browser Worker key pin and stop before dialing if the Worker's key changes (see [Cryptography & Key Architecture — Tunnel key trust](/docs/admin/cryptography/#tunnel-key-trust)).
 
 ## See also
 

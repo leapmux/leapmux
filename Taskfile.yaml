@@ -1713,13 +1713,13 @@ tasks:
     desc: Start the documentation site dev server with live reload (http://localhost:1313)
     cmds:
       # Build once first so Pagefind, /vendor/asciinema-player/*, and
-      # /config-reference.json exist in site/public/ when hugo server serves
-      # them with --renderToDisk.
+      # /config-reference.json exist in site/public/ before hugo server
+      # serves from disk (the default in Hugo 0.170+).
       - task: site
       # Live-reloading Hugo server via the go tool dependency (see site/go.mod).
       # GOWORK=off isolates the site module from the root go.work, and hugo
       # server overrides baseURL with the local address so links work locally.
-      - cd site && GOWORK=off go tool hugo server --buildDrafts --renderToDisk
+      - cd site && GOWORK=off go tool hugo server --buildDrafts --disableFastRender
 
   build-desktop-sidecar:
     desc: Build desktop sidecar binary

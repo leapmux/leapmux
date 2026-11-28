@@ -3,9 +3,6 @@ title: "CLI Guide"
 description: "Drive LeapMux from scripts, CI jobs, or coding agents: authenticate, select targets, wait for agents and terminals without polling, stream events, and open Worker tunnels."
 type: docs
 weight: 8
-aliases:
-  - /docs/using/control-cli/
-  - /docs/using/cli-automation/
 ---
 
 The `leapmux` CLI (also available as `lmx`) drives any running LeapMux instance from a shell, a CI pipeline, or another coding agent. It manages workspaces, tabs, layouts, coding agents, terminals, files, git worktrees, live events, and Worker TCP tunnels over the same end-to-end encrypted (E2EE) channels used by the web and desktop apps.
@@ -45,7 +42,7 @@ Pass `--device-name` to label the machine in [Connected Apps](/docs/using/accoun
 
 - **Solo mode over local IPC:** Commands talking to a local `solo` socket need no login. TCP connections require a normal login once the `solo` password is set.
 - **Persistent defaults:** Save default `--hub`, `--worker`, `--workspace`, and `--provider` outside a tab with `leapmux context use` (inspect with `context show`, reset with `context clear`). Run `leapmux doctor` to verify daemons, connectivity, credentials, and online Workers.
-- **Credential storage:** Stored one file per Hub (`<scheme>_<host>.json`, mode `0600`) in the first matching location: `LEAPMUX_CONTROL_CONFIG_DIR`, `$XDG_CONFIG_HOME/leapmux/control`, `~/.config/leapmux/control` (Unix/macOS), or `%APPDATA%\leapmux\control` (Windows). Set `LEAPMUX_CONTROL_CONFIG_DIR` in CI to isolate job credentials.
+- **Credential storage:** Stored one file per Hub (`credentials/<scheme>_<host>.json`, mode `0600`) under the first matching location: `LEAPMUX_CONTROL_CONFIG_DIR`, `$XDG_CONFIG_HOME/leapmux/control`, `~/.config/leapmux/control` (Unix/macOS), or `%APPDATA%\leapmux\control` (Windows). Set `LEAPMUX_CONTROL_CONFIG_DIR` in CI to isolate job credentials.
 
 ## Command syntax, aliases, and completions
 
@@ -164,7 +161,7 @@ Whenever remote control is enabled on a Worker, every spawned agent and terminal
 Workers with remote control disabled omit these variables, and Linux `.AppImage` builds do not bundle a linked CLI binary for `LEAPMUX_CONTROL_CLI`. Inside any managed tab, `leapmux admin ...` is refused to prevent agents from performing Hub administration.
 {{< /callout >}}
 
-The Worker prepends its linked `leapmux`/`lmx` directory onto `PATH`, and newer `leapmux` binaries automatically hand off control commands to `$LEAPMUX_CONTROL_CLI` so commands match the Worker's protocol version. Local-only commands skip hand-off (`context`, `guide`, `skill` without `--worker`, and `auth list|use`); set `LEAPMUX_NO_CONTROL_HANDOFF=1` to disable CLI hand-off explicitly. Workspace and tile IDs resolve dynamically from `LEAPMUX_CONTROL_TAB_ID`, so moving a tab never breaks scripts.
+The Worker prepends its linked `leapmux`/`lmx` directory onto `PATH`, and newer `leapmux` binaries automatically hand off control commands to `$LEAPMUX_CONTROL_CLI` so commands match the Worker's protocol version. Local-only commands skip hand-off (`daemon`, `up`, `down`, `recover`, `commands`, `completion`, `version`, bare `help`, `context`, `guide`, `skill` without `--worker`, and `auth list|use`); set `LEAPMUX_NO_CONTROL_HANDOFF=1` to disable CLI hand-off explicitly. Workspace and tile IDs resolve dynamically from `LEAPMUX_CONTROL_TAB_ID`, so moving a tab never breaks scripts.
 
 ## Worker connections, key pins, and tunnels
 

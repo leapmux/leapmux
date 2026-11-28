@@ -55,16 +55,16 @@ Propagation classes:
 | `secure_cookies` | boolean | `false` | `hot` (enabling switches to `__Host-` cookies and signs out plain-cookie sessions; disabling keeps existing `__Host-` sessions valid) |
 | `public_url` | string | *(empty)* | `hot` (scheme + host [+ port] only; no path, query, or fragment) |
 | `trusted_proxy_ranges` | JSON array of IP selectors or provider presets | `[]` | `hot` (max `32` entries) |
-| `extra_listen_addresses` | `{"addresses": [...]}` | `{"addresses": []}` | `hot` (solo mode only; max `8` addresses; no hostnames or port `0`) |
+| `extra_listen_addresses` | `{"addresses": [...]}` | `{"addresses": []}` | `hot` (solo mode only, up to `8` addresses, and no hostnames or port `0`) |
 | `smtp` | `{"host","port","username","from_address","tls_mode"}` + secret `{"password"}` | disabled | `hot` (configuring both `host` and `from_address` enables email verification for new non-admin sign-ups, account recovery, and Worker registration emails) |
 | `timeouts` | `{"api_seconds","agent_startup_seconds"}` | `10` / `300` | `hot` (`agent_startup_seconds` applies only to the bundled Worker in `solo`/`dev` when that Worker starts; standalone Workers use `--agent-startup-timeout`) |
 | `limits` | `{"max_connections_per_user","max_workers_per_user"}` | `32` / `64` | `hot` (`max_connections_per_user`: `0` = unlimited or `>= 4`, values `1`–`3` are rejected; `max_workers_per_user`: `0` = unlimited or `>= 1`) |
-| `mail_limits` | `{"failure_cooldown_seconds","recipient_max","recipient_window_seconds"}` | `10` / `10` / `3600` | `hot` (`failure_cooldown_seconds`: `0`–`60`; `recipient_max`: `0`–`1000`, `0` = unlimited; `recipient_window_seconds`: `60`–`86400`) |
+| `mail_limits` | `{"failure_cooldown_seconds","recipient_max","recipient_window_seconds"}` | `10` / `10` / `3600` | `hot` (`failure_cooldown_seconds` `0`–`60`, `recipient_max` `0`–`1000` with `0` = unlimited, and `recipient_window_seconds` `60`–`86400`) |
 | `max_message_size_bytes` | integer | `16777216` (16 MiB) | `restart` (`65519` bytes to `67108864` / 64 MiB) |
 | `queue_budget` | `{"relay_bytes","worker_bytes","userevents_bytes"}` | `0` = auto-size | `restart` (`0` auto-sizes from memory limit, capped at 8 GiB per pool; non-zero values must meet the per-pool floor) |
 | `open_app_registration` | boolean | `false` | `hot` |
 | `captcha.*` | `captcha.enabled`, `captcha.selected`, `captcha.altcha`, `captcha.recaptcha_v3`, `captcha.turnstile` | ALTCHA enabled, `PBKDF2/SHA-256`, cost `10000`, 20m expiry | `hot` |
-| `rate_limit.*` | `elevation`, `email_change`, `login_anonymous`, `oauth_anonymous`, `solo_password_setup` | `5/15m`, `6/15m`, `10/15m`, `600/10m`, `10/15m` | `hot` (`max_attempts`: `1`–`1000`; `window_seconds`: `60`–`86400`; `solo_password_setup` is active in solo mode) |
+| `rate_limit.*` | `elevation`, `email_change`, `login_anonymous`, `oauth_anonymous`, `solo_password_setup` | `5/15m`, `6/15m`, `10/15m`, `600/10m`, `10/15m` | `hot` (`max_attempts` `1`–`1000` and `window_seconds` `60`–`86400`. `solo_password_setup` is active in solo mode.) |
 
 {{< callout type="info" >}}
 **SMTP-enable transition:** When an administrator configures `smtp` on an existing Hub, non-admin accounts that signed up earlier with `email_verified=false` are prompted to verify via `/verify-email` on their next request — no migration needed. Administrators stay exempt at sign-in, though unverified addresses cannot receive recovery links.
@@ -197,7 +197,7 @@ The Hub exposes **21** `leapmux_*` Prometheus metrics at `/metrics`. Block `/met
 | --- | --- | --- | --- |
 | `leapmux_userevents_subscribe_total` | Counter | `mode`, `reason` | Total `/ws/userevents` subscribe attempts by bootstrap mode and reason (failed connects record `mode="invalid"`). |
 | `leapmux_userevents_subscribe_duration_seconds` | Histogram | `mode` | Latency to resolve access, register, and build the `/ws/userevents` bootstrap frame. |
-| `leapmux_userevents_frames_dropped_total` | Counter | `phase`, `bound` | User-event frames a subscriber could not accept. `bound="frames"` indicates a slow client; `bound="bytes"` indicates transient pool exhaustion; `bound="capacity"` indicates a single frame larger than `userevents_bytes` (raise `userevents_bytes`). |
+| `leapmux_userevents_frames_dropped_total` | Counter | `phase`, `bound` | User-event frames a subscriber could not accept. `phase` records the recovery action: `park` falls back to a full snapshot instead of a delta, `live` forces a reconnect, and `bootstrap` refuses the connect. `bound` records the limit hit: `frames` indicates a slow client, `bytes` indicates transient pool exhaustion, and `capacity` indicates a single frame larger than `userevents_bytes` (raise `userevents_bytes`). |
 
 ### Outbound queue pool metrics
 

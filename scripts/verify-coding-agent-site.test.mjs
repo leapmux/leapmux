@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
-import { codingAgentMatrixDimensions, findOrphanH2Headings, verifyBuiltSiteArtifacts, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker } from './verify-coding-agent-site.mjs'
+import { codingAgentMatrixDimensions, findDuplicateTopH1, findOrphanH2Headings, verifyBuiltSiteArtifacts, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker, verifyInternalAnchors, verifyReverseProxySamples } from './verify-coding-agent-site.mjs'
 
 const require = createRequire(new URL('../frontend/package.json', import.meta.url))
 const { JSDOM } = require('jsdom')
@@ -913,6 +913,8 @@ describe('verifyBuiltSiteArtifacts', () => {
         '<video autoplay muted loop playsinline></video>',
       ].join('\n'))
       writeFileSync(join(dir, 'docs/admin/index.html'), '<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"TechArticle"},{"@type":"BreadcrumbList"}]}</script>')
+      mkdirSync(join(dir, 'docs/admin/security'), { recursive: true })
+      writeFileSync(join(dir, 'docs/admin/security/index.html'), '<meta http-equiv="refresh" content="0; url=https://leapmux.dev/docs/admin/security-and-auth/">')
       writeFileSync(join(dir, 'docs/getting-started/concepts/index.html'), '<script src="https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js"></script>')
       writeFileSync(join(dir, '_headers'), '/*.md\n  Content-Type: text/markdown\n  Vary: Accept\n\n/skills/*\n  Content-Type: text/markdown\n')
       const errors = verifyBuiltSiteArtifacts(dir, checklist)
@@ -929,10 +931,30 @@ describe('verifyBuiltSiteArtifacts', () => {
       expect(errors).toContain('index.html: missing generated asciinema-player terminal theme from contracts/theme-default.json')
       expect(errors).toContain('index.html: external CDN asset https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css lacks sha384 integrity')
       expect(errors).toContain('docs/admin/index.html: JSON-LD @type is "TechArticle", expected "CollectionPage"')
+      expect(errors).toContain('docs/admin/security/index.html: contains meta-refresh redirect (Hugo alias); pre-release docs must not keep old URLs working')
       expect(errors).toContain('docs/getting-started/concepts/index.html: external CDN asset https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js lacks sha384 integrity')
       expect(errors).toContain('_headers: must define disjoint /*.txt and /*.md rules')
       expect(errors).toContain('_headers: contains overlapping /skills/* or /agent-guide.md rule that duplicates Content-Type on Cloudflare')
       expect(errors).toContain('_headers: must not emit Vary: Accept for static assets without content negotiation')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects duplicate H1 in download/index.md and broken backticks in download, reverse-proxy, and glossary HTML', () => {
+    const dir = createMockPublicDir()
+    try {
+      mkdirSync(join(dir, 'docs/reference/glossary'), { recursive: true })
+      writeFileSync(join(dir, 'download/index.md'), '# Download LeapMux\n\n# Download LeapMux\n')
+      writeFileSync(join(dir, 'download/index.html'), '<p id="lm-download-desc">macOS (`.dmg`)</p>')
+      writeFileSync(join(dir, 'docs/admin/reverse-proxy/index.html'), '<td><code>!Path(\\</code>/metrics`)</td>')
+      writeFileSync(join(dir, 'docs/reference/glossary/index.html'), '<p><code>Ctrl+\\`` (or </code>Ctrl)</p>')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('download/index.md: duplicates top-level H1 "Download LeapMux" at line 3')
+      expect(errors).toContain('download/index.html: #lm-download-desc contains unrendered Markdown backticks')
+      expect(errors).toContain('docs/admin/reverse-proxy/index.html: broken backslash-escaped backtick code span in Traefik row')
+      expect(errors).toContain('docs/reference/glossary/index.html: broken backslash-escaped backtick code span in Quake-mode terminal')
     }
     finally {
       rmSync(dir, { recursive: true, force: true })
@@ -1073,6 +1095,72 @@ describe('table-filter.js behavior', () => {
     }
     finally {
       dom.window.close()
+    }
+  })
+})
+
+describe('docs content regression guards', () => {
+  it('detects duplicate top-level H1 headings outside code fences', () => {
+    expect(findDuplicateTopH1('# Download LeapMux\n\n# Download LeapMux\n')).toEqual([
+      { line: 3, heading: 'Download LeapMux' },
+    ])
+    expect(findDuplicateTopH1('# Title\n\n```md\n# Title\n```\n\n~~~md\n# Title\n~~~\n')).toEqual([])
+  })
+
+  it('verifies shipped reverse-proxy sample configs strip Forwarded and decode HAProxy /metrics', () => {
+    const dir = resolve(import.meta.dirname, '../site/content/docs/admin/reverse-proxy')
+    expect(verifyReverseProxySamples(dir)).toEqual([])
+  })
+
+  it('rejects reverse-proxy configs that omit Forwarded stripping, append X-Forwarded-For, or skip HAProxy url_dec', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'leapmux-proxy-test-'))
+    try {
+      writeFileSync(join(dir, 'nginx.conf'), 'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n')
+      writeFileSync(join(dir, 'haproxy.cfg'), 'option forwardfor\nhttp-request deny deny_status 404 if { path /metrics }\n')
+      writeFileSync(join(dir, 'apache.conf'), 'RequestHeader set X-Forwarded-Proto "https"\n')
+      writeFileSync(join(dir, 'Caddyfile'), 'reverse_proxy 127.0.0.1:4327\n')
+      writeFileSync(join(dir, 'traefik-dynamic.yml'), 'http:\n  routers:\n    leapmux:\n      service: leapmux\n')
+      const errors = verifyReverseProxySamples(dir)
+      expect(errors).toContain('reverse-proxy/nginx.conf: must strip client-supplied Forwarded header')
+      expect(errors).toContain('reverse-proxy/nginx.conf: must set X-Forwarded-For from $remote_addr instead of $proxy_add_x_forwarded_for')
+      expect(errors).toContain('reverse-proxy/haproxy.cfg: must strip client-supplied Forwarded header')
+      expect(errors).toContain('reverse-proxy/haproxy.cfg: must set X-Forwarded-For from %[src] instead of appending with option forwardfor')
+      expect(errors).toContain('reverse-proxy/haproxy.cfg: must decode percent-encoded paths (path,url_dec /metrics) before denying /metrics')
+      expect(errors).toContain('reverse-proxy/apache.conf: must unset client-supplied Forwarded header')
+      expect(errors).toContain('reverse-proxy/apache.conf: must unset client-supplied X-Forwarded-For header')
+      expect(errors).toContain('reverse-proxy/Caddyfile: must strip client-supplied Forwarded header with header_up -Forwarded')
+      expect(errors).toContain('reverse-proxy/traefik-dynamic.yml: must attach a strip-forwarded middleware clearing Forwarded')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects broken internal #anchor links and accepts valid ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'leapmux-anchors-test-'))
+    try {
+      mkdirSync(join(dir, 'docs/a'), { recursive: true })
+      mkdirSync(join(dir, 'docs/b'), { recursive: true })
+      writeFileSync(
+        join(dir, 'docs/a/index.html'),
+        [
+          '<h2 id=ok-anchor>OK</h2>',
+          '<a href="/docs/b/#good">ok</a>',
+          '<a href="/docs/b/#missing">bad</a>',
+          '<a href="/docs/gone/#sec">missing page</a>',
+          '<a href="#ok-anchor">self</a>',
+          '<a href="#">empty fragment</a>',
+          '<a href="https://example.com/#external">external</a>',
+        ].join(''),
+      )
+      writeFileSync(join(dir, 'docs/b/index.html'), '<h2 id="good">Good</h2>')
+      expect(verifyInternalAnchors(dir)).toEqual([
+        '/docs/a/: broken internal anchor link "/docs/b/#missing" (missing #missing on /docs/b/)',
+        '/docs/a/: broken internal anchor link "/docs/gone/#sec" (target page /docs/gone/ not found)',
+      ])
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

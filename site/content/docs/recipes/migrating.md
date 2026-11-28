@@ -5,7 +5,7 @@ type: docs
 weight: 5
 ---
 
-If you already juggle coding agents in `tmux`, Orca, or Conductor, your core habits carry over cleanly to LeapMux. LeapMux focuses on self-hosted end-to-end encryption behind network address translation (NAT) with zero inbound ports, native desktop and browser access across Linux, Windows, and macOS, {{< agent-provider-count >}} providers with an end-to-end verified feature matrix, and a built-in control command-line interface (CLI) with Agent Skills.
+If you already run multiple coding agents in `tmux`, Orca, or Conductor, the same workflows map directly to LeapMux. LeapMux focuses on self-hosted end-to-end encryption behind network address translation (NAT) with zero inbound ports, native desktop and browser access across Linux, Windows, and macOS, {{< agent-provider-count >}} providers with an end-to-end verified feature matrix, and a built-in control command-line interface (CLI) with Agent Skills.
 
 ## Concept mapping
 

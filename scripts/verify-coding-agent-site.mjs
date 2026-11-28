@@ -435,14 +435,14 @@ export function verifyCodingAgentSite(html, features, checklist) {
   return errors
 }
 
-/** Walk a directory tree and return all matching files. */
-function walkMarkdownFiles(dir) {
+/** Walk a directory tree and return all files ending with the given extension. */
+function walkFilesByExtension(dir, extension) {
   const out = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
     if (entry.isDirectory())
-      out.push(...walkMarkdownFiles(full))
-    else if (entry.name.endsWith('.md'))
+      out.push(...walkFilesByExtension(full, extension))
+    else if (entry.name.endsWith(extension))
       out.push(full)
   }
   return out
@@ -522,6 +522,158 @@ const EXPECTED_ARTICLE_SECTIONS = [
   { file: 'docs/admin/configuration/index.html', expected: 'Administration' },
   { file: 'docs/recipes/parallel-agents/index.html', expected: 'Workflow Recipes' },
 ]
+
+/** Find any second top-level `# <Title>` heading that duplicates the opening H1 outside fenced code blocks. */
+export function findDuplicateTopH1(markdown) {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  let fence = null
+  let firstH1 = null
+  const duplicates = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/)
+    if (fenceMatch) {
+      const marker = fenceMatch[1]
+      if (!fence) {
+        fence = { char: marker[0], length: marker.length }
+      }
+      else if (marker[0] === fence.char && marker.length >= fence.length) {
+        fence = null
+      }
+      continue
+    }
+    if (fence)
+      continue
+
+    const match = line.match(/^#\s+(\S.*)$/)
+    if (!match)
+      continue
+    const heading = match[1].trim()
+    if (firstH1 === null) {
+      firstH1 = heading
+    }
+    else if (heading === firstH1) {
+      duplicates.push({ line: i + 1, heading })
+    }
+  }
+  return duplicates
+}
+
+/** Verify the five shipped reverse-proxy sample configs strip Forwarded headers and block percent-encoded /metrics. */
+export function verifyReverseProxySamples(reverseProxyDir) {
+  const errors = []
+  const readSample = name => readFileSync(resolve(reverseProxyDir, name), 'utf8')
+
+  const nginx = readSample('nginx.conf')
+  if (!/proxy_set_header\s+Forwarded\s+""\s*;/.test(nginx))
+    errors.push('reverse-proxy/nginx.conf: must strip client-supplied Forwarded header')
+  if (nginx.includes('$proxy_add_x_forwarded_for') || !/proxy_set_header\s+X-Forwarded-For\s+\$remote_addr\s*;/.test(nginx))
+    errors.push('reverse-proxy/nginx.conf: must set X-Forwarded-For from $remote_addr instead of $proxy_add_x_forwarded_for')
+
+  const haproxy = readSample('haproxy.cfg')
+  if (!/http-request\s+del-header\s+Forwarded\b/.test(haproxy))
+    errors.push('reverse-proxy/haproxy.cfg: must strip client-supplied Forwarded header')
+  if (/^\s*option\s+forwardfor\b/m.test(haproxy) || !/http-request\s+set-header\s+X-Forwarded-For\s+%\[src\]/.test(haproxy))
+    errors.push('reverse-proxy/haproxy.cfg: must set X-Forwarded-For from %[src] instead of appending with option forwardfor')
+  if (!/\{\s*path,url_dec\s+\/metrics\s*\}/.test(haproxy))
+    errors.push('reverse-proxy/haproxy.cfg: must decode percent-encoded paths (path,url_dec /metrics) before denying /metrics')
+
+  const apache = readSample('apache.conf')
+  if (!/RequestHeader\s+unset\s+Forwarded\b/.test(apache))
+    errors.push('reverse-proxy/apache.conf: must unset client-supplied Forwarded header')
+  if (!/RequestHeader\s+unset\s+X-Forwarded-For\b/.test(apache))
+    errors.push('reverse-proxy/apache.conf: must unset client-supplied X-Forwarded-For header')
+
+  const caddy = readSample('Caddyfile')
+  if (!/header_up\s+-Forwarded\b/.test(caddy))
+    errors.push('reverse-proxy/Caddyfile: must strip client-supplied Forwarded header with header_up -Forwarded')
+
+  const traefik = readSample('traefik-dynamic.yml')
+  if (!/Forwarded:\s*""/.test(traefik) || !/middlewares:\s*\[[^\]]*strip-forwarded/.test(traefik))
+    errors.push('reverse-proxy/traefik-dynamic.yml: must attach a strip-forwarded middleware clearing Forwarded')
+
+  return errors
+}
+
+function collectHtmlIds(html) {
+  const ids = new Set()
+  const pattern = /\bid=(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`/]+))/gi
+  let match = pattern.exec(html)
+  while (match !== null) {
+    ids.add(match[1] ?? match[2] ?? match[3])
+    match = pattern.exec(html)
+  }
+  return ids
+}
+
+/** Verify every internal #fragment anchor in built HTML pages resolves to a real target element ID. */
+export function verifyInternalAnchors(publicDir) {
+  const htmlFiles = walkFilesByExtension(publicDir, '.html')
+  const pageIds = new Map()
+  const pageContents = new Map()
+
+  for (const file of htmlFiles) {
+    const rel = relative(publicDir, file).replace(/\\/g, '/')
+    const html = readFileSync(file, 'utf8')
+    if (/<meta\s+http-equiv=["']?refresh["']?\b/i.test(html))
+      continue
+    const route = rel === 'index.html'
+      ? '/'
+      : rel.endsWith('/index.html')
+        ? `/${rel.slice(0, -'index.html'.length)}`
+        : `/${rel}`
+    pageIds.set(route, collectHtmlIds(html))
+    pageContents.set(route, html)
+  }
+
+  const errors = []
+  const anchorTagPattern = /<a\s[^>]*>/gi
+  const hrefAttrPattern = /\shref=(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/i
+  for (const [route, html] of pageContents.entries()) {
+    let tagMatch = anchorTagPattern.exec(html)
+    while (tagMatch !== null) {
+      const hrefMatch = hrefAttrPattern.exec(tagMatch[0])
+      tagMatch = anchorTagPattern.exec(html)
+      if (!hrefMatch)
+        continue
+      const href = hrefMatch[1] ?? hrefMatch[2] ?? hrefMatch[3]
+      if (!href || !href.includes('#'))
+        continue
+      if (/^(?:https?:|mailto:|tel:|javascript:)/i.test(href))
+        continue
+      const [rawPath, rawFragment] = href.split('#', 2)
+      if (!rawFragment)
+        continue
+      let fragment = rawFragment
+      try {
+        fragment = decodeURIComponent(rawFragment)
+      }
+      catch {
+        // Keep raw fragment if percent-decoding fails.
+      }
+      let targetRoute = null
+      if (rawPath === '') {
+        targetRoute = route
+      }
+      else if (rawPath.startsWith('/')) {
+        targetRoute = rawPath.endsWith('/') || /\.[a-z0-9]+$/i.test(rawPath)
+          ? rawPath
+          : `${rawPath}/`
+      }
+      if (!targetRoute)
+        continue
+      const ids = pageIds.get(targetRoute)
+      if (!ids) {
+        errors.push(`${route}: broken internal anchor link ${JSON.stringify(href)} (target page ${targetRoute} not found)`)
+      }
+      else if (!ids.has(fragment)) {
+        errors.push(`${route}: broken internal anchor link ${JSON.stringify(href)} (missing #${fragment} on ${targetRoute})`)
+      }
+    }
+  }
+  return errors
+}
 
 /** Find H2 headings immediately followed by another H1/H2 heading or EOF (ignoring fenced code blocks). */
 export function findOrphanH2Headings(markdown) {
@@ -629,9 +781,19 @@ function readJsonLdType(html) {
 export function verifyBuiltSiteArtifacts(publicDir, checklist) {
   const errors = []
   const docsDir = resolve(publicDir, 'docs')
-  const mdFiles = walkMarkdownFiles(docsDir)
+  const mdFiles = walkFilesByExtension(docsDir, '.md')
   if (mdFiles.length === 0)
     errors.push('no generated Markdown companions found under site/public/docs/')
+
+  const metaTagPattern = /<meta\s[^>]*>/gi
+  const metaRefreshAttrPattern = /\shttp-equiv=["']?refresh["']?(?=[\s/>])/i
+  for (const htmlFile of walkFilesByExtension(docsDir, '.html')) {
+    const rel = relative(publicDir, htmlFile).replace(/\\/g, '/')
+    const html = readFileSync(htmlFile, 'utf8')
+    const metaTags = html.match(metaTagPattern) ?? []
+    if (metaTags.some(tag => metaRefreshAttrPattern.test(tag)))
+      errors.push(`${rel}: contains meta-refresh redirect (Hugo alias); pre-release docs must not keep old URLs working`)
+  }
 
   for (const file of mdFiles) {
     const rel = relative(publicDir, file).replace(/\\/g, '/')
@@ -681,6 +843,35 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
       errors.push(`${rel}: leaks raw <script> tag`)
     if (/<div\b/i.test(text))
       errors.push(`${rel}: leaks raw <div> tag`)
+    for (const dup of findDuplicateTopH1(text))
+      errors.push(`${rel}: duplicates top-level H1 ${JSON.stringify(dup.heading)} at line ${dup.line}`)
+  }
+
+  const downloadHtmlPath = resolve(publicDir, 'download/index.html')
+  if (existsSync(downloadHtmlPath)) {
+    const downloadDom = new JSDOM(readFileSync(downloadHtmlPath, 'utf8'))
+    try {
+      const descText = downloadDom.window.document.getElementById('lm-download-desc')?.textContent ?? ''
+      if (descText.includes('`'))
+        errors.push('download/index.html: #lm-download-desc contains unrendered Markdown backticks')
+    }
+    finally {
+      downloadDom.window.close()
+    }
+  }
+
+  const reverseProxyHtmlPath = resolve(publicDir, 'docs/admin/reverse-proxy/index.html')
+  if (existsSync(reverseProxyHtmlPath)) {
+    const reverseProxyHtml = readFileSync(reverseProxyHtmlPath, 'utf8')
+    if (reverseProxyHtml.includes('<code>!Path(\\</code>'))
+      errors.push('docs/admin/reverse-proxy/index.html: broken backslash-escaped backtick code span in Traefik row')
+  }
+
+  const glossaryHtmlPath = resolve(publicDir, 'docs/reference/glossary/index.html')
+  if (existsSync(glossaryHtmlPath)) {
+    const glossaryHtml = readFileSync(glossaryHtmlPath, 'utf8')
+    if (glossaryHtml.includes('<code>Ctrl+\\``'))
+      errors.push('docs/reference/glossary/index.html: broken backslash-escaped backtick code span in Quake-mode terminal')
   }
 
   const faqMd = readFileSync(resolve(publicDir, 'docs/reference/faq/index.md'), 'utf8')
@@ -840,6 +1031,8 @@ if (import.meta.main) {
   const homeHTML = readFileSync(resolve(publicDir, 'index.html'), 'utf8')
   errors.push(...verifyCodingAgentTicker(homeHTML, checklist).map(error => `home: ${error}`))
   errors.push(...verifyBuiltSiteArtifacts(publicDir, checklist))
+  errors.push(...verifyReverseProxySamples(resolve(ROOT, 'site/content/docs/admin/reverse-proxy')))
+  errors.push(...verifyInternalAnchors(publicDir))
   for (const error of errors)
     console.error(error)
   if (errors.length) {
