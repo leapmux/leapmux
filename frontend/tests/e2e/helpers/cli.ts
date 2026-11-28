@@ -69,6 +69,7 @@ const E2E_CLI_SCOPES = [
   'admin:users',
   'admin:settings',
   'admin:workers',
+  'admin:apps',
 ]
 
 /**
@@ -362,11 +363,11 @@ export async function runCLIText(cfg: CLIConfigDir, args: string[], options?: {
   allowNonZero?: boolean
 }): Promise<CLITextResult> {
   const { binaryPath } = getGlobalState()
-  const env = scrubLeapMuxEnv({
-    ...process.env,
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
     ...options?.env,
     LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
-  })
+  }
   const cliArgs = ['--hub', cfg.hubURL, ...args]
   return execTextCLI(binaryPath, cliArgs, env, options?.cwd, options?.allowNonZero ?? false)
 }
@@ -381,11 +382,11 @@ export async function runCLILocal(args: string[], options?: {
 }): Promise<unknown> {
   const { binaryPath } = getGlobalState()
   const configDir = options?.configDir ?? createTestDirectory('leapmux-cli-local-')
-  const env = scrubLeapMuxEnv({
-    ...process.env,
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
     ...options?.env,
     LEAPMUX_CONTROL_CONFIG_DIR: configDir,
-  })
+  }
   const cliArgs = ['--json', ...args]
   try {
     const { stdout } = await execFileAsync(binaryPath, cliArgs, {
@@ -421,11 +422,11 @@ export async function runCLILocalText(args: string[], options?: {
 }): Promise<CLITextResult> {
   const { binaryPath } = getGlobalState()
   const configDir = options?.configDir ?? createTestDirectory('leapmux-cli-local-text-')
-  const env = scrubLeapMuxEnv({
-    ...process.env,
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
     ...options?.env,
     LEAPMUX_CONTROL_CONFIG_DIR: configDir,
-  })
+  }
   return execTextCLI(binaryPath, args, env, options?.cwd, options?.allowNonZero ?? false)
 }
 
@@ -478,11 +479,11 @@ export function spawnCLILive(
 ): LiveCLIProcess {
   const { binaryPath } = getGlobalState()
   const configDir = cfg?.path ?? options?.env?.LEAPMUX_CONTROL_CONFIG_DIR ?? createTestDirectory('leapmux-cli-live-')
-  const env = scrubLeapMuxEnv({
-    ...process.env,
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
     ...options?.env,
     LEAPMUX_CONTROL_CONFIG_DIR: configDir,
-  })
+  }
   const cliArgs: string[] = []
   if (cfg)
     cliArgs.push('--hub', cfg.hubURL)
@@ -569,11 +570,11 @@ export function startControlEventStream(cli: CLIConfigDir, args: string[]) {
 
 function controlProcess(cfg: CLIConfigDir, args: string[], overrides?: Record<string, string>) {
   const { binaryPath } = getGlobalState()
-  const env = scrubLeapMuxEnv({
-    ...process.env,
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
     ...overrides,
     LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
-  })
+  }
   // The global flags precede the command so they never follow a `--` in args.
   const cliArgs = [
     '--hub',
