@@ -2009,3 +2009,111 @@ func TestToolTranscript_ExpiredStreamDoesNotBlockTheNewLease(t *testing.T) {
 	assert.Equal(t, 2, child.MessageCount(), "the prefix must not repeat")
 	assert.Equal(t, 1, effects)
 }
+
+func TestModelProgressResetChildToolTranscriptRunsOrderedEffectsWithoutDeadlock(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(raw), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	wrapped := agent.NewModelProgressResetSink(transcript)
+
+	child := wrapped.ChildSink("child-1")
+	rawChild := raw.Child("child-1")
+	child.UpdateSessionID("native-child")
+	receipt := agent.NativeInputReceipt{SessionID: "native-child", InputID: "input-1"}
+
+	require.NoError(t, child.BindNativeInputTurn(receipt, "2"))
+	require.NoError(t, child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+		Original:       []byte(`{"type":"assistant/message","text":"done"}`),
+		AgentSessionID: "native-child",
+		IdempotencyKey: "session-event:1:block:0",
+	}, agent.SpanInfo{}))
+	require.NoError(t, child.SetNativeControlInputs(agent.NativeControlInputs{
+		SessionID:  "native-child",
+		RequestID:  "req-1",
+		InstanceID: "inst-1",
+		InputIDs:   []string{"input-1"},
+	}))
+	require.NoError(t, child.PublishNativeReplyTurn(agent.NativeReplyTurn{
+		SessionID: "native-child",
+		TurnID:    "2",
+		Outcome:   leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Items:     []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "session-event:1:block:0"}},
+		Inputs:    []agent.NativeReplyBoundary{{InputID: "input-1", AfterOrdinal: 1}},
+	}))
+	child.SetTurnState(agent.TurnState{}, 1)
+	require.NoError(t, child.RetractMessagesByIdempotencyKey(agent.MessageContent{AgentSessionID: "native-child"}, []string{"session-event:1:block:0"}))
+
+	assert.False(t, rawChild.OutputQueue().HasPending())
+	require.Len(t, rawChild.NativeReplyTurns(), 1)
+	assert.Equal(t, "2", rawChild.NativeReplyTurns()[0].TurnID)
+	assert.Equal(t, 1, rawChild.MessageCount())
+}
+
+type retainSpanChildSink struct {
+	*agenttest.Sink
+	retainCalled atomic.Int32
+	stateCalls   atomic.Int32
+}
+
+func (s *retainSpanChildSink) AcquireChildSink(childID string) agent.ChildSinkLease {
+	lease := s.Sink.AcquireChildSink(childID)
+	lease.RetainTranscriptSpans = func() bool {
+		s.retainCalled.Add(1)
+		return true
+	}
+	return lease
+}
+
+func (s *retainSpanChildSink) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	s.stateCalls.Add(1)
+	return s.AcquireChildSink(childID)
+}
+
+func TestToolTranscriptWrapperContracts(t *testing.T) {
+	t.Parallel()
+
+	// WRAPPERS-1: DirectProviderServices(transcript) persists directly inside an active queue callback without ErrOutputInFlight.
+	raw := &agenttest.Sink{}
+	var q agent.OutputQueue
+	ordered := agent.NewOrderedProviderServices(&q, agent.NewProviderServices(raw))
+	transcript, _ := newTestToolTranscript(t, ordered, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	direct := agent.DirectProviderServices(transcript)
+	var directErr error
+	q.Append(agent.OutputWrite{Label: "inside queue", Run: func() error {
+		directErr = direct.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"direct":true}`)}, agent.SpanInfo{})
+		return nil
+	}})
+	require.NoError(t, q.Flush())
+	require.NoError(t, directErr)
+	require.Len(t, raw.Messages(), 1)
+
+	// WRAPPERS-2: Wrapping a Transcript with a different OutputQueue panics instead of building a broken wrapper.
+	assert.Panics(t, func() {
+		agent.NewOrderedProviderServices(&agent.OutputQueue{}, transcript)
+	})
+
+	// WRAPPERS-3: PersistLeapMuxNotification routes through PersistWorkerNotification on Transcript (respecting OutputQueue order).
+	plainRaw := &agenttest.Sink{PersistErr: assert.AnError}
+	plainTranscript, _ := newTestToolTranscript(t, agent.NewProviderServices(plainRaw), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	require.ErrorIs(t, plainTranscript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"first":true}`)}, agent.SpanInfo{}), assert.AnError)
+	plainTranscript.PersistLeapMuxNotification(map[string]interface{}{"type": "notice"})
+	assert.Empty(t, plainRaw.LeapMuxNotifications(), "PersistLeapMuxNotification must queue behind the failed head write")
+	plainRaw.PersistErr = nil
+	require.NoError(t, plainTranscript.OutputQueue().Flush())
+	require.Len(t, plainRaw.LeapMuxNotifications(), 1)
+
+	// WRAPPERS-4 & WRAPPERS-5: AcquireChildSink preserves RetainTranscriptSpans; AcquireChildStateSink wraps child in *Transcript.
+	spanSink := &retainSpanChildSink{Sink: &agenttest.Sink{}}
+	parentTranscript, _ := newTestToolTranscript(t, agent.NewProviderServices(spanSink), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	lease := parentTranscript.AcquireChildSink("child-a")
+	require.NotNil(t, lease.RetainTranscriptSpans)
+	assert.True(t, lease.RetainTranscriptSpans())
+	assert.EqualValues(t, 1, spanSink.retainCalled.Load())
+
+	stateLease := parentTranscript.AcquireChildStateSink("child-b")
+	require.NotNil(t, stateLease.Sink)
+	_, isTranscript := stateLease.Sink.(*Transcript)
+	assert.True(t, isTranscript, "AcquireChildStateSink must wrap child sink in *Transcript")
+	require.NotNil(t, stateLease.RetainTranscriptSpans)
+	assert.EqualValues(t, 1, spanSink.stateCalls.Load())
+}

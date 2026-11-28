@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -109,8 +108,11 @@ func TestZCodeControlIngress_KeepsTheFirstPlanWhenItsHandlerRunsLast(t *testing.
 			var payload zcodeControlRequestPayload
 			require.NoError(t, json.Unmarshal(published[0].Payload, &payload))
 			assert.Equal(t, "7", string(payload.WireID))
-			assert.Contains(t, string(payload.Request.Input), "# First plan")
-			assert.NotContains(t, string(payload.Request.Input), "# Repeated plan")
+			// The stored header carries only the questions. ReadControlRequest reads
+			// the plan from the native params, so the prompt states which request
+			// the Worker prepared.
+			assert.Equal(t, "# First plan", agenttest.ControlPromptOf(zcodeProvider{}, published[0].Payload).GetPlan().GetText())
+			assert.NotContains(t, string(published[0].Payload), "# Repeated plan")
 		})
 	}
 }
@@ -153,6 +155,37 @@ func TestZCodeControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	}
 }
 
+// The Worker refuses each answer to a stored request whose payload gives
+// another key than its publication (agent.StoredControlRequestAgrees), so the
+// key that the provider reads must be the key of each request that the agent
+// publishes: a permission, a user input, and the workspace-trust question,
+// whose key its session gives.
+func TestZCodeControlRequestKeyIsTheKeyOfEachPublication(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
+	a.HandleOutput(zcodeRequestLine(t, 8, contracts.ZCodeMethodRequestUserInput, `{
+		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
+		"input":{"plan":"# Welcome plan"},
+		"schema":{"interaction":"plan_approval","toolName":"ExitPlanMode"}
+	}`))
+	a.HandleOutput(zcodeAdmissionLine(t, 1, 1))
+	require.Equal(t, 3, sink.PublishedControlCount())
+	assert.Equal(t, providerkit.WorkspaceTrustRequestID("sess-1"), sink.LastPublishedControl().RequestID)
+	agenttest.AssertPublishedControlKeys(t, zcodeProvider{}, sink)
+
+	trust := sink.LastPublishedControl()
+	_, ok := zcodeProvider{}.ControlRequestKey(trust.Payload, "")
+	assert.False(t, ok, "a trust question of no session gives no key")
+	key, ok := zcodeProvider{}.ControlRequestKey(trust.Payload, "sess-2")
+	assert.True(t, ok)
+	assert.NotEqual(t, trust.RequestID, key, "the session decides the key of a trust question")
+}
+
+// ZCode states the permission reason as the prompt of a plan approval, so the
+// plan of the tool input wins over it. The approval shows the plan that the
+// Worker stores as the canonical plan, which a context-clear approval runs.
 func TestZCodePlanControlUsesNativeInputPlan(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
@@ -161,17 +194,31 @@ func TestZCodePlanControlUsesNativeInputPlan(t *testing.T) {
 		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
 		"prompt":"Tool ExitPlanMode requires user interaction",
 		"input":{"plan":"# Welcome plan"},
+		"questions":[{"header":"Plan","question":"Review this implementation plan.","options":[{"label":"Approve","value":"approve"}]}],
 		"schema":{"interaction":"plan_approval","toolName":"ExitPlanMode"}
 	}`))
-	var stored struct {
-		Request struct {
-			Input struct {
-				Plan string
-			}
-		}
-	}
-	require.NoError(t, json.Unmarshal(zcodeStoredPayload(t, sink), &stored))
-	assert.Equal(t, "# Welcome plan", stored.Request.Input.Plan)
+	assert.Equal(t, "# Welcome plan", agenttest.ControlPromptOf(zcodeProvider{}, zcodeStoredPayload(t, sink)).GetPlan().GetText())
+	require.Equal(t, 1, sink.PlanUpdateCount())
+	assert.Equal(t, "# Welcome plan", string(sink.LastPlanUpdate().Content))
+}
+
+// A plan approval whose tool input and context state no plan has none: the
+// prompt is the permission reason, so the Worker stores no canonical plan and
+// the approval shows no plan.
+func TestZCodePlanControlTakesNoPlanFromThePrompt(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{
+		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
+		"prompt":"Tool ExitPlanMode requires user interaction",
+		"input":{"allowedPrompts":[]},
+		"schema":{"interaction":"plan_approval","toolName":"ExitPlanMode"}
+	}`))
+	require.Len(t, sink.PublishedControls(), 1, "the approval still reaches the user")
+	assert.Empty(t, agenttest.ControlPromptOf(zcodeProvider{}, zcodeStoredPayload(t, sink)).GetPlan().GetText())
+	assert.Zero(t, sink.PlanUpdateCount(), "no canonical plan")
+	assert.Empty(t, sink.Messages(), "the request row exists to carry a plan, so a request with none writes no row")
 }
 
 func TestZCodeControlInputSupplementsThePersistedToolRequest(t *testing.T) {
@@ -246,9 +293,9 @@ func zcodeStoredPayload(t *testing.T, sink *agenttest.ControlSink) []byte {
 	return persisted[0].Payload
 }
 
-// zcodeAnswer builds the frontend's neutral answer envelope for a control request:
-// ControlBehaviorEnvelope, with the AskUserQuestion answers where the shared control
-// attaches them.
+// zcodeAnswer builds the neutral answer envelope for a control request:
+// ControlBehaviorEnvelope, with the AskUserQuestion answers where
+// providerkit.AskUserQuestionAnswers attaches them.
 func zcodeAnswer(t *testing.T, requestID, behavior, message string, answers map[string]string) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior}
@@ -293,14 +340,22 @@ type zcodeDecodedReply struct {
 	Result json.RawMessage `json:"result"`
 }
 
-// zcodeResolve runs the answer through the provider plugin and returns the frame the
-// worker would forward to the app-server's stdin.
+// zcodeStoredRequestID is the key under which the Worker stores the request
+// payload stored: the request_id that the agent publishes the request with.
+func zcodeStoredRequestID(t *testing.T, stored []byte) string {
+	t.Helper()
+	var payload zcodeControlRequestPayload
+	require.NoError(t, json.Unmarshal(stored, &payload))
+	require.NotEmpty(t, payload.RequestID, "the stored request states its key")
+	return payload.RequestID
+}
+
+// zcodeResolve runs the answer through the provider plugin, as the Worker does
+// for the request that stored states, and returns the frame the worker would
+// forward to the app-server's stdin.
 func zcodeResolve(t *testing.T, stored, answer []byte) (zcodeDecodedReply, agent.ControlResponseResolution) {
 	t.Helper()
-	res := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload:  stored,
-		ResponseContent: answer,
-	})
+	res := agenttest.ResolveAnswer(zcodeProvider{}, stored, zcodeStoredRequestID(t, stored), agent.ControlAnswer{Content: answer})
 	if res.Content == nil {
 		return zcodeDecodedReply{}, res
 	}
@@ -330,7 +385,7 @@ const zcodePermissionParams = `{
 }`
 
 // The stored payload is a hybrid on purpose: the Claude-shaped header the SHARED
-// control surfaces read, plus ZCode's own params, plus the wire id the reply needs.
+// readers read, plus ZCode's own params, plus the wire id the reply needs.
 func TestHandlePermissionRequest_StoresTheHybridPayload(t *testing.T) {
 	t.Parallel()
 
@@ -378,7 +433,7 @@ func TestZCodeResolveControlResponse_AllowEchoesTheOptionResponse(t *testing.T) 
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
 	stored := zcodeStoredPayload(t, sink)
 
-	frame, res := zcodeResolve(t, stored, zcodeAnswer(t, "req-1", agent.ControlBehaviorAllow, "", nil))
+	frame, res := zcodeResolve(t, stored, zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil))
 	assert.Equal(t, "7", string(frame.ID))
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
@@ -399,7 +454,7 @@ func TestZCodeResolveControlResponse_AChosenOptionIdEchoesThatOptionResponse(t *
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
 	stored := zcodeStoredPayload(t, sink)
 
-	frame, _ := zcodeResolve(t, stored, zcodeAnswerWithChoice(t, "req-1", agent.ControlBehaviorAllow, "", "allow_always"))
+	frame, _ := zcodeResolve(t, stored, zcodeAnswerWithChoice(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", "allow_always"))
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeDecisionAllow, result["decision"])
@@ -409,7 +464,7 @@ func TestZCodeResolveControlResponse_AChosenOptionIdEchoesThatOptionResponse(t *
 
 	// A choice that names no offered option changes nothing: the decision word
 	// still picks the first allowing option, so a stale pill cannot invent a grant.
-	frame, _ = zcodeResolve(t, stored, zcodeAnswerWithChoice(t, "req-1", agent.ControlBehaviorAllow, "", "allow_project"))
+	frame, _ = zcodeResolve(t, stored, zcodeAnswerWithChoice(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", "allow_project"))
 	var fallback map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &fallback))
 	assert.Equal(t, "once", fallback["scope"], "an unknown choice id falls back to the decision word")
@@ -424,7 +479,7 @@ func TestZCodeResolveControlResponse_DenyCarriesTheUsersReason(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
 	stored := zcodeStoredPayload(t, sink)
 
-	frame, _ := zcodeResolve(t, stored, zcodeAnswer(t, "req-1", agent.ControlBehaviorDeny, "not on my machine", nil))
+	frame, _ := zcodeResolve(t, stored, zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorDeny, "not on my machine", nil))
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeDecisionDeny, result["decision"])
@@ -442,7 +497,7 @@ func TestZCodePermissionResult_AnAllowWithNoAllowingOptionDenies(t *testing.T) {
 		{OptionID: "deny", Response: json.RawMessage(`{"decision":"deny"}`)},
 		{OptionID: "weird", Response: json.RawMessage(`{"decision":"escalate"}`)},
 	}
-	raw, err := zcodePermissionResult(options, agent.ControlBehaviorAllow, "", "")
+	raw, err := zcodePermissionResult(options, contracts.ControlAnswerBehaviorAllow, "", "")
 	require.NoError(t, err)
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(raw, &result))
@@ -455,13 +510,13 @@ func TestZCodePermissionResult_AnAllowWithNoAllowingOptionDenies(t *testing.T) {
 func TestZCodePermissionResult_WithNoOptionsSynthesizesABareDecision(t *testing.T) {
 	t.Parallel()
 
-	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
+	for _, behavior := range []string{contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny} {
 		raw, err := zcodePermissionResult(nil, behavior, "because", "")
 		require.NoError(t, err)
 		var result map[string]any
 		require.NoError(t, json.Unmarshal(raw, &result))
 		want := contracts.ZCodeDecisionAllow
-		if behavior != agent.ControlBehaviorAllow {
+		if behavior != contracts.ControlAnswerBehaviorAllow {
 			want = contracts.ZCodeDecisionDeny
 		}
 		assert.Equal(t, want, result["decision"])
@@ -581,32 +636,6 @@ func TestHandleUserInputRequest_PlanApprovalIsStoredAsAPlanControl(t *testing.T)
 		"the plan surface is selected by tool name, so it must be ZCode's plan tool")
 	assert.Equal(t, agent.PlanModeControlExit, zcodeProvider{}.PlanModeControl(stored.Request.ToolName))
 
-	// A plan approval carries no questions, so one is synthesized: the shared surface
-	// needs a question to key the answer by.
-	var input struct {
-		Questions []struct {
-			Question string `json:"question"`
-			Options  []struct {
-				Value string `json:"value"`
-			} `json:"options"`
-		} `json:"questions"`
-	}
-	require.NoError(t, json.Unmarshal(stored.Request.Input, &input))
-	require.Len(t, input.Questions, 1)
-	assert.Equal(t, contracts.ZCodePlanControlQuestion, input.Questions[0].Question)
-	require.Len(t, input.Questions[0].Options, 1)
-	assert.Equal(t, contracts.ZCodePlanControlApprove, input.Questions[0].Options[0].Value)
-
-	// The plan text travels as its own field. The synthesized question above is
-	// boilerplate, and the frontend reads the first question text -- so a plan left in
-	// `context` would never reach the banner, which would render that boilerplate as
-	// the plan.
-	var withPlan struct {
-		Plan string `json:"plan"`
-	}
-	require.NoError(t, json.Unmarshal(stored.Request.Input, &withPlan))
-	assert.Equal(t, "1. read\n2. write", withPlan.Plan)
-
 	// NO planModeToolUse entry. That map has exactly one reader,
 	// claude.Agent.detectPlanModeFromToolResult, which no ZCode path reaches -- and
 	// the shared code deletes an entry only on an ALLOW, so a denied or abandoned plan
@@ -624,7 +653,7 @@ func TestZCodeResolveControlResponse_PlanAcceptSendsTheSentinel(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 
 	frame, res := zcodeResolve(t, zcodeStoredPayload(t, sink),
-		zcodeAnswer(t, "req-plan", agent.ControlBehaviorAllow, "", nil))
+		zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorAllow, "", nil))
 	assert.Equal(t, agent.PlanModeControlExit, res.PlanModeControl)
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
@@ -641,7 +670,7 @@ func TestZCodeResolveControlResponse_PlanRejectionWithFeedbackKeepsTheText(t *te
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 	frame, resolution := zcodeResolve(t, zcodeStoredPayload(t, sink),
-		zcodeAnswer(t, "req-plan", agent.ControlBehaviorDeny, "  split step 2  ", nil))
+		zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorDeny, "  split step 2  ", nil))
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeActionDecline, result[contracts.ZCodeReplyFieldAction])
@@ -660,7 +689,7 @@ func TestZCodeResolveControlResponse_PlanRejectionWithNoFeedbackDeclines(t *test
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 
 	frame, _ := zcodeResolve(t, zcodeStoredPayload(t, sink),
-		zcodeAnswer(t, "req-plan", agent.ControlBehaviorDeny, "   ", nil))
+		zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorDeny, "   ", nil))
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeActionDecline, result[contracts.ZCodeReplyFieldAction])
@@ -737,7 +766,7 @@ func TestZCodeResolveControlResponse_QuestionAnswersCarryBothKeyForms(t *testing
 	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 
 	frame, _ := zcodeResolve(t, zcodeStoredPayload(t, sink),
-		zcodeAnswer(t, "req-q", agent.ControlBehaviorAllow, "", map[string]string{
+		zcodeAnswer(t, "req-q", contracts.ControlAnswerBehaviorAllow, "", map[string]string{
 			"Which database?": "Postgres",
 			"Which extras?":   "cache, Metrics",
 		}))
@@ -818,7 +847,7 @@ func TestZCodeResolveControlResponse_QuestionRejectionKeepsSeparateFeedback(t *t
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 	a.HandleOutput(zcodeRequestLine(t, 11, contracts.ZCodeMethodRequestUserInput, zcodeQuestionParams))
 	frame, resolution := zcodeResolve(t, zcodeStoredPayload(t, sink),
-		zcodeAnswer(t, "req-q", agent.ControlBehaviorDeny, "ask me later", nil))
+		zcodeAnswer(t, "req-q", contracts.ControlAnswerBehaviorDeny, "ask me later", nil))
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeActionDecline, result[contracts.ZCodeReplyFieldAction])
@@ -860,7 +889,7 @@ func TestHandleUserInputRequest_AQuestionWithNoOptionsIsStillAnswerable(t *testi
 		`{"requestId":"req-q","schema":{"questions":[{"question":"Name it?","options":[]}]}}`))
 
 	stored := zcodeStoredPayload(t, sink)
-	frame, _ := zcodeResolve(t, stored, zcodeAnswer(t, "req-q", agent.ControlBehaviorAllow, "",
+	frame, _ := zcodeResolve(t, stored, zcodeAnswer(t, "req-q", contracts.ControlAnswerBehaviorAllow, "",
 		map[string]string{"Name it?": "leapmux"}))
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
@@ -1522,43 +1551,47 @@ func TestZCodeResolveControlResponse_WithholdsAnUnusableForward(t *testing.T) {
 	noWireID, err := json.Marshal(withWireID)
 	require.NoError(t, err)
 
+	// Each answer addresses requestID, the key the Worker read the payload
+	// under, and each payload gives that key, because the Worker resolves no
+	// other answer and no other stored request (agenttest.ResolveAnswer).
 	cases := map[string]struct {
-		payload []byte
-		answer  []byte
+		payload   []byte
+		requestID string
+		answer    []byte
+		reason    string
 	}{
 		"no stored request at all": {
-			nil, zcodeAnswer(t, "req-1", agent.ControlBehaviorAllow, "", nil),
+			nil, "req-1", zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableRequest,
 		},
 		"the stored request is not ours": {
-			[]byte(`{"nope":`), zcodeAnswer(t, "req-1", agent.ControlBehaviorAllow, "", nil),
+			[]byte(`{"nope":`), "req-1", zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableRequest,
 		},
 		"the answer is not an allow or a deny": {
-			stored, []byte(`{"type":"control_response","request_id":"req-1","response":{}}`),
-		},
-		"the answer addresses another request": {
-			stored, zcodeAnswer(t, "req-OTHER", agent.ControlBehaviorAllow, "", nil),
+			stored, "req-1", []byte(`{"type":"control_response","response":{"request_id":"req-1","response":{}}}`), agent.RefusalNoDecision,
 		},
 		"the stored request has no wire id": {
-			noWireID, zcodeAnswer(t, "req-1", agent.ControlBehaviorAllow, "", nil),
+			noWireID, "req-1", zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableRequest,
 		},
 		"the stored request has no reply shape": {
 			[]byte(`{"type":"control_request","request_id":"req-1","id":7,"method":"unknown/method"}`),
-			zcodeAnswer(t, "req-1", agent.ControlBehaviorAllow, "", nil),
+			"req-1", zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableRequest,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			res := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestPayload:  tc.payload,
-				ResponseContent: tc.answer,
-			})
+			res := agenttest.ResolveAnswer(zcodeProvider{}, tc.payload, tc.requestID, agent.ControlAnswer{Content: tc.answer})
 			// Withhold, not an empty Content: resolveControlResponsePlan backfills the raw
-			// frontend envelope over an empty one, so clearing Content would forward the
+			// neutral envelope over an empty one, so clearing Content would forward the
 			// exact frame these paths refuse to send.
 			assert.True(t, res.Withhold, "no frame may reach the app-server's stdin")
+			assert.EqualError(t, res.Refusal(), tc.reason)
 		})
 	}
+
+	// The same payload under its own key answers.
+	_, res := zcodeResolve(t, stored, zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil))
+	require.False(t, res.Withhold, "%v", res.Refusal())
 }
 
 // --- the provider plugin ---
@@ -1864,12 +1897,12 @@ func TestZCodeStoredQuestionTexts_PreservesTheDeclaredOrder(t *testing.T) {
 func TestZCodeAnswersFromResponse(t *testing.T) {
 	t.Parallel()
 
-	answers := zcodeAnswersFromResponse(zcodeAnswer(t, "req-q", agent.ControlBehaviorAllow, "",
+	answers := zcodeAnswersFromResponse(zcodeAnswer(t, "req-q", contracts.ControlAnswerBehaviorAllow, "",
 		map[string]string{"q": "a"}))
 	assert.Equal(t, map[string]string{"q": "a"}, answers)
 
 	assert.Nil(t, zcodeAnswersFromResponse([]byte(`not json`)))
-	assert.Nil(t, zcodeAnswersFromResponse(zcodeAnswer(t, "req-q", agent.ControlBehaviorAllow, "", nil)))
+	assert.Nil(t, zcodeAnswersFromResponse(zcodeAnswer(t, "req-q", contracts.ControlAnswerBehaviorAllow, "", nil)))
 }
 
 // --- to-do list ---
@@ -1983,7 +2016,7 @@ var zcodeMCPFormParams = `{
   ]
 }`
 
-// zcodeMCPFormAnswer is the browser's answer to an MCP form.
+// zcodeMCPFormAnswer is the neutral answer to an MCP form.
 func zcodeMCPFormAnswer(t *testing.T, requestID string, answer map[string]any) []byte {
 	t.Helper()
 	content, err := json.Marshal(map[string]any{
@@ -2085,21 +2118,23 @@ func TestResolveMCPForm_RefusesAnAnswerTheFormCannotTake(t *testing.T) {
 	storedWithoutWireID, err := json.Marshal(withoutWireID)
 	require.NoError(t, err)
 	accept := map[string]any{"action": contracts.MCPElicitationActionAccept, "content": map[string]any{"count": 1}}
+	// Each answer addresses requestID, and each form gives that key, as every
+	// answer and every stored request that the Worker resolves does.
 	for name, tc := range map[string]struct {
-		stored []byte
-		answer []byte
+		stored    []byte
+		requestID string
+		answer    []byte
+		reason    string
 	}{
-		"another request":         {stored, zcodeMCPFormAnswer(t, "mcp-elicit-other", accept)},
-		"an unreadable answer":    {stored, []byte(`{"response":`)},
-		"an allow decision":       {stored, zcodeAnswer(t, "mcp-elicit-1", agent.ControlBehaviorAllow, "", nil)},
-		"an unknown action":       {stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": "maybe"})},
-		"content that is no form": {stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "content": []int{1}})},
-		"a persisted choice":      {stored, zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "_meta": map[string]string{"persist": "always"}})},
-		"no wire id":              {storedWithoutWireID, zcodeMCPFormAnswer(t, "mcp-elicit-1", accept)},
+		"an allow decision":       {stored, "mcp-elicit-1", zcodeAnswer(t, "mcp-elicit-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableAnswer},
+		"an unknown action":       {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": "maybe"}), agent.RefusalUnreadableAnswer},
+		"content that is no form": {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "content": []int{1}}), agent.RefusalUnreadableAnswer},
+		"a persisted choice":      {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "_meta": map[string]string{"persist": "always"}}), "the answer persists a choice the request did not offer"},
+		"no wire id":              {storedWithoutWireID, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", accept), agent.RefusalUnreadableRequest},
 	} {
-		res := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: tc.stored, ResponseContent: tc.answer})
+		res := agenttest.ResolveAnswer(zcodeProvider{}, tc.stored, tc.requestID, agent.ControlAnswer{Content: tc.answer})
 		assert.True(t, res.Withhold, name)
-		assert.Error(t, res.Refusal(), name)
+		assert.EqualError(t, res.Refusal(), tc.reason, name)
 	}
 }
 

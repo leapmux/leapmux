@@ -55,18 +55,23 @@ func (rt *soloRuntime) silenceWatcher() {
 // sets LEAPMUX_HUB_DEV_FRONTEND, Args enable the hub DevProxy so Network Access
 // extra listen addresses reach the same Vite/Bun server the webview uses.
 // Release builds leave the env unset and keep the embedded SPA.
-func desktopSoloConfig(devFrontend string) solo.Config {
+func desktopSoloConfig(devFrontend, controlCLI string) solo.Config {
 	cfg := solo.Config{
 		NoTCP: true,
+		// The sidecar runs the Worker in-process, and its own executable
+		// serves no `leapmux control`. The Worker links the CLI that the
+		// install ships into the PATH of each agent and terminal instead;
+		// "" links none.
+		ControlCLI: controlCLI,
 	}
 	if devFrontend != "" {
-		cfg.Args = []string{"-dev-frontend", devFrontend}
+		cfg.Args = []string{"--dev-frontend", devFrontend}
 	}
 	return cfg
 }
 
 func desktopSoloConfigFromEnv() solo.Config {
-	return desktopSoloConfig(os.Getenv(contracts.EnvDevFrontend))
+	return desktopSoloConfig(os.Getenv(contracts.EnvDevFrontend), bundledCliPath())
 }
 
 // defaultStartSolo launches a Hub and Worker in-process via the solo package.

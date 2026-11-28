@@ -3,7 +3,6 @@ package codebuddy
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 
@@ -25,7 +24,7 @@ func (a *Agent) sendInterruptControl(sessionID string) error {
 // An SDK permission interrupt reports a permission error and no abort reason.
 // Other failures keep their native outcome.
 func codebuddyPermissionInterruptedResult(result resultMessage) bool {
-	return result.IsError && len(result.Errors) == 1 &&
+	return result.failed() && len(result.Errors) == 1 &&
 		strings.HasPrefix(result.Errors[0], "Permission denied for tool(s): ")
 }
 
@@ -71,19 +70,12 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 		if !open {
 			continue
 		}
-		frame, err := json.Marshal(map[string]any{
-			"type": frameTypeControlResponse,
-			"response": map[string]any{
-				"subtype":    "success",
-				"request_id": requestID,
-				"response":   contracts.CodebuddyCanUseToolAnswer{Allowed: false, Reason: codebuddyInterruptedPermissionReason, Interrupt: true},
-			},
+		frame := agent.ControlResponseEnvelope(requestID, contracts.CodebuddyCanUseToolAnswer{
+			Allowed:   false,
+			Reason:    codebuddyInterruptedPermissionReason,
+			Interrupt: true,
 		})
-		if err != nil {
-			slog.Error("codebuddy: encode the interrupt refusal", "agent_id", a.AgentID(), "error", err)
-			return refused, err
-		}
-		err = a.Process.SendRawInput(frame, agent.StopContext{})
+		err := a.Process.SendRawInput(frame, agent.StopContext{})
 		a.finishControlWrite(requestID, record, err, true, false)
 		if err != nil {
 			return refused, err
@@ -94,7 +86,8 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 }
 
 // SendRawInput claims each control response before it writes to the native process.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var frame struct {
 		Type     string `json:"type"`
 		Response struct {

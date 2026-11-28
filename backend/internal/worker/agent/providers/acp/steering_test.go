@@ -42,7 +42,7 @@ func TestACPSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 	a.sink = agent.NewProviderServices(sink)
 	a.wireTurnActive()
 	a.promptActive = true
-	err := a.SendInput("later turn", nil)
+	_, err := a.SendInput("later turn", nil)
 	assert.Empty(t, requests(), "a refused send must reach no RPC")
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }

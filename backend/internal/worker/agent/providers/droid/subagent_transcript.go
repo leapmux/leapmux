@@ -192,10 +192,31 @@ func (a *Agent) startChildTail(sessionID string) {
 	a.ensureChildTail(sessionID, false, nil, nil)
 }
 
-// resumeChildTail follows a send that the native child process accepted and
-// reports whether a healthy tail is tracking the child archive.
-func (a *Agent) resumeChildTail(sessionID string, initial *droidArchivePosition, ready <-chan struct{}) bool {
-	return a.ensureChildTail(sessionID, true, initial, ready)
+// pollChildTail flushes any complete records already written to the initial
+// background child archive before a bound child process starts a follow-up turn.
+func (a *Agent) pollChildTail(sessionID string) {
+	a.tailMu.Lock()
+	tail := a.childTails[sessionID]
+	a.tailMu.Unlock()
+	if tail != nil {
+		tail.poll()
+	}
+}
+
+// stopChildTail flushes any pre-bind records from the initial archive tail and
+// stops the tail so a bound child process owns every subsequent turn exclusively.
+func (a *Agent) stopChildTail(sessionID string) {
+	a.tailMu.Lock()
+	tail := a.childTails[sessionID]
+	a.tailMu.Unlock()
+	if tail == nil {
+		return
+	}
+	tail.poll()
+	tail.mu.Lock()
+	tail.finished = true
+	tail.mu.Unlock()
+	tail.stop()
 }
 
 // probeResumeSpawnArchive captures the child archive EOF outside dispatchMu
@@ -538,12 +559,14 @@ func (t *droidChildTail) feed(line []byte) {
 	case "message":
 		t.projectMessage(record)
 	case "agent_turn_outcome":
-		continuation := t.pendingTurns > 0
-		if continuation {
+		pendingContinuation := t.pendingTurns > 0
+		if pendingContinuation {
 			t.pendingTurns--
 		}
-		t.projectTurnEnd(record.Reason, continuation)
-		t.finished = !continuation
+		// A bound child process owns every follow-up turn directly over its
+		// stream, so the archive reader ends unless a resumed Task turn is pending.
+		t.projectTurnEnd(record.Reason, pendingContinuation || t.agent.childHasActiveBoundConnection(t.sessionID))
+		t.finished = !pendingContinuation
 	}
 }
 
@@ -592,7 +615,11 @@ func (t *droidChildTail) persistAssembled(target droidOutputTarget, messageID st
 		return
 	}
 	spanID := fmt.Sprintf("droid-msg-%s-%d", messageID, index)
-	t.agent.persistRow(content, agent.SpanInfo{SpanID: spanID}, target)
+	var key string
+	if messageID != "" {
+		key = droidMessageWriteKey(messageID, index)
+	}
+	t.agent.enqueueOutput(target, agent.MessageContent{Original: content, IdempotencyKey: key}, agent.SpanInfo{SpanID: spanID}, droidOutputMessage)
 }
 
 func (t *droidChildTail) projectToolCall(target droidOutputTarget, id, name string, input json.RawMessage) {

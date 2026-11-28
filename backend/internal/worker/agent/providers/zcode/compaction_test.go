@@ -33,7 +33,7 @@ func TestZCodeManualCompactionUsesNativeSessionRequest(t *testing.T) {
 	active, published := sink.LastTurnActive()
 	require.True(t, published)
 	require.True(t, active)
-	require.ErrorIs(t, a.SendInput("later turn", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "later turn", nil), agent.ErrAgentBusy)
 	require.ErrorIs(t, a.CompactContext(), agent.ErrAgentBusy)
 
 	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "session_compacted", `{"status":"idle"}`))

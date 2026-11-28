@@ -45,9 +45,33 @@ type EncryptedTableSpec struct {
 	Columns    []EncryptedColumnSpec
 }
 
-// PersistentEncryptedTables lists the 14 persistent tables (33 columns) whose
+// PersistentEncryptedTables lists the 16 persistent tables (35 columns) whose
 // rows survive restarts and are covered by CountKeyVersionRefs and ReencryptAll.
 var PersistentEncryptedTables = []EncryptedTableSpec{
+	{
+		Table:      "layout_event_heads",
+		Label:      "layout event heads",
+		PrimaryKey: []KeyColumnSpec{{Name: "user_id", Kind: KeyKindString}},
+		AADColumns: []KeyColumnSpec{{Name: "user_id", Kind: KeyKindString}},
+		Columns: []EncryptedColumnSpec{
+			{Name: "cursor_key", AADFunc: func(k []any) []byte { return LayoutEventHeadCursorKeyAAD(k[0].(string)) }},
+		},
+	},
+	{
+		Table: "layout_event_entries",
+		Label: "layout event entries",
+		PrimaryKey: []KeyColumnSpec{
+			{Name: "user_id", Kind: KeyKindString},
+			{Name: "sequence", Kind: KeyKindInt64},
+		},
+		AADColumns: []KeyColumnSpec{
+			{Name: "user_id", Kind: KeyKindString},
+			{Name: "sequence", Kind: KeyKindInt64},
+		},
+		Columns: []EncryptedColumnSpec{
+			{Name: "fact", AADFunc: func(k []any) []byte { return LayoutEventEntryFactAAD(k[0].(string), k[1].(int64)) }},
+		},
+	},
 	{
 		Table:      "users",
 		Label:      "users",

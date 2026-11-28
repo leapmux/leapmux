@@ -24,6 +24,8 @@ import (
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
+const testCreatedThreadID = "T-00000000-0000-4000-8000-000000000001"
+
 // harness holds one agent under test: a recording sink, a real permission
 // bridge, a mock clock, and a starter of fake processes that the test drives.
 type harness struct {
@@ -46,7 +48,7 @@ type harness struct {
 type harnessOption func(*agent.Options)
 
 func withResume(threadID string) harnessOption {
-	return func(o *agent.Options) { o.ResumeSessionID = threadID }
+	return func(o *agent.Options) { o.Session = agent.ResumeSession(threadID) }
 }
 
 func withOptions(options optionmap.Map) harnessOption {
@@ -78,6 +80,9 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		home:          t.TempDir(),
 	}, bridge, dir, clock)
 	h.agent.startFn = h.start
+	h.agent.createThreadFn = func(_ context.Context, _ threadConfiguration) (string, error) {
+		return testCreatedThreadID, nil
+	}
 	h.agent.inspectProcessFn = func(int) procutil.LiveProcessInfo {
 		return procutil.LiveProcessInfo{Alive: true}
 	}
@@ -230,7 +235,7 @@ func (h *harness) drainStarted() {
 // send sends a message and returns the process it went to.
 func (h *harness) send(text string) *fakeProc {
 	h.t.Helper()
-	require.NoError(h.t, h.agent.SendInput(text, nil))
+	require.NoError(h.t, agenttest.SendInput(h.agent, text, nil))
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	require.NotEmpty(h.t, h.procs)

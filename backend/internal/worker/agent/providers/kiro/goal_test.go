@@ -395,7 +395,7 @@ func TestKiroGoalRecoveryRestatesAnOpenRun(t *testing.T) {
 		kiroWorkflowInspectMethod: `{"workflowId":"wf_new","state":{"status":"paused","inputs":{"prompt":" Ship it ","max_iterations":"5"},"pauseReason":"Repeat 'goal-loop' reached maxIterations."}}`,
 	}))
 
-	a.recoverGoalRun(agent.Options{ResumeSessionID: kiroTestSession})
+	a.recoverGoalRun(agent.Options{Session: agent.ResumeSession(kiroTestSession)})
 
 	require.Eventually(t, func() bool { return len(sink.Goals()) == 1 }, 30*time.Second, time.Millisecond)
 	goal, _ := sink.LastGoal()
@@ -428,7 +428,7 @@ func TestKiroGoalRecoveryWithoutASessionAsksNothing(t *testing.T) {
 	a, sink, requests := newKiroAgent(t, agent.Options{}, nil)
 	a.SetSessionIDForTest("")
 
-	a.recoverGoalRun(agent.Options{ResumeSessionID: kiroTestSession})
+	a.recoverGoalRun(agent.Options{Session: agent.ResumeSession(kiroTestSession)})
 	syncPeer(t, a)
 
 	assert.Empty(t, requestsFor(requests(), kiroWorkflowListMethod))

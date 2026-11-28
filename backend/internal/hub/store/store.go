@@ -23,6 +23,7 @@ type Store interface {
 	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
 	WorkspaceTabIndex() WorkspaceTabIndexStore
+	LayoutEvents() LayoutEventStore
 	UserOpBatches() UserOpBatchesStore
 	UserState() UserStateStore
 	UserRecentBatchIDs() UserRecentBatchIDStore
@@ -257,11 +258,10 @@ type WorkerStore interface {
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Worker, error)
 	// GetByAuthTokenHashIncludeDeleted returns the worker with this token digest whatever
 	// its state. Ordinary authentication refuses a row with DeletedAt set;
-	// self-deregistration confirms deletion of the retained row. A deregistering
-	// worker remains admitted until Connect tells it to stop.
+	// self-deregistration confirms deletion of the retained row.
 	GetByAuthTokenHashIncludeDeleted(ctx context.Context, hash []byte) (*Worker, error)
-	// RotateAuthToken replaces only an active Worker's token digest. Deleted,
-	// deregistering and missing rows return zero without changing the digest.
+	// RotateAuthToken replaces only an active Worker's token digest. Deleted
+	// and missing rows return zero without changing the digest.
 	RotateAuthToken(ctx context.Context, p RotateWorkerAuthTokenParams) (int64, error)
 	// GetByRegistrationAttemptID returns the worker a durable registration
 	// attempt created, deleted rows included: recovery must tell a
@@ -270,6 +270,9 @@ type WorkerStore interface {
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
 	// ListByUserID pages the user's ACTIVE workers only.
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)
+	// InventorySnapshot reads the enrollment revision and sorted active worker
+	// IDs atomically in one read.
+	InventorySnapshot(ctx context.Context, owner userid.UserID) (WorkerInventorySnapshot, error)
 	ListAdmin(ctx context.Context, p ListWorkersAdminParams) (Page[WorkerWithOwner], error)
 	// GetAdmin is the single-row form of ListAdmin: the worker plus the
 	// owner projection, resolved by the SAME join. A caller that reads the
@@ -280,10 +283,10 @@ type WorkerStore interface {
 	// them for status=WORKER_STATUS_DELETED.
 	GetAdmin(ctx context.Context, id string) (*WorkerWithOwner, error)
 	UpdateLastSeen(ctx context.Context, id string) error
-	// Deregister stamps deregistering_at on an ACTIVE worker the caller
+	// Deregister soft-deletes (sets deleted_at on) an ACTIVE worker the caller
 	// registered and reports the rows it changed: 0 for a worker that is
-	// already deregistering or deleted. ForceDeregister is the same without
-	// the registrant check, for administrators.
+	// already deleted. ForceDeregister is the same without the registrant
+	// check, for administrators.
 	Deregister(ctx context.Context, p DeregisterWorkerParams) (int64, error)
 	ForceDeregister(ctx context.Context, id string) (int64, error)
 	// MarkDeleted soft-deletes a live worker; a second call is a no-op.
@@ -433,6 +436,12 @@ type WorkspaceTabIndexStore interface {
 	// p.UserID: it is an ownership gate, so it must never bind a blank
 	// owner (see userid.OwnerFilter).
 	ListRenderedByWorkspaceIDs(ctx context.Context, p ListRenderedTabsByWorkspaceIDsParams) ([]WorkspaceTabRow, error)
+	// ListRenderedByIDPrefix returns p.UserID's rendered tabs whose tab_id
+	// matches p.IDPrefix (exact lookup for full generated IDs, primary-key
+	// range scan for shorter prefixes) across non-deleted workspaces owned by
+	// p.UserID. When p.WorkspaceIDs is non-empty, results are further scoped to
+	// those workspaces. Ordered by tab_id ASC.
+	ListRenderedByIDPrefix(ctx context.Context, p ListRenderedTabsByIDPrefixParams) ([]WorkspaceTabRow, error)
 	// LocateAccessibleRendered returns the rendered-tab row matching
 	// (tab_type, tab_id) across every workspace the user owns.
 	// Returns ErrNotFound when no owned workspace contains the tab.
@@ -850,6 +859,10 @@ type WorkspaceSectionStore interface {
 	Create(ctx context.Context, p CreateWorkspaceSectionParams) error
 	GetByID(ctx context.Context, id string) (*WorkspaceSection, error)
 	ListByUserID(ctx context.Context, userID userid.UserID) ([]WorkspaceSection, error)
+	// ListByIDPrefix returns userID's sections whose id matches idPrefix
+	// (exact lookup for full generated IDs, primary-key range scan for shorter
+	// prefixes), ordered by id ASC.
+	ListByIDPrefix(ctx context.Context, userID userid.UserID, idPrefix string) ([]WorkspaceSection, error)
 	Rename(ctx context.Context, p RenameWorkspaceSectionParams) (int64, error)
 	UpdatePosition(ctx context.Context, p UpdateWorkspaceSectionPositionParams) error
 	UpdateSidebarPosition(ctx context.Context, p UpdateWorkspaceSectionSidebarPositionParams) error
@@ -872,7 +885,12 @@ type OAuthProviderStore interface {
 	GetByID(ctx context.Context, id string) (*OAuthProvider, error)
 	ListEnabled(ctx context.Context) ([]OAuthProviderSummary, error)
 	ListAll(ctx context.Context) ([]OAuthProviderSummary, error)
+	// ListByIDPrefix returns OAuth providers whose id matches idPrefix (exact
+	// lookup for full generated IDs, primary-key range scan for shorter
+	// prefixes), ordered by id ASC.
+	ListByIDPrefix(ctx context.Context, idPrefix string) ([]OAuthProviderSummary, error)
 	UpdateEnabled(ctx context.Context, p UpdateOAuthProviderEnabledParams) error
+	UpdateClientSecret(ctx context.Context, p UpdateOAuthProviderClientSecretParams) error
 	Delete(ctx context.Context, id string) error
 }
 
@@ -965,14 +983,6 @@ type CleanupStore interface {
 	HardDeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error)
 	HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error)
-	// CompleteStaleDeregistrations deletes (sets deleted_at on) every worker
-	// that has been deregistering since before cutoff, in capped passes (the
-	// caller drains until a pass changes nothing). It recovers every way a
-	// deregistration can fail to finish: a lost acknowledgement, a failed
-	// deletion after a valid one, and a hub restart while the worker was
-	// offline. It is cross-owner by design: a worker that never reconnects has
-	// no session to scope the sweep to.
-	CompleteStaleDeregistrations(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	// DeleteUserOpBatchesBeforePhysical hard-deletes CRDT op batches whose HLC
@@ -1091,14 +1101,6 @@ type TestHelper interface {
 	// pinned in the implementations rather than caller-supplied -- a
 	// wrong-entity call is inexpressible.
 	SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error
-
-	// SetDeregisteringAt backdates a worker's deregistering_at. Only workers
-	// carry the column, so the table is pinned as SetLastActiveAt's is.
-	SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error
-
-	// ClearWorkerDeregisteringAt restores a live worker to ACTIVE for test setup.
-	// Deleted and missing workers remain unchanged.
-	ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error
 
 	// ListAllOwnedTabs returns every workspace_tab_owned row, unfiltered by
 	// owner, ordered by (user_id, tab_id).

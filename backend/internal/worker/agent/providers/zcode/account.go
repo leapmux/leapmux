@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // The account plans of a current app-server: LeapMux pushes a host-owned snapshot of
@@ -325,7 +327,7 @@ func zcodeAccountScope(binding zcodeAccountBinding, team *zcodeTeamProject, sess
 	if session.sessionRevision != "" {
 		revision = session.sessionRevision
 	}
-	return zcodeSHA256Hex(zcodeJSONStringify([]any{binding.family(), binding.rule.mode(), teamIDs, session.accessToken, jwt, revision}))
+	return zcodeSHA256Hex(string(providerkit.JSONText([]any{binding.family(), binding.rule.mode(), teamIDs, session.accessToken, jwt, revision})))
 }
 
 func zcodeMissingCredentialError(providerID string) error {

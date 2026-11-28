@@ -20,6 +20,45 @@ var notificationEvents = func() map[string]struct{} {
 	return events
 }()
 
+const ompEventAgentPause = "agent_pause"
+
+// dispatchConversationEvent handles session events shared between the root
+// conversation and child subagent conversations.
+func (a *Agent) dispatchConversationEvent(c *conversation, eventType string, raw []byte) bool {
+	switch eventType {
+	case contracts.OhMyPiEventMessageEnd:
+		a.handleMessageEnd(c, raw)
+	case contracts.OhMyPiEventMessageStart:
+		a.observeOMPAssistantBoundary(c, raw, false)
+	case contracts.OhMyPiEventTurnEnd:
+		a.observeOMPAssistantBoundary(c, raw, true)
+	case contracts.OhMyPiEventToolExecutionStart:
+		a.handleToolStart(c, raw)
+	case contracts.OhMyPiEventToolExecutionUpdate:
+		a.handleToolUpdate(c, raw)
+	case contracts.OhMyPiEventToolExecutionEnd:
+		a.handleToolEnd(c, raw)
+	case contracts.OhMyPiEventAutoCompactionStart:
+		trigger := providerkit.StringField(raw, "reason")
+		if trigger == "" {
+			trigger = "auto"
+		}
+		a.beginCompaction(c, trigger)
+	case contracts.OhMyPiEventManualCompactionStart:
+		a.beginCompaction(c, "manual")
+	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
+		a.persistCompactionEnd(c, raw)
+	case contracts.OhMyPiEventTtsrTriggered:
+		a.Mu.Lock()
+		c.ttsrPending = true
+		a.Mu.Unlock()
+		a.persistConversationNotification(c, raw)
+	default:
+		return false
+	}
+	return true
+}
+
 // handleFrame dispatches one frame of the session's own stream. A response that a
 // caller waited for, and every rpc_chunk frame, never reach it: interceptFrame
 // consumed them.
@@ -28,6 +67,9 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 	defer a.outputMu.Unlock()
 	slog.Debug("omp frame", "agent_id", a.AgentID(), "type", line.Type, "len", len(line.Raw))
 	root := a.rootConversation()
+	if a.dispatchConversationEvent(root, line.Type, line.Raw) {
+		return
+	}
 	switch line.Type {
 	case contracts.OhMyPiEventReady:
 		a.handleReady(line.Raw)
@@ -39,16 +81,12 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		a.handleAgentStart()
 	case contracts.OhMyPiEventAgentEnd:
 		a.handleAgentEnd(line.Raw)
+	case contracts.OhMyPiEventAvailableCommandsUpdate:
+		a.observeOMPSteerCapability(line.Raw)
+	case ompEventAgentPause:
+		a.observeOMPPause(root, line.Raw)
 	case contracts.OhMyPiEventMessageUpdate:
 		a.handleMessageUpdate(root, line.Raw)
-	case contracts.OhMyPiEventMessageEnd:
-		a.handleMessageEnd(root, line.Raw)
-	case contracts.OhMyPiEventToolExecutionStart:
-		a.handleToolStart(root, line.Raw)
-	case contracts.OhMyPiEventToolExecutionUpdate:
-		a.handleToolUpdate(root, line.Raw)
-	case contracts.OhMyPiEventToolExecutionEnd:
-		a.handleToolEnd(root, line.Raw)
 	case contracts.OhMyPiEventExtensionUIRequest:
 		a.handleExtensionUIRequest(line.Raw)
 	case contracts.OhMyPiEventGoalUpdated:
@@ -68,42 +106,25 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		a.handleSubagentEvent(line.Raw)
 	case contracts.OhMyPiEventHostToolCall, contracts.OhMyPiEventHostUriRequest:
 		a.refuseHostCall(line.Type, line.Raw)
-	case contracts.OhMyPiEventAutoCompactionStart:
-		trigger := providerkit.StringField(line.Raw, "reason")
-		if trigger == "" {
-			trigger = "auto"
-		}
-		a.beginCompaction(root, trigger)
-	case contracts.OhMyPiEventManualCompactionStart:
-		a.beginCompaction(root, "manual")
-	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
-		a.persistCompactionEnd(root, line.Raw)
-	case contracts.OhMyPiEventTtsrTriggered:
-		a.Mu.Lock()
-		root.ttsrPending = true
-		a.Mu.Unlock()
-		a.persistConversationNotification(root, line.Raw)
 	case contracts.OhMyPiEventCacheWarmingStart, contracts.OhMyPiEventCacheWarmingEnd:
 		// Cache warming changes no conversation state or transcript row.
 	case contracts.OhMyPiEventRetryFallbackApplied:
 		a.handleRetryFallback(line.Raw)
 		a.persistConversationNotification(root, line.Raw)
-	case contracts.OhMyPiEventTurnStart, contracts.OhMyPiEventTurnEnd, contracts.OhMyPiEventMessageStart:
-		// Lifecycle markers inside a run. agent_start and agent_end bracket the
-		// turn, and message_end carries each message whole.
+	case contracts.OhMyPiEventTurnStart:
+		// Starting a native turn may deliver more user messages before a model call.
 	case contracts.OhMyPiEventToolStreamUpdate:
 		// A preview of an `edit` call's arguments while the model writes them.
 		// The tool_execution_* frames carry the call itself.
 	case contracts.OhMyPiEventHostToolCancel, contracts.OhMyPiEventHostUriCancel:
 		// The withdrawal of a host call. LeapMux registers no host tool and no
 		// host URI scheme, and refuses every call at once, so nothing is pending.
-	case contracts.OhMyPiEventAvailableCommandsUpdate, contracts.OhMyPiEventSessionInfoUpdate,
+	case contracts.OhMyPiEventSessionInfoUpdate,
 		contracts.OhMyPiEventAdvisorCostChanged,
 		contracts.OhMyPiEventAdvisorYielded, contracts.OhMyPiEventConfigWarningsChanged,
 		contracts.OhMyPiEventTodoAutoClear, contracts.OhMyPiEventSessionSettled,
 		contracts.OhMyPiEventQueueUpdate:
-		// State that LeapMux has no surface for. The slash-command list feeds no
-		// menu, LeapMux gives its tabs their own names, and the advisor, the
+		// LeapMux gives its tabs their own names. The advisor and the
 		// configuration warnings have no row.
 		// omp 18.2.11 declares todo_auto_clear and never sends it.
 		//
@@ -163,6 +184,10 @@ func (a *Agent) handlePromptFailure(id, message string) {
 	if a.IsStopped() {
 		return
 	}
+	if reply := a.takeReplyPrompt(id); reply != nil {
+		a.retireOMPReplyInputs(reply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+	}
+	a.resolveUnreadOMPSteer(id, agent.SteerOutcomeDropped)
 	a.dropSteer(id)
 	a.steers.DropID(id)
 	a.steers.Settle(a.sink)
@@ -177,26 +202,31 @@ func (a *Agent) handlePromptFailure(id, message string) {
 	})
 }
 
-// handlePromptResult reads omp's report that a prompt it acknowledged started no
-// run. A local command resolves its steer echo, or releases the pending prompt.
+// handlePromptResult resolves a native prompt. A local command also resolves
+// its steer echo or releases the pending prompt.
 func (a *Agent) handlePromptResult(raw []byte) {
-	var result struct {
-		ID           string `json:"id"`
-		AgentInvoked *bool  `json:"agentInvoked"`
-	}
+	var result ompPromptResult
 	if err := json.Unmarshal(raw, &result); err != nil {
 		slog.Warn("omp prompt_result decode failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	a.resolveOMPReply(result)
 	if result.AgentInvoked == nil {
 		slog.Warn("omp prompt result has no invocation status", "agent_id", a.AgentID())
 		return
 	}
 	if !*result.AgentInvoked && result.ID != "" {
+		if result.Status == "completed" {
+			a.completeLocalOMPSteer(result.ID)
+		} else {
+			a.resolveUnreadOMPSteer(result.ID, agent.SteerOutcomeDropped)
+		}
 		a.dropSteer(result.ID)
 		a.steers.EchoID(result.ID)
 		a.steers.Settle(a.sink)
 		a.disarmTurn(result.ID)
+	} else if result.SessionSettled {
+		a.resolveUnreadOMPSteer(result.ID, agent.SteerOutcomeUncertain)
 	}
 }
 

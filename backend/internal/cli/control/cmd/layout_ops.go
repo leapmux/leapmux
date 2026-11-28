@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"sort"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -20,7 +20,7 @@ func envelope(bs *CRDTBootstrap) *leapmuxv1.CrdtOp {
 	return &leapmuxv1.CrdtOp{
 		OpId:           id.Generate(),
 		OriginClientId: bs.OriginClient,
-		ClientHlc:      bs.Clock.Tick(nowMillis()),
+		ClientHlc:      bs.Clock.Tick(time.Now().UnixMilli()),
 	}
 }
 
@@ -91,112 +91,60 @@ func opSetNodeColRatios(bs *CRDTBootstrap, nodeID string, values []float64) *lea
 	return op
 }
 
-// kindLabel returns the short user-facing label for a NodeKind so
-// error messages read "SPLIT" / "GRID" instead of the proto constant.
-func kindLabel(k leapmuxv1.NodeKind) string {
-	switch k {
-	case leapmuxv1.NodeKind_NODE_KIND_LEAF:
-		return "LEAF"
-	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
-		return "SPLIT"
-	case leapmuxv1.NodeKind_NODE_KIND_GRID:
-		return "GRID"
-	default:
-		return k.String()
-	}
-}
-
-// buildTreeJSON projects the live subtree rooted at nodeID into a
-// nested JSON shape suitable for `tile list` / `layout get`.
-func buildTreeJSON(state *leapmuxv1.UserMaterialized, nodeID string) any {
-	return buildTreeJSONWith(state, crdt.LiveChildrenByParent(state), nodeID)
-}
-
-func buildTreeJSONWith(state *leapmuxv1.UserMaterialized, children map[string][]string, nodeID string) any {
+// projectLayoutNode reads the live subtree in display order.
+func projectLayoutNode(state *leapmuxv1.UserMaterialized, children map[string][]string, nodeID string) *layoutNode {
 	if nodeID == "" {
 		return nil
 	}
-	rec := state.GetNodes()[nodeID]
-	if rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
+	record := state.GetNodes()[nodeID]
+	if record == nil || !crdt.HLCIsZero(record.GetTombstoneAt()) {
 		return nil
 	}
-	kind := rec.GetKind().GetValue()
-	out := map[string]any{
-		"node_id": nodeID,
-		"kind":    kind.String(),
+	kind := record.GetKind().GetValue()
+	node := &layoutNode{NodeID: nodeID, Kind: enumToken(kind)}
+	switch kind {
+	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
+		node.Direction = enumToken(record.GetDirection().GetValue())
+		node.Ratios = record.GetRatios().GetValue().GetValues()
+	case leapmuxv1.NodeKind_NODE_KIND_GRID:
+		node.Rows = record.GetRows().GetValue()
+		node.Cols = record.GetCols().GetValue()
+		node.RowRatios = record.GetRowRatios().GetValue().GetValues()
+		node.ColRatios = record.GetColRatios().GetValue().GetValues()
+	case leapmuxv1.NodeKind_NODE_KIND_LEAF, leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED:
+		// These nodes carry no container fields.
+	}
+	for _, childID := range crdt.LayoutChildIDs(state.GetNodes(), children, nodeID) {
+		child := projectLayoutNode(state, children, childID)
+		if child == nil && kind == leapmuxv1.NodeKind_NODE_KIND_GRID {
+			child = &layoutNode{Kind: enumToken(leapmuxv1.NodeKind_NODE_KIND_LEAF)}
+		}
+		if child != nil {
+			node.Children = append(node.Children, child)
+		}
 	}
 	switch kind {
 	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
-		out["direction"] = rec.GetDirection().GetValue().String()
-		out["ratios"] = rec.GetRatios().GetValue().GetValues()
-	case leapmuxv1.NodeKind_NODE_KIND_GRID:
-		out["rows"] = rec.GetRows().GetValue()
-		out["cols"] = rec.GetCols().GetValue()
-		out["row_ratios"] = rec.GetRowRatios().GetValue().GetValues()
-		out["col_ratios"] = rec.GetColRatios().GetValue().GetValues()
-	default:
-		// LEAF carries no shape fields of its own, and a live node never holds
-		// UNSPECIFIED, so neither contributes keys beyond node_id/kind.
-	}
-	childJSON := []any{}
-	for _, childID := range children[nodeID] {
-		if c := buildTreeJSONWith(state, children, childID); c != nil {
-			childJSON = append(childJSON, c)
+		switch len(node.Children) {
+		case 0:
+			return &layoutNode{Kind: enumToken(leapmuxv1.NodeKind_NODE_KIND_LEAF)}
+		case 1:
+			return node.Children[0]
 		}
+		node.Ratios = ratiosForLayoutSize(node.Ratios, len(node.Children))
+	case leapmuxv1.NodeKind_NODE_KIND_GRID:
+		if len(node.Children) > 0 {
+			node.RowRatios = ratiosForLayoutSize(node.RowRatios, int(node.Rows))
+			node.ColRatios = ratiosForLayoutSize(node.ColRatios, int(node.Cols))
+		}
+	case leapmuxv1.NodeKind_NODE_KIND_LEAF, leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED:
 	}
-	if len(childJSON) > 0 {
-		out["children"] = childJSON
-	}
-	return out
+	return node
 }
 
 // firstLiveLeaf walks the subtree rooted at rootNodeID and returns the
-// id of the first live leaf in depth-first order, with children
-// visited in (position, node_id) order so the result matches the
-// frontend's render-time leaf ordering. Returns "" when rootNodeID is
-// empty, tombstoned, missing, or has no reachable live leaf.
+// id of the first live leaf in depth-first display order. It returns ""
+// when the root is absent, tombstoned, or has no reachable live leaf.
 func firstLiveLeaf(state *leapmuxv1.UserMaterialized, rootNodeID string) string {
-	if rootNodeID == "" {
-		return ""
-	}
-	children := crdt.LiveChildrenByParent(state)
-	sorted := map[string]bool{}
-	sortKids := func(parent string) {
-		if sorted[parent] {
-			return
-		}
-		kids := children[parent]
-		sort.Slice(kids, func(i, j int) bool {
-			ri, rj := state.GetNodes()[kids[i]], state.GetNodes()[kids[j]]
-			pi, pj := ri.GetPosition().GetValue(), rj.GetPosition().GetValue()
-			if pi != pj {
-				return pi < pj
-			}
-			return kids[i] < kids[j]
-		})
-		sorted[parent] = true
-	}
-	visited := map[string]bool{}
-	var walk func(string) string
-	walk = func(nodeID string) string {
-		if nodeID == "" || visited[nodeID] {
-			return ""
-		}
-		visited[nodeID] = true
-		rec := state.GetNodes()[nodeID]
-		if rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
-			return ""
-		}
-		if rec.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_LEAF {
-			return nodeID
-		}
-		sortKids(nodeID)
-		for _, child := range children[nodeID] {
-			if leaf := walk(child); leaf != "" {
-				return leaf
-			}
-		}
-		return ""
-	}
-	return walk(rootNodeID)
+	return crdt.FirstLiveLayoutLeaf(state.GetNodes(), crdt.LiveChildrenByParent(state), rootNodeID)
 }

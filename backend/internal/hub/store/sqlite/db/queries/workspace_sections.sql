@@ -38,3 +38,16 @@ SELECT EXISTS(
   SELECT 1 FROM workspace_sections
   WHERE user_id = ? AND section_type != ?
 );
+
+-- name: ListWorkspaceSectionsByIDExact :many
+SELECT * FROM workspace_sections
+WHERE id = sqlc.arg(id)
+  AND user_id = sqlc.arg(user_id)
+ORDER BY id ASC;
+
+-- name: ListWorkspaceSectionsByIDPrefix :many
+SELECT * FROM workspace_sections
+WHERE id >= sqlc.arg(id_lo)
+  AND id < sqlc.arg(id_hi)
+  AND user_id = sqlc.arg(user_id)
+ORDER BY id ASC;

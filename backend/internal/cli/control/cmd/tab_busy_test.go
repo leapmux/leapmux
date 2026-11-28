@@ -1,12 +1,15 @@
 package cmd
 
 import (
-	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
+	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -28,16 +31,12 @@ func busyCloseHub() *recordingHub {
 	}
 }
 
-func runBusyTabClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) []byte {
+func runBusyTabClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) cliOutcome {
 	t.Helper()
 	startSpawnIPC(t, hub, disp)
-	args := append([]string{
-		// term-2, not the caller's own agent-1: guardTabClose refuses a
-		// self-close without --force, which would mask the refusal under test.
-		"--tab-id", "term-2", "--tab-type", "terminal",
-		"--workspace-id", "ws-1", "--worker-id", "worker-A",
-	}, extraArgs...)
-	return withCapturedStdout(t, func() { _ = RunTabClose(fakeCmdCtx{}, args) })
+	// term-2, not the caller's own agent-1: guardTabClose refuses a
+	// self-close without --allow-self, which would mask the refusal under test.
+	return runControl(t, append([]string{"tab", "close", "term-2"}, extraArgs...)...)
 }
 
 // A close that would interrupt running work must be refused BEFORE the CRDT
@@ -50,12 +49,9 @@ func TestRunTabClose_BusyTabRefusedBeforeTheTombstone(t *testing.T) {
 	}
 	hub := busyCloseHub()
 
-	out := runBusyTabClose(t, disp, hub)
+	o := runBusyTabClose(t, disp, hub)
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := o.envelope(t)
 	require.NotNil(t, env.Error, "a busy tab must fail the command")
 	// A distinct code, so a script pattern-matches instead of grepping an
 	// invalid_request blob.
@@ -63,7 +59,7 @@ func TestRunTabClose_BusyTabRefusedBeforeTheTombstone(t *testing.T) {
 	assert.Contains(t, env.Error["message"], "term-2")
 	assert.Contains(t, env.Error["message"], "node pid 51234",
 		"the refusal must name what it is refusing to interrupt")
-	assert.Contains(t, env.Error["message"], "pass --allow-busy to close anyway")
+	assert.Equal(t, []any{"pass --allow-busy to close anyway"}, env.Error["hints"])
 
 	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land BEFORE the CRDT tombstone")
@@ -98,9 +94,54 @@ func TestRunTabClose_IdleTabIsNotRefused(t *testing.T) {
 		"the guard still asks; it just finds nothing running")
 }
 
-// The two guards are mutually exclusive and the worktree one wins: its forced
-// --worktree choice already makes the user state an intent for this close, and
-// stacking a second required flag would send them back twice for one close.
+func TestCloseCommandsRequireOverrideWhenBusyCheckFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hub  func() *recordingHub
+		args []string
+	}{
+		{name: "tab close", hub: busyCloseHub, args: []string{"tab", "close", "term-2"}},
+		{name: "tile close", hub: busyTileHub, args: []string{"tile", "close", "leaf-2", "--with-tabs", "close"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := tc.hub()
+			hub.onSubmitOps = tabCloseHub().onSubmitOps
+			worker := &closeDispatcher{
+				inspect: &leapmuxv1.InspectLastTabCloseResponse{}, closeTab: &leapmuxv1.CloseTabResponse{},
+				busyError: connect.NewError(connect.CodeUnavailable, "the process scan failed"),
+			}
+			startSpawnIPC(t, hub, worker)
+			out := runControl(t, tc.args...)
+			assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+			failure := out.requireFailure(t, cli.CodeUnavailable)
+			assert.Contains(t, failure.Message, "the process scan failed")
+			assert.Contains(t, strings.Join(failure.Hints, "\n"), "--allow-busy")
+
+			override := runControl(t, append(tc.args, "--allow-busy")...)
+			require.Equal(t, cli.ExitOK, override.Code, override.Stderr)
+			assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+		})
+	}
+}
+
+func TestRunTabClose_WorktreeChoiceDoesNotApproveInterruptingWork(t *testing.T) {
+	worker := &closeDispatcher{
+		inspect: &leapmuxv1.InspectLastTabCloseResponse{
+			ShouldPrompt: true,
+			Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+			WorktreePath: "/tmp/wt",
+		},
+		terminals: []*leapmuxv1.TerminalProcesses{busyTerminal("term-2", &leapmuxv1.TerminalProcess{Pid: 42, Name: "make"})},
+	}
+	hub := busyCloseHub()
+	out := runBusyTabClose(t, worker, hub, "--worktree", "keep")
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+	failure := out.requireFailure(t, cli.CodeTabBusyRefused)
+	assert.Contains(t, failure.Message, "make pid 42")
+}
+
+// Ask for the worktree action before checking for work that the close may
+// interrupt.
 func TestRunTabClose_LastTabPromptWinsOverTheBusyGate(t *testing.T) {
 	disp := &closeDispatcher{
 		inspect: &leapmuxv1.InspectLastTabCloseResponse{
@@ -112,14 +153,11 @@ func TestRunTabClose_LastTabPromptWinsOverTheBusyGate(t *testing.T) {
 	}
 	hub := busyCloseHub()
 
-	out := runBusyTabClose(t, disp, hub)
+	o := runBusyTabClose(t, disp, hub)
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "pass --worktree=keep|push|discard")
+	env := o.envelope(t)
+	assert.Equal(t, "usage", env.Error["code"])
+	assert.Equal(t, []any{"pass --worktree=keep|push|discard to say what happens to it"}, env.Error["hints"])
 	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"the busy probe must not even run when the worktree gate fires")
 }
@@ -190,23 +228,17 @@ func TestTerminalBusyDetail(t *testing.T) {
 func TestErrTabBusyRefused_NamesEveryBusyTab(t *testing.T) {
 	t.Parallel()
 
-	out := withCapturedStdout(t, func() {
-		_ = errTabBusyRefused([]tabBusyReason{
-			{tabID: "agent-1", detail: "agent turn is in progress"},
-			{tabID: "term-2", detail: "1 process running (node pid 7)"},
-		})
-	})
+	e := cli.FromError(errTabBusyRefused([]tabBusyReason{
+		{tabID: "agent-1", detail: "agent turn is in progress"},
+		{tabID: "term-2", detail: "1 process running (node pid 7)"},
+	}))
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "tab_busy_refused", env.Error["code"])
-	msg, _ := env.Error["message"].(string)
-	assert.Contains(t, msg, "2 busy tabs")
-	assert.Contains(t, msg, "agent-1 (agent turn is in progress)")
-	assert.Contains(t, msg, "term-2 (1 process running (node pid 7))")
-	assert.Contains(t, msg, "pass --allow-busy to close anyway")
+	assert.Equal(t, cli.CodeTabBusyRefused, e.Code)
+	assert.Equal(t, cli.ExitRefused, e.ExitCode())
+	assert.Contains(t, e.Message, "2 busy tabs")
+	assert.Contains(t, e.Message, "agent-1 (agent turn is in progress)")
+	assert.Contains(t, e.Message, "term-2 (1 process running (node pid 7))")
+	assert.Equal(t, []string{"pass --allow-busy to close anyway"}, e.Hints)
 }
 
 // The agent half of the same guard. `tab close` on an AGENT reads AgentInfo.busy
@@ -230,18 +262,10 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 	startSpawnIPC(t, hub, disp)
 
 	// agent-2, not the caller's own agent-1: guardTabClose refuses a self-close
-	// without --force, which would mask the refusal under test.
-	out := withCapturedStdout(t, func() {
-		_ = RunTabClose(fakeCmdCtx{}, []string{
-			"--tab-id", "agent-2", "--tab-type", "agent",
-			"--workspace-id", "ws-1", "--worker-id", "worker-A",
-		})
-	})
+	// without --allow-self, which would mask the refusal under test.
+	o := runControl(t, "tab", "close", "agent-2")
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := o.envelope(t)
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "agent is working, 2 background tasks active")
@@ -249,25 +273,60 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 		"the refusal must land BEFORE the CRDT tombstone")
 }
 
-// FAILS OPEN. A guard that cannot get an answer must let the close through: the
-// alternative strands a tab the user has no other way to shut. Both halves are
-// covered, because each is a separate call that can fail on its own.
-func TestInspectTabsBusy_FailsOpenWhenTheWorkerCannotAnswer(t *testing.T) {
+// Keep probe failures so the caller can distinguish them from idle tabs.
+func TestInspectTabsBusy_ReportsFailedChecks(t *testing.T) {
 	t.Parallel()
 
-	var asked []string
+	var (
+		mu    sync.Mutex
+		asked []string
+	)
 	call := func(method string, _, _ proto.Message) error {
+		mu.Lock()
 		asked = append(asked, method)
+		mu.Unlock()
 		return errors.New("worker unreachable")
 	}
 
-	busy := inspectTabsBusy(call, []tabRef{
+	busy, err := inspectTabsBusy(call, []tabRef{
 		{tabType: leapmuxv1.TabType_TAB_TYPE_AGENT, tabID: "agent-2"},
 		{tabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, tabID: "term-2"},
 	})
 
-	assert.Empty(t, busy, "an unanswerable probe reports nothing busy")
+	assert.Empty(t, busy)
+	assert.ErrorContains(t, err, "worker unreachable")
 	assert.ElementsMatch(t, []string{leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure}, asked)
+}
+
+func TestInspectTabsBusy_DistinguishesAnAbsentAgentFromAnUnreportedOne(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		reply *leapmuxv1.ListAgentsResponse
+		known bool
+	}{
+		{name: "missing verdict", reply: &leapmuxv1.ListAgentsResponse{}},
+		{name: "unknown activity", reply: &leapmuxv1.ListAgentsResponse{Agents: []*leapmuxv1.AgentInfo{{Id: "agent-2"}}}},
+		{name: "idle agent", reply: &leapmuxv1.ListAgentsResponse{Agents: []*leapmuxv1.AgentInfo{{Id: "agent-2", ActivityState: idle}}}, known: true},
+		{name: "absent agent", reply: &leapmuxv1.ListAgentsResponse{Verdicts: []*leapmuxv1.TabHydrationVerdict{{
+			TabId: "agent-2", Status: leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_ABSENT,
+		}}}, known: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			busy, err := inspectTabsBusy(func(method string, _, out proto.Message) error {
+				assert.Equal(t, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, method)
+				proto.Merge(out, tc.reply)
+				return nil
+			}, []tabRef{{tabType: leapmuxv1.TabType_TAB_TYPE_AGENT, tabID: "agent-2"}})
+			assert.Empty(t, busy)
+			if tc.known {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, "agent-2")
+			assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+		})
+	}
 }
 
 // A viewer tab stops nothing when it closes, so the guard spends no round trip
@@ -281,12 +340,13 @@ func TestInspectTabsBusy_SkipsViewerTabs(t *testing.T) {
 		return nil
 	}
 
-	busy := inspectTabsBusy(call, []tabRef{
+	busy, err := inspectTabsBusy(call, []tabRef{
 		{tabType: leapmuxv1.TabType_TAB_TYPE_FILE, tabID: "file-1"},
 		{tabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, tabID: "img-1"},
 	})
 
 	assert.Empty(t, busy)
+	require.NoError(t, err)
 	assert.Empty(t, asked, "a FILE or IMAGE tab is a viewer; nothing to ask about")
 }
 
@@ -298,7 +358,7 @@ func TestInspectTabsBusy_SkipsViewerTabs(t *testing.T) {
 // up front about every busy tab -- and this pair pins that it asks in the same
 // place, before any op is submitted.
 
-// tabOnWorker is `tab` plus the worker id. guardTabsBusy groups its questions
+// tabOnWorker is `tab` plus the worker id. guardBulkCloseTabs groups its questions
 // per worker and skips a tab whose worker is unknown, so a tile-close test must
 // state it; the plain helper leaves it nil, which is right for the preflight
 // tests that never ask a worker anything.
@@ -315,7 +375,7 @@ func busyTileHub() *recordingHub {
 			workspace("ws-1", "root-1").
 			splitNode("root-1", "", "m").
 			// leaf-2 holds the tabs; the caller's own agent-1 sits elsewhere, or
-			// guardTileClose would refuse the self-close first and mask this gate.
+			// the self-target guard would refuse the close first.
 			leafNode("leaf-1", "root-1", "h").
 			leafNode("leaf-2", "root-1", "s").
 			tabOnWorker("agent-1", "leaf-1", "worker-A", leapmuxv1.TabType_TAB_TYPE_AGENT).
@@ -324,13 +384,10 @@ func busyTileHub() *recordingHub {
 	}
 }
 
-func runBusyTileClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) []byte {
+func runBusyTileClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) cliOutcome {
 	t.Helper()
 	startSpawnIPC(t, hub, disp)
-	args := append([]string{
-		"--tile-id", "leaf-2", "--workspace-id", "ws-1", "--with-tabs", "close",
-	}, extraArgs...)
-	return withCapturedStdout(t, func() { _ = RunTileClose(fakeCmdCtx{}, args) })
+	return runControl(t, append([]string{"tile", "close", "leaf-2", "--with-tabs", "close"}, extraArgs...)...)
 }
 
 func TestRunTileClose_BusyTabRefusedBeforeAnyOp(t *testing.T) {
@@ -339,12 +396,9 @@ func TestRunTileClose_BusyTabRefusedBeforeAnyOp(t *testing.T) {
 	}
 	hub := busyTileHub()
 
-	out := runBusyTileClose(t, disp, hub)
+	o := runBusyTileClose(t, disp, hub)
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := o.envelope(t)
 	require.NotNil(t, env.Error, "a tile holding running work must fail the command")
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "term-2")
@@ -374,12 +428,49 @@ func TestRunTileClose_MoveSkipsTheBusyGate(t *testing.T) {
 	hub := busyTileHub()
 
 	startSpawnIPC(t, hub, disp)
-	_ = withCapturedStdout(t, func() {
-		_ = RunTileClose(fakeCmdCtx{}, []string{
-			"--tile-id", "leaf-2", "--workspace-id", "ws-1", "--with-tabs", "move",
-		})
-	})
+	_ = runControl(t, "tile", "close", "leaf-2", "--with-tabs", "move")
 
 	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"a move interrupts nothing, so the guard must not even ask")
+}
+
+// SWEEP-4: a tab whose CRDT record carries no worker_id must not short-circuit
+// guardBulkCloseTabs before inspecting remaining tabs, so any confirmed busy tab
+// takes precedence over the probe failure.
+func TestGuardTabsBusy_ConfirmedBusyWinsOverWorkerlessTab(t *testing.T) {
+	makeHub := func() *recordingHub {
+		st := newStateBuilder().
+			workspace("ws-1", "root-1").
+			splitNode("root-1", "", "m").
+			leafNode("leaf-1", "root-1", "h").
+			leafNode("leaf-2", "root-1", "s").
+			tabOnWorker("agent-1", "leaf-1", "worker-A", leapmuxv1.TabType_TAB_TYPE_AGENT).
+			tabAt("agent-noworker", "leaf-2", "a", leapmuxv1.TabType_TAB_TYPE_AGENT).
+			tabAt("term-2", "leaf-2", "z", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
+			st
+		st.Tabs["term-2"].WorkerId = &leapmuxv1.LWWString{Value: "worker-A"}
+		return &recordingHub{workers: workerRows("worker-A"), materialized: st}
+	}
+
+	t.Run("confirmed busy tab wins over workerless tab", func(t *testing.T) {
+		disp := &closeDispatcher{
+			terminals: []*leapmuxv1.TerminalProcesses{busyTerminal("term-2", &leapmuxv1.TerminalProcess{Pid: 99, Name: "vite"})},
+		}
+		hub := makeHub()
+		o := runBusyTileClose(t, disp, hub)
+		f := o.requireFailure(t, cli.CodeTabBusyRefused)
+		assert.Contains(t, f.Message, "term-2")
+		assert.Contains(t, f.Message, "vite pid 99")
+		assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+	})
+
+	t.Run("workerless tab still refuses as unavailable when remaining tabs are idle", func(t *testing.T) {
+		disp := &closeDispatcher{}
+		hub := makeHub()
+		o := runBusyTileClose(t, disp, hub)
+		f := o.requireFailure(t, cli.CodeUnavailable)
+		assert.Contains(t, f.Message, "agent-noworker")
+		assert.Contains(t, strings.Join(f.Hints, "\n"), "--allow-busy")
+		assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+	})
 }

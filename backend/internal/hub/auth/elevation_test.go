@@ -1,12 +1,16 @@
 package auth_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -161,4 +165,64 @@ func TestRefreshWindowFor(t *testing.T) {
 
 	assert.Greater(t, auth.AbsoluteTokenLifetime, auth.RefreshTokenTTL,
 		"the ceiling must outlast the ordinary window, or an idle credential would die on the wrong rule")
+}
+
+func TestRequireElevationForDurableAuthority_CredentialClasses(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	live := auth.NewElevation(ptrTime(now), ptrTime(now.Add(auth.ElevationWindow)))
+	uid := userid.MustNew("usr_admin")
+
+	// Solo mode, elevated browser session, and elevated Control CLI are admitted.
+	require.NoError(t, auth.RequireElevationForDurableAuthority(&auth.UserInfo{Solo: true}, now))
+	require.NoError(t, auth.RequireElevationForDurableAuthority(&auth.UserInfo{
+		ID: uid, Credential: auth.SessionCredential("sess-1"), Elevation: live,
+	}, now))
+	require.NoError(t, auth.RequireElevationForDurableAuthority(&auth.UserInfo{
+		ID:         uid,
+		Credential: auth.APICredentialWithClientPolicy("tok-cli", oauthapp.ControlCLIClientID, true),
+		Elevation:  live,
+	}, now))
+
+	// Un-elevated browser session and un-elevated Control CLI prompt step-up.
+	for name, user := range map[string]*auth.UserInfo{
+		"un-elevated session": {
+			ID: uid, Credential: auth.SessionCredential("sess-2"),
+		},
+		"un-elevated control cli": {
+			ID:         uid,
+			Credential: auth.APICredentialWithClientPolicy("tok-cli-cold", oauthapp.ControlCLIClientID, true),
+		},
+	} {
+		err := auth.RequireElevationForDurableAuthority(user, now)
+		require.Error(t, err, name)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), name)
+		assert.True(t, errors.Is(err, auth.ErrElevationRequired), "%s must wrap ErrElevationRequired", name)
+	}
+
+	// Disallowed credential classes are refused WITHOUT ErrElevationRequired,
+	// even when carrying a live elevation window.
+	for name, user := range map[string]*auth.UserInfo{
+		"nil user": nil,
+		"service account bearer": {
+			ID:         uid,
+			Credential: auth.APICredentialWithClientPolicy("tok-sa", oauthapp.ServiceAccountClientID, true),
+			Elevation:  live,
+		},
+		"third-party elevatable oauth app": {
+			ID:         uid,
+			Credential: auth.APICredentialWithClientPolicy("tok-3p", "third-party-client", true),
+			Elevation:  live,
+		},
+		"delegation token": {
+			ID: uid, Credential: auth.DelegationCredential("del-1", "worker-1"), Elevation: live,
+		},
+	} {
+		require.Error(t, auth.RequireElevatableSessionOrControlCLI(user), name)
+		err := auth.RequireElevationForDurableAuthority(user, now)
+		require.Error(t, err, name)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), name)
+		assert.False(t, errors.Is(err, auth.ErrElevationRequired), "%s must not wrap ErrElevationRequired", name)
+	}
 }

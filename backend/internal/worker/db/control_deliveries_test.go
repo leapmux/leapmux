@@ -90,6 +90,7 @@ func TestControlResponseAnswerReportsItsAgentsProvider(t *testing.T) {
 	}))
 	require.NoError(t, dbtest.StoreControlResponse(ctx, sqlDB, gendb.ControlResponseAnswer{
 		AgentID: "codex-agent", RequestID: "request", ClaimToken: "claim", AgentSessionID: "session",
+		Decision: []byte(`{"allow":true}`),
 	}))
 
 	answer, err := q.GetControlResponseAnswer(ctx, gendb.GetControlResponseAnswerParams{
@@ -97,4 +98,5 @@ func TestControlResponseAnswerReportsItsAgentsProvider(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, answer.AgentProvider)
+	require.Equal(t, []byte(`{"allow":true}`), answer.Decision)
 }

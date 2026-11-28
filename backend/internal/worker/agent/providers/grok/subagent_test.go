@@ -251,7 +251,7 @@ func TestGrokChildMessageUsesItsOpaqueOwnedAddress(t *testing.T) {
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, steerer.ActiveChildTurnState("spawn-1"))
 	assert.ErrorIs(t, agenttest.SendChildInput(steerer, "spawn-1", agent.ChildInput{Content: "queued"}), agent.ErrAgentBusy)
 	text := "  Exact user text\nUnicode: 한글  "
-	require.NoError(t, steerer.SteerChildInput("spawn-1", text, nil))
+	require.NoError(t, agenttest.SteerChildInput(steerer, "spawn-1", text, nil))
 	sent := requestsFor(requests(), method)
 	require.Len(t, sent, 1)
 	assert.Equal(t, map[string]any{
@@ -260,7 +260,7 @@ func TestGrokChildMessageUsesItsOpaqueOwnedAddress(t *testing.T) {
 	}, sent[0].Params)
 	a.HandleOutput(finished(t, "native-child", "completed", "The child finished."))
 	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState("spawn-1"))
-	assert.ErrorIs(t, steerer.SteerChildInput("spawn-1", "late", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SteerChildInput(steerer, "spawn-1", "late", nil), agent.ErrChildRouteNotReady)
 }
 
 func TestGrokChildMessageRejectsMissingRoutesAndInvalidContent(t *testing.T) {
@@ -269,13 +269,13 @@ func TestGrokChildMessageRejectsMissingRoutesAndInvalidContent(t *testing.T) {
 	steerer, ok := any(a).(agent.ChildSteerer)
 	require.True(t, ok)
 	assert.ErrorIs(t, agenttest.SendChildInput(steerer, "missing", agent.ChildInput{Content: "text"}), agent.ErrChildRouteNotReady)
-	assert.ErrorIs(t, steerer.SteerChildInput("missing", "text", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SteerChildInput(steerer, "missing", "text", nil), agent.ErrChildRouteNotReady)
 	a.HandleOutput(spawned(t, "no-address", "No address", nil))
-	assert.ErrorIs(t, steerer.SteerChildInput("no-address", "text", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SteerChildInput(steerer, "no-address", "text", nil), agent.ErrChildRouteNotReady)
 	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState("no-address"))
 	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
-	assert.Error(t, steerer.SteerChildInput("owned", "", nil))
-	assert.Error(t, steerer.SteerChildInput("owned", "text", []*leapmuxv1.Attachment{{Filename: "note.txt", Data: []byte("note")}}))
+	assert.Error(t, agenttest.SteerChildInput(steerer, "owned", "", nil))
+	assert.Error(t, agenttest.SteerChildInput(steerer, "owned", "text", []*leapmuxv1.Attachment{{Filename: "note.txt", Data: []byte("note")}}))
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), "_x.ai/subagent/message"))
 }
@@ -312,7 +312,7 @@ func TestGrokChildMessageOutcomes(t *testing.T) {
 			steerer, ok := any(a).(agent.ChildSteerer)
 			require.True(t, ok)
 			a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
-			err := steerer.SteerChildInput("owned", "literal input", nil)
+			err := agenttest.SteerChildInput(steerer, "owned", "literal input", nil)
 			switch {
 			case tc.want != nil:
 				assert.ErrorIs(t, err, tc.want)
@@ -334,7 +334,7 @@ func TestGrokChildMessageMethodNotFoundIsUnsupported(t *testing.T) {
 	steerer, ok := any(a).(agent.ChildSteerer)
 	require.True(t, ok)
 	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
-	assert.ErrorIs(t, steerer.SteerChildInput("owned", "literal input", nil), agent.ErrChildOperationUnsupported)
+	assert.ErrorIs(t, agenttest.SteerChildInput(steerer, "owned", "literal input", nil), agent.ErrChildOperationUnsupported)
 }
 
 func TestGrokChildMessageAddressReplacementAndContextClear(t *testing.T) {
@@ -349,14 +349,14 @@ func TestGrokChildMessageAddressReplacementAndContextClear(t *testing.T) {
 	require.True(t, ok)
 	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.before"}))
 	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.after"}))
-	require.NoError(t, steerer.SteerChildInput("owned", "first message", nil))
+	require.NoError(t, agenttest.SteerChildInput(steerer, "owned", "first message", nil))
 	sent := requestsFor(requests(), "_x.ai/subagent/message")
 	require.Len(t, sent, 1)
 	assert.Equal(t, "aa1.after", sent[0].Params["agentAddress"])
 	_, err := a.ClearContext()
 	require.NoError(t, err)
 	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState("owned"))
-	assert.ErrorIs(t, steerer.SteerChildInput("owned", "old address", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SteerChildInput(steerer, "owned", "old address", nil), agent.ErrChildRouteNotReady)
 	syncPeer(t, a)
 	assert.Len(t, requestsFor(requests(), "_x.ai/subagent/message"), 1, "context clear cannot revive the old child route")
 }
@@ -419,7 +419,7 @@ func TestGrokChildRoutesRefuseTheOutgoingOwnerBeforeProviderCleanup(t *testing.T
 	require.Equal(t, "replacement-root", a.CurrentSessionID())
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("owned"))
 	assert.ErrorIs(t, agenttest.SendChildInput(a, "owned", agent.ChildInput{Content: "queued"}), agent.ErrChildRouteNotReady)
-	assert.ErrorIs(t, a.SteerChildInput("owned", "steer", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SteerChildInput(a, "owned", "steer", nil), agent.ErrChildRouteNotReady)
 	assert.ErrorIs(t, a.InterruptChild("owned", agent.StopContext{}), agent.ErrChildRouteNotReady)
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), grokSubagentMessageMethod))
@@ -443,7 +443,7 @@ func TestGrokReplacementChildNotificationSurvivesProviderCleanup(t *testing.T) {
 	}))
 	finish()
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState("replacement-child"))
-	require.NoError(t, a.SteerChildInput("replacement-child", "new input", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, "replacement-child", "new input", nil))
 	sent := requestsFor(requests(), grokSubagentMessageMethod)
 	require.Len(t, sent, 1)
 	assert.Equal(t, "replacement-root", sent[0].Params["sessionId"])
@@ -463,7 +463,7 @@ func TestGrokRepeatedSessionIDRefusesTheClearAndPreservesItsChild(t *testing.T) 
 	require.ErrorContains(t, err, "current session ID")
 	assert.Equal(t, grokTestSession, a.CurrentSessionID())
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState("owned"))
-	require.NoError(t, a.SteerChildInput("owned", "still owned", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, "owned", "still owned", nil))
 	sent := requestsFor(requests(), grokSubagentMessageMethod)
 	require.Len(t, sent, 1)
 	assert.Equal(t, grokTestSession, sent[0].Params["sessionId"])
@@ -517,7 +517,7 @@ func TestGrokChildMessageRequiresALiveRootSession(t *testing.T) {
 			err := agenttest.SendChildInput(steerer, "owned", agent.ChildInput{Content: "queued input"})
 			assert.Error(t, err)
 			assert.NotErrorIs(t, err, agent.ErrAgentBusy)
-			assert.Error(t, steerer.SteerChildInput("owned", "literal input", nil))
+			assert.Error(t, agenttest.SteerChildInput(steerer, "owned", "literal input", nil))
 			assert.Empty(t, requestsFor(requests(), "_x.ai/subagent/message"))
 		})
 	}
@@ -541,7 +541,7 @@ func TestGrokChildMessageTransportLossStaysUncertainAfterTheWrite(t *testing.T) 
 	require.True(t, ok)
 	a.HandleOutput(spawned(t, "owned", "Owned child", map[string]any{"agentAddress": "aa1.owned"}))
 	done := make(chan error, 1)
-	go func() { done <- steerer.SteerChildInput("owned", "literal input", nil) }()
+	go func() { done <- agenttest.SteerChildInput(steerer, "owned", "literal input", nil) }()
 	deadline := testutil.DeadlineContext(t)
 	select {
 	case <-entered:
@@ -1367,4 +1367,45 @@ func TestGrokWakeOriginAndWorkflowRevival(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, bgtask.StatusRunning, row.Status)
 	})
+}
+
+type failOnceBindChildSink struct {
+	agent.ProviderServices
+	failedOnce *bool
+}
+
+func (s *failOnceBindChildSink) BindChildSessionID(sessionID string) error {
+	if !*s.failedOnce {
+		*s.failedOnce = true
+		return assert.AnError
+	}
+	return s.ProviderServices.BindChildSessionID(sessionID)
+}
+
+type failOnceChildSpawnerSink struct {
+	*agenttest.ControlSink
+	failedOnce bool
+}
+
+func (s *failOnceChildSpawnerSink) ChildSink(childAgentID string) agent.ProviderServices {
+	return &failOnceBindChildSink{
+		ProviderServices: s.ControlSink.ChildSink(childAgentID),
+		failedOnce:       &s.failedOnce,
+	}
+}
+
+func TestGrokSteerChildRetriesTransientBindFailure(t *testing.T) {
+	t.Parallel()
+	a, baseSink, _ := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"msg-retry"}}`)}
+	})
+	a.SetSinkForTest(agent.NewProviderServices(&failOnceChildSpawnerSink{ControlSink: baseSink}))
+
+	a.HandleOutput(spawnCall(t, "spawn-retry", "Retry child", "Run task", true))
+	// Initial BindAttachedChildSession fails transiently once inside handleSubagentSpawned.
+	a.HandleOutput(spawned(t, "child-retry", "Retry child", map[string]any{"agentAddress": "aa1.retry"}))
+
+	receipt, err := a.SteerChildInput("spawn-retry", agent.SteerRequest{InputID: "in-1", Content: "continue"})
+	require.NoError(t, err)
+	assert.Equal(t, "msg-retry", receipt.InputID)
 }

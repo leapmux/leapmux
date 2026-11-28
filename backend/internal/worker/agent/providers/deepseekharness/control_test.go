@@ -50,6 +50,9 @@ func TestPlanReviewHandsTheWorkerAPlanThatItCanDecodeAndTitle(t *testing.T) {
 	assert.Equal(t, plan, string(stored))
 	assert.Equal(t, "Exact native plan", update.Title)
 	require.Equal(t, 1, sink.PublishedControlCount())
+	// The agent rewrites the request of a user-questions event, so the stored
+	// plan review must still give the key that the agent published it under.
+	agenttest.AssertPublishedControlKeys(t, Registration().Plugin, sink)
 }
 
 func TestPlanReviewWithoutAPlanStoresNothingAndStillAsksTheReader(t *testing.T) {
@@ -62,6 +65,42 @@ func TestPlanReviewWithoutAPlanStoresNothingAndStillAsksTheReader(t *testing.T) 
 
 	assert.Zero(t, sink.PlanUpdateCount())
 	require.Equal(t, 1, sink.PublishedControlCount())
+}
+
+func TestMixedPlanReviewAndQuestionDoesNotStorePlanOrClaimExitPlanMode(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
+	request, err := json.Marshal(map[string]any{
+		"questions": []any{
+			map[string]any{
+				"id": "plan-review", "question": "Review the plan", "detail": "# Should not store",
+				"options": []map[string]string{{"label": "Approve"}},
+				"intent":  map[string]string{"kind": deepseekHarnessIntentPlanReview, "approve": "Approve", "callId": "native-plan"},
+			},
+			map[string]any{
+				"id": "extra", "question": "Another question?",
+				"options": []map[string]string{{"label": "Yes"}},
+			},
+		},
+	})
+	require.NoError(t, err)
+	raw, err := json.Marshal(map[string]any{
+		"type": "waterfall", "event": contracts.DeepseekHarnessControlEventUserQuestions,
+		"eventId": "mixed-event", "agentId": "native-root", "request": json.RawMessage(request),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, a.publishNativeControl(contracts.DeepseekHarnessControlEventUserQuestions, "mixed-event", "native-root", request, raw))
+	assert.Zero(t, sink.PlanUpdateCount())
+	require.Equal(t, 1, sink.PublishedControlCount())
+	var published struct {
+		Request struct {
+			ToolName string `json:"tool_name"`
+		} `json:"request"`
+	}
+	require.NoError(t, json.Unmarshal(sink.LastPublishedControl().Payload, &published))
+	assert.Equal(t, contracts.DeepseekHarnessToolAskUserQuestion, published.Request.ToolName)
 }
 
 func TestBypassApprovesPendingAndLaterNativeTools(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-// The worker stores a JSON-RPC request under the key `jsonrpc:<id>`, and the
-// browser answers under that key.
+// The worker stores a JSON-RPC request under the key `jsonrpc:<id>`, and an
+// answer carries that key as its id.
 const grokStoredRequestID = "jsonrpc:5"
 
 // grokRequestPayload is a stored request of one method, with the native id 5.
@@ -27,7 +27,7 @@ func grokRequestPayload(t *testing.T, method string) json.RawMessage {
 	return payload
 }
 
-// neutralDecision is the browser's allow or deny envelope.
+// neutralDecision is the neutral allow or deny envelope.
 func neutralDecision(t *testing.T, requestID, behavior, message string) []byte {
 	t.Helper()
 	response := map[string]any{"behavior": behavior}
@@ -42,7 +42,8 @@ func neutralDecision(t *testing.T, requestID, behavior, message string) []byte {
 	return data
 }
 
-// selectedOption is the browser's permission reply that selects one option.
+// selectedOption is the permission reply that selects one option, as
+// providerkit.SelectedOptionResult builds it.
 func selectedOption(t *testing.T, requestID, optionID string) []byte {
 	t.Helper()
 	data, err := json.Marshal(map[string]any{
@@ -53,13 +54,11 @@ func selectedOption(t *testing.T, requestID, optionID string) []byte {
 	return data
 }
 
+// resolve resolves response to the request of method, stored as
+// grokStoredRequestID, as the Worker does.
 func resolve(t *testing.T, method string, response []byte) agent.ControlResponseResolution {
 	t.Helper()
-	return grokProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       grokStoredRequestID,
-		RequestPayload:  grokRequestPayload(t, method),
-		ResponseContent: response,
-	})
+	return agenttest.ResolveAnswer(grokProvider{}, grokRequestPayload(t, method), grokStoredRequestID, agent.ControlAnswer{Content: response})
 }
 
 func TestGrokPlanApprovalReplies(t *testing.T) {
@@ -71,10 +70,10 @@ func TestGrokPlanApprovalReplies(t *testing.T) {
 		want     string
 		exit     bool
 	}{
-		{name: "approve", behavior: agent.ControlBehaviorAllow, want: `{"outcome":"approved"}`, exit: true},
-		{name: "reject with a reason", behavior: agent.ControlBehaviorDeny, message: "Split step 2.", want: `{"outcome":"cancelled","feedback":"Split step 2."}`},
-		{name: "reject bare", behavior: agent.ControlBehaviorDeny, want: `{"outcome":"cancelled"}`},
-		{name: "reject with the placeholder", behavior: agent.ControlBehaviorDeny, message: agent.ControlRejectedByUserMessage, want: `{"outcome":"cancelled"}`},
+		{name: "approve", behavior: contracts.ControlAnswerBehaviorAllow, want: `{"outcome":"approved"}`, exit: true},
+		{name: "reject with a reason", behavior: contracts.ControlAnswerBehaviorDeny, message: "Split step 2.", want: `{"outcome":"cancelled","feedback":"Split step 2."}`},
+		{name: "reject bare", behavior: contracts.ControlAnswerBehaviorDeny, want: `{"outcome":"cancelled"}`},
+		{name: "reject with the placeholder", behavior: contracts.ControlAnswerBehaviorDeny, message: contracts.ControlAnswerMessageRejectedByUser, want: `{"outcome":"cancelled"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -98,17 +97,16 @@ func TestGrokPlanApprovalReplies(t *testing.T) {
 }
 
 // Each refusal states the cause that the browser shows to the reader, so a
-// reason that moves to another branch fails here.
+// reason that moves to another branch fails here. Each answer addresses the
+// stored request, as every answer that the Worker resolves does.
 func TestGrokPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		response []byte
 		reason   string
 	}{
-		"another request":  {response: neutralDecision(t, "jsonrpc:6", agent.ControlBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
-		"no request id":    {response: neutralDecision(t, "", agent.ControlBehaviorAllow, ""), reason: agent.RefusalNoDecision},
 		"unknown behavior": {response: neutralDecision(t, grokStoredRequestID, "maybe", ""), reason: agent.RefusalNoDecision},
-		"not json":         {response: []byte(`{`), reason: agent.RefusalNoDecision},
+		"no behavior":      {response: neutralDecision(t, grokStoredRequestID, "", ""), reason: agent.RefusalNoDecision},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -120,6 +118,9 @@ func TestGrokPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 }
 
 // A stored request that states no id has no request that a reply could answer.
+// The stored request states no id, so it gives no key, and the Worker refuses
+// it before Grok reads it (agent.StoredControlRequestAgrees). Grok's own guard
+// still withholds the answer, because a reply needs the request's id.
 func TestGrokPlanApprovalOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(map[string]any{
@@ -127,12 +128,8 @@ func TestGrokPlanApprovalOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T
 		"params": map[string]any{"sessionId": grokTestSession},
 	})
 	require.NoError(t, err)
-	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
-		result := grokProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID:       grokStoredRequestID,
-			RequestPayload:  payload,
-			ResponseContent: neutralDecision(t, grokStoredRequestID, behavior, ""),
-		})
+	for _, behavior := range []string{contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny} {
+		result := agenttest.ResolveAnswerPastTheKeyCheck(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: neutralDecision(t, grokStoredRequestID, behavior, "")})
 		assert.True(t, result.Withhold, behavior)
 		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, behavior)
 	}
@@ -170,11 +167,12 @@ func TestGrokElicitationRepliesUnderOutcome(t *testing.T) {
 	}
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestGrokElicitationWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
 	for name, response := range map[string]map[string]any{
 		"unknown action":  {"request_id": grokStoredRequestID, "response": map[string]any{"action": "maybe"}},
-		"another request": {"request_id": "jsonrpc:6", "response": map[string]any{"action": "accept"}},
 		"a persist scope": {"request_id": grokStoredRequestID, "response": map[string]any{"action": "accept", "_meta": map[string]any{"persist": "always"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -195,8 +193,6 @@ func TestGrokFolderTrustReplies(t *testing.T) {
 	}{
 		{name: "trust option", response: selectedOption(t, grokStoredRequestID, "trust"), want: `{"outcome":"trust"}`},
 		{name: "reject option", response: selectedOption(t, grokStoredRequestID, "reject"), want: `{"outcome":"reject"}`},
-		{name: "allow", response: neutralDecision(t, grokStoredRequestID, agent.ControlBehaviorAllow, ""), want: `{"outcome":"trust"}`},
-		{name: "deny", response: neutralDecision(t, grokStoredRequestID, agent.ControlBehaviorDeny, "no"), want: `{"outcome":"reject"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -213,16 +209,20 @@ func TestGrokFolderTrustReplies(t *testing.T) {
 	}
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestGrokFolderTrustWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
 	for name, response := range map[string][]byte{
 		// Grok reads any word but `trust` as a rejection that it keeps for the
 		// rest of the process, so a guess is never sent.
-		"unknown option":   selectedOption(t, grokStoredRequestID, "allow-once"),
-		"another request":  selectedOption(t, "jsonrpc:6", "trust"),
-		"cancelled":        []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","result":{"outcome":{"outcome":"cancelled"}}}`),
+		"unknown option": selectedOption(t, grokStoredRequestID, "allow-once"),
+		"cancelled":      []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","result":{"outcome":{"outcome":"cancelled"}}}`),
+		// AnswerControlRequest answers folder trust with the option of a
+		// permission reply alone, so a neutral decision is no answer to it.
+		"a neutral allow":  neutralDecision(t, grokStoredRequestID, contracts.ControlAnswerBehaviorAllow, ""),
+		"a neutral deny":   neutralDecision(t, grokStoredRequestID, contracts.ControlAnswerBehaviorDeny, "no"),
 		"unknown behavior": neutralDecision(t, grokStoredRequestID, "maybe", ""),
-		"not json":         []byte(`nope`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -233,9 +233,29 @@ func TestGrokFolderTrustWithholdsAnUnreadableAnswer(t *testing.T) {
 	}
 }
 
+// A stored folder-trust question that states no id has no request that a
+// reply could answer. The refusal blames the stored request, not the answer,
+// whichever option the reader chose.
+// The stored request states no id, so it gives no key, and the Worker refuses
+// it before Grok reads it (agent.StoredControlRequestAgrees). Grok's own guard
+// still withholds the answer, because a reply needs the request's id.
+func TestGrokFolderTrustOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "method": contracts.GrokMethodFolderTrust,
+		"params": map[string]any{"sessionId": grokTestSession},
+	})
+	require.NoError(t, err)
+	for _, option := range []string{contracts.GrokTrustOutcomeTrust, contracts.GrokTrustOutcomeReject} {
+		result := agenttest.ResolveAnswerPastTheKeyCheck(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: selectedOption(t, grokStoredRequestID, option)})
+		assert.True(t, result.Withhold, option)
+		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, option)
+	}
+}
+
 func TestGrokForwardsQuestionAndPermissionReplies(t *testing.T) {
 	t.Parallel()
-	// The browser already writes Grok's own reply for these two.
+	// AnswerControlRequest already writes Grok's own reply for these two.
 	question := []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","result":{"outcome":"accepted","answers":{"Which?":["A"]}}}`)
 	result := resolve(t, contracts.GrokMethodAskUserQuestion, question)
 	require.False(t, result.Withhold)
@@ -250,7 +270,7 @@ func TestGrokForwardsQuestionAndPermissionReplies(t *testing.T) {
 func TestGrokResolveWithoutAStoredRequestForwards(t *testing.T) {
 	t.Parallel()
 	response := selectedOption(t, grokStoredRequestID, "trust")
-	result := grokProvider{}.ResolveControlResponse(agent.ControlResponseContext{ResponseContent: response})
+	result := agenttest.ResolveAnswer(grokProvider{}, nil, grokStoredRequestID, agent.ControlAnswer{Content: response})
 	assert.False(t, result.Withhold)
 	assert.Equal(t, response, result.Content)
 }
@@ -277,15 +297,16 @@ func TestGrokResumeHandleIsAToken(t *testing.T) {
 
 // A stored dialog that states no id has no request that a reply could answer,
 // so the provider withholds each rewritten answer rather than send it with no
-// id.
+// id. Such a dialog gives no key either, so the Worker refuses it before Grok
+// reads it (agent.StoredControlRequestAgrees), and this pins Grok's own guard.
 func TestGrokWithholdsAnAnswerToAStoredRequestWithNoID(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		method   string
 		response []byte
 	}{
-		{method: contracts.GrokMethodExitPlanMode, response: neutralDecision(t, grokStoredRequestID, agent.ControlBehaviorAllow, "")},
-		{method: contracts.GrokMethodFolderTrust, response: neutralDecision(t, grokStoredRequestID, agent.ControlBehaviorAllow, "")},
+		{method: contracts.GrokMethodExitPlanMode, response: neutralDecision(t, grokStoredRequestID, contracts.ControlAnswerBehaviorAllow, "")},
+		{method: contracts.GrokMethodFolderTrust, response: neutralDecision(t, grokStoredRequestID, contracts.ControlAnswerBehaviorAllow, "")},
 		{method: contracts.GrokMethodFolderTrust, response: selectedOption(t, grokStoredRequestID, "trust")},
 	} {
 		payload, err := json.Marshal(map[string]any{
@@ -293,9 +314,7 @@ func TestGrokWithholdsAnAnswerToAStoredRequestWithNoID(t *testing.T) {
 			"params": map[string]any{"sessionId": grokTestSession, "toolCallId": "call_1"},
 		})
 		require.NoError(t, err)
-		result := grokProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID: grokStoredRequestID, RequestPayload: payload, ResponseContent: tc.response,
-		})
+		result := agenttest.ResolveAnswerPastTheKeyCheck(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: tc.response})
 		assert.True(t, result.Withhold, tc.method)
 	}
 }
@@ -303,12 +322,10 @@ func TestGrokWithholdsAnAnswerToAStoredRequestWithNoID(t *testing.T) {
 // A stored payload that is not JSON states no dialog, so the shared resolution
 // takes the answer. That rule cannot restore the native id of a request that
 // it cannot read, so it withholds the reply rather than send it with the
-// browser's id.
+// stored key as its id.
 func TestGrokUnreadableStoredRequestTakesTheSharedRule(t *testing.T) {
 	t.Parallel()
-	result := grokProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID: grokStoredRequestID, RequestPayload: json.RawMessage(`not json`), ResponseContent: selectedOption(t, grokStoredRequestID, "trust"),
-	})
+	result := agenttest.ResolveAnswer(grokProvider{}, []byte(`not json`), grokStoredRequestID, agent.ControlAnswer{Content: selectedOption(t, grokStoredRequestID, "trust")})
 	assert.True(t, result.Withhold)
 }
 

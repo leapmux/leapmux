@@ -52,7 +52,7 @@ func (b *GenerationBuffer) PersistScope(scopeID string, completion agent.Message
 	return b.persistScopes([]string{scopeID}, completion, generationCallback(persist), nil)
 }
 
-func (b *GenerationBuffer) persistScopes(scopeIDs []string, completion agent.MessageCompletion, prepare func([]byte) func(*agent.OutputTicket) error, reservationWriter agent.TranscriptServices) (bool, error) {
+func (b *GenerationBuffer) persistScopes(scopeIDs []string, completion agent.MessageCompletion, prepare prepareGenerationWrite, reservationWriter agent.TranscriptServices) (bool, error) {
 	b.writeMu.Lock()
 	b.mu.Lock()
 	selected := make(map[string]bool, len(scopeIDs))
@@ -81,7 +81,7 @@ func (b *GenerationBuffer) persistScopes(scopeIDs []string, completion agent.Mes
 	return found, b.prepareAndFlush(pending, prepare)
 }
 
-func (b *GenerationBuffer) persistMatching(completion agent.MessageCompletion, matches func(*generationSegment) bool, prepare func([]byte) func(*agent.OutputTicket) error, reservationWriter agent.TranscriptServices) error {
+func (b *GenerationBuffer) persistMatching(completion agent.MessageCompletion, matches func(*generationSegment) bool, prepare prepareGenerationWrite, reservationWriter agent.TranscriptServices) error {
 	b.writeMu.Lock()
 	b.mu.Lock()
 	pending, err := b.freezeEntriesLocked(b.orderedSegmentsLocked(matches), completion, prepare, reservationWriter)
@@ -93,26 +93,30 @@ func (b *GenerationBuffer) persistMatching(completion agent.MessageCompletion, m
 	return b.prepareAndFlush(pending, prepare)
 }
 
+type prepareGenerationWrite func([]byte, generationNativeTurn) func(*agent.OutputTicket) error
+
 type generationPreparation struct {
 	raw    []byte
+	turn   generationNativeTurn
 	run    func(*agent.OutputTicket) error
 	ready  atomic.Bool
 	ticket *agent.OutputTicket
 }
 
-func generationCallback(persist func([]byte) error) func([]byte) func(*agent.OutputTicket) error {
+func generationCallback(persist func([]byte) error) prepareGenerationWrite {
 	if persist == nil {
 		return nil
 	}
-	return func(raw []byte) func(*agent.OutputTicket) error {
+	return func(raw []byte, _ generationNativeTurn) func(*agent.OutputTicket) error {
 		return func(*agent.OutputTicket) error { return persist(slices.Clone(raw)) }
 	}
 }
 
-func (b *GenerationBuffer) prepareAndFlush(pending []*generationPreparation, prepare func([]byte) func(*agent.OutputTicket) error) error {
+func (b *GenerationBuffer) prepareAndFlush(pending []*generationPreparation, prepare prepareGenerationWrite) error {
 	tickets := make([]*agent.OutputTicket, 0, len(pending))
 	for _, row := range pending {
-		row.run = prepare(slices.Clone(row.raw))
+		row.run = prepare(row.raw, row.turn)
+		row.raw = nil
 		row.ready.Store(true)
 		tickets = append(tickets, row.ticket)
 	}
@@ -130,7 +134,7 @@ func (b *GenerationBuffer) prepareAndFlush(pending []*generationPreparation, pre
 
 // freezeEntriesLocked reserves every selected row before a capture can call the sink.
 // Native output that arrives during capture must remain after this batch.
-func (b *GenerationBuffer) freezeEntriesLocked(entries []orderedSegment, completion agent.MessageCompletion, prepare func([]byte) func(*agent.OutputTicket) error, reservationWriter agent.TranscriptServices) ([]*generationPreparation, error) {
+func (b *GenerationBuffer) freezeEntriesLocked(entries []orderedSegment, completion agent.MessageCompletion, prepare prepareGenerationWrite, reservationWriter agent.TranscriptServices) ([]*generationPreparation, error) {
 	if len(entries) != 0 && prepare == nil {
 		return nil, errors.New("the generation write has no persistence function")
 	}
@@ -146,7 +150,7 @@ func (b *GenerationBuffer) freezeEntriesLocked(entries []orderedSegment, complet
 		if entry.segment.text.Len() == 0 {
 			continue
 		}
-		row := &generationPreparation{raw: rows[index]}
+		row := &generationPreparation{raw: rows[index], turn: entry.segment.turn}
 		pending = append(pending, row)
 		writes = append(writes, agent.OutputWrite{Owner: owner, ScopeID: entry.scopeID, RetainedBytes: entry.segment.text.Len(),
 			Label: fmt.Sprintf("persist generation scope %q", entry.scopeID), Run: func() error {
@@ -220,13 +224,28 @@ type generationDestination struct {
 	captured bool
 }
 
-func (destination *generationDestination) prepare(raw []byte) func(*agent.OutputTicket) error {
+func (destination *generationDestination) prepare(raw []byte, turn generationNativeTurn) func(*agent.OutputTicket) error {
 	if !destination.captured {
 		destination.template = destination.writer.CaptureMessage(destination.template, destination.span)
 		destination.captured = true
 	}
 	content := destination.template.Clone()
 	content.Original = raw
+	switch {
+	case turn.mixed:
+		content.NativeTurnID = ""
+		content.NativeInputID = ""
+	case turn.turnID != "":
+		if content.AgentSessionID != turn.sessionID || content.NativeTurnID != turn.turnID {
+			content.NativeInputID = ""
+		}
+		if content.AgentSessionID != turn.sessionID {
+			// CaptureTranscript resolves publication for the session that produced this row.
+			content.AgentSessionID = turn.sessionID
+			content.Publication = nil
+		}
+		content.NativeTurnID = turn.turnID
+	}
 	record := agent.CaptureTranscript(destination.writer, content, destination.span)
 	return func(ticket *agent.OutputTicket) error {
 		return record.PersistQueuedMessage(ticket, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)

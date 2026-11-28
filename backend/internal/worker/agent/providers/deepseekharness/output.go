@@ -2,6 +2,7 @@ package deepseekharness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -34,6 +35,7 @@ var silentSessionEvents = map[string]struct{}{
 }
 
 type assistantMessageEventData struct {
+	Turn    *int64 `json:"turn"`
 	Message struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -52,7 +54,7 @@ func (a *Agent) handleSessionEvent(stream *sessionStream, raw []byte) error {
 	if *event.Seq <= stream.lastSeq {
 		return nil
 	}
-	if a.discard.Load() {
+	if a.IsDiscardingOutput() {
 		stream.lastSeq = *event.Seq
 		return nil
 	}
@@ -70,6 +72,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 	case contracts.DeepseekHarnessEventTurnStart:
 		stream.tools = 0
 		stream.startedAt = event.Time
+		a.beginReplyTurn(stream, event.Data)
 		if stream.childAgentID == "" {
 			a.setTurnState(true)
 		} else if stream.replay != nil {
@@ -111,63 +114,51 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			blockContent.IdempotencyKey += fmt.Sprintf(":block:%d", index)
 			blockContent.Supplemental = supplemental
 			blockContent.Completion = completion
+			var reply *harnessReplyTurn
+			if block.Type == contracts.DeepseekHarnessContentTypeText {
+				reply = a.replyTurnForText(stream.sessionID, data.Turn)
+			}
+			if reply != nil {
+				blockContent.NativeTurnID = reply.id
+			}
 			if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, blockContent, agent.SpanInfo{}); !agent.OutputRetained(err) {
 				return err
 			}
+			if reply != nil {
+				reply.recordText(blockContent.IdempotencyKey)
+			}
 		}
 	case contracts.DeepseekHarnessEventUserMessage:
-		if stream.childAgentID == "" {
-			var message struct {
-				Source struct {
-					RPCID string `json:"rpcId"`
-				} `json:"source"`
-			}
-			if err := json.Unmarshal(event.Data, &message); err != nil {
+		var message struct {
+			Source struct {
+				Kind  string `json:"kind"`
+				RPCID string `json:"rpcId"`
+			} `json:"source"`
+		}
+		if err := json.Unmarshal(event.Data, &message); err != nil {
+			if stream.childAgentID == "" {
 				return err
 			}
-			a.Mu.Lock()
-			a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(steer *pendingSteer) bool {
-				if steer.requestID != message.Source.RPCID {
-					return false
-				}
-				steer.delivered = true
-				return true
-			})
-			a.Mu.Unlock()
-		}
-		if stream.childAgentID != "" && isUnstoredChildInput(event.Data) {
-			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
+		} else {
+			if message.Source.RPCID != "" {
+				a.markPendingSteerDelivered(stream, message.Source.RPCID)
+			}
+			if message.Source.Kind == nativeUserSourceKind && message.Source.RPCID != "" {
+				a.bindReplyInput(stream, message.Source.RPCID)
+			}
+			if stream.childAgentID != "" && isUnstoredChildSource(message.Source.Kind, message.Source.RPCID) {
+				return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
+			}
 		}
 	case "agent/inbox/spliced":
-		if stream.childAgentID == "" {
-			var inbox struct {
-				Inserted []struct {
-					ID     string `json:"id"`
-					Source struct {
-						RPCID string `json:"rpcId"`
-					} `json:"source"`
-				} `json:"inserted"`
-			}
-			if err := json.Unmarshal(event.Data, &inbox); err != nil {
-				return err
-			}
-			a.Mu.Lock()
-			for _, item := range inbox.Inserted {
-				if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Source.RPCID) == "" {
-					continue
-				}
-				for _, steer := range a.pendingSteers {
-					if steer.requestID == item.Source.RPCID {
-						steer.itemID = item.ID
-					}
-				}
-			}
-			a.Mu.Unlock()
+		if err := a.handleInboxSplice(stream, event.Data); err != nil {
+			return err
 		}
 	case contracts.DeepseekHarnessEventToolCall:
 		var call struct {
 			ID   string `json:"callId"`
 			Name string `json:"name"`
+			Turn *int64 `json:"turn"`
 		}
 		if err := json.Unmarshal(event.Data, &call); err != nil || call.ID == "" || call.Name == "" {
 			return fmt.Errorf("DeepSeek Harness tool call has no identity")
@@ -181,6 +172,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: call.ID, SpanType: call.Name, SpanColor: sink.ReserveSpanColor(call.ID, "")}); !agent.OutputRetained(err) {
 			return err
 		}
+		a.recordReplyToolCall(stream.sessionID, call.ID, call.Turn)
 		stream.tools++
 		stream.pendingOrder = append(stream.pendingOrder, call.ID)
 		stream.pending[call.ID] = append([]byte(nil), raw...)
@@ -211,21 +203,29 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			return err
 		}
 		delete(stream.pending, id)
+		a.forgetReplyToolCall(stream.sessionID, id)
 		sink.CloseSpan(id)
 	case contracts.DeepseekHarnessEventTurnEnd:
-		completion := nativeTurnCompletion(event.Data)
-		if stream.childAgentID == "" {
-			a.retryResolution.Reset()
-			var end struct {
-				Reason struct {
-					Error struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				} `json:"reason"`
-			}
-			if err := json.Unmarshal(event.Data, &end); err != nil {
+		var end struct {
+			Turn   *int64 `json:"turn"`
+			Reason struct {
+				Kind  string `json:"kind"`
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"reason"`
+		}
+		completion := agent.MessageCompletionError
+		outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
+		if err := json.Unmarshal(event.Data, &end); err != nil {
+			if stream.childAgentID == "" {
 				return err
 			}
+		} else {
+			completion, outcome = classifyTurnEndReason(end.Reason.Kind)
+		}
+		if stream.childAgentID == "" {
+			a.retryResolution.Reset()
 			a.flushPendingErrors(end.Reason.Error.Message)
 			a.lastTurnError = end.Reason.Error.Message
 		}
@@ -247,6 +247,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		if completion == agent.MessageCompletionInterrupted {
 			providerkit.ResetSpansAndProgress(sink)
 		}
+		a.finishReplyTurn(stream.sessionID, end.Turn, outcome)
 		if stream.childAgentID == "" {
 			a.setTurnState(false)
 		} else if stream.replay != nil {
@@ -379,6 +380,170 @@ func (s *sessionStream) setContextWindow(window int64) {
 	}
 }
 
+const (
+	inboxTargetNextStep = "next-step"
+	inboxTargetNextTurn = "next-turn"
+)
+
+type inboxItem struct {
+	ID    string
+	RPCID string
+}
+
+type inboxSpliceItem struct {
+	ID     string `json:"id"`
+	Source struct {
+		RPCID string `json:"rpcId"`
+	} `json:"source"`
+}
+
+func toInboxItems(raw []inboxSpliceItem) []inboxItem {
+	if len(raw) == 0 {
+		return nil
+	}
+	items := make([]inboxItem, 0, len(raw))
+	for _, item := range raw {
+		items = append(items, inboxItem{
+			ID:    strings.TrimSpace(item.ID),
+			RPCID: strings.TrimSpace(item.Source.RPCID),
+		})
+	}
+	return items
+}
+
+// seedInbox initializes the stream's inbox mirror from a snapshot's inbox projection.
+func (s *sessionStream) seedInbox(projections map[string]json.RawMessage) {
+	raw, present := projections["inbox"]
+	if !present || len(raw) == 0 {
+		return
+	}
+	var snapshot struct {
+		NextStep []inboxSpliceItem `json:"next-step"`
+		NextTurn []inboxSpliceItem `json:"next-turn"`
+	}
+	if json.Unmarshal(raw, &snapshot) != nil {
+		return
+	}
+	s.inbox = map[string][]inboxItem{
+		inboxTargetNextStep: toInboxItems(snapshot.NextStep),
+		inboxTargetNextTurn: toInboxItems(snapshot.NextTurn),
+	}
+}
+
+// handleInboxSplice records inserted inbox item identities and settles canceled
+// pending steers for both root and continuable child streams.
+// The caller holds dispatchMu.
+func (a *Agent) handleInboxSplice(stream *sessionStream, data json.RawMessage) error {
+	var splice struct {
+		Target       string            `json:"target"`
+		Start        int               `json:"start"`
+		RemovedCount int               `json:"removedCount"`
+		Inserted     []inboxSpliceItem `json:"inserted"`
+		Outcome      string            `json:"outcome"`
+	}
+	if err := json.Unmarshal(data, &splice); err != nil {
+		return err
+	}
+	target := steerTarget{
+		sessionID: stream.sessionID,
+		isChild:   stream.childAgentID != "",
+		sink:      a.streamSink(stream),
+	}
+	if len(splice.Inserted) > 0 {
+		a.Mu.Lock()
+		if steers := a.pendingSteersPtrLocked(target); steers != nil {
+			for _, item := range splice.Inserted {
+				id := strings.TrimSpace(item.ID)
+				rpcID := strings.TrimSpace(item.Source.RPCID)
+				if id == "" || rpcID == "" {
+					continue
+				}
+				for _, steer := range *steers {
+					if steer.requestID == rpcID {
+						steer.itemID = id
+					}
+				}
+			}
+		}
+		a.Mu.Unlock()
+	}
+
+	queueName := splice.Target
+	if queueName == "" {
+		queueName = inboxTargetNextStep
+	}
+	var removed []inboxItem
+	var nextQueue []inboxItem
+	updateInbox := queueName == inboxTargetNextStep || queueName == inboxTargetNextTurn
+	if updateInbox {
+		queue := stream.inbox[queueName]
+		if splice.Start >= 0 && splice.RemovedCount >= 0 && splice.Start <= len(queue) {
+			deleteCount := min(splice.RemovedCount, len(queue)-splice.Start)
+			removed = slices.Clone(queue[splice.Start : splice.Start+deleteCount])
+			inserted := toInboxItems(splice.Inserted)
+			nextQueue = make([]inboxItem, 0, len(queue)-deleteCount+len(inserted))
+			nextQueue = append(nextQueue, queue[:splice.Start]...)
+			nextQueue = append(nextQueue, inserted...)
+			nextQueue = append(nextQueue, queue[splice.Start+deleteCount:]...)
+		} else {
+			updateInbox = false
+		}
+	}
+
+	if splice.Outcome == "canceled" && stream.replay == nil && len(removed) > 0 {
+		keptIDs := make(map[string]struct{}, len(splice.Inserted))
+		keptRPCIDs := make(map[string]struct{}, len(splice.Inserted))
+		for _, item := range splice.Inserted {
+			if id := strings.TrimSpace(item.ID); id != "" {
+				keptIDs[id] = struct{}{}
+			}
+			if rpcID := strings.TrimSpace(item.Source.RPCID); rpcID != "" {
+				keptRPCIDs[rpcID] = struct{}{}
+			}
+		}
+		var dropped []*pendingSteer
+		seen := make(map[*pendingSteer]struct{})
+		a.Mu.Lock()
+		if steers := a.pendingSteersPtrLocked(target); steers != nil {
+			for _, item := range removed {
+				if _, kept := keptIDs[item.ID]; item.ID != "" && kept {
+					continue
+				}
+				if _, kept := keptRPCIDs[item.RPCID]; item.RPCID != "" && kept {
+					continue
+				}
+				for _, steer := range *steers {
+					if steer.delivered || steer.resolved {
+						continue
+					}
+					if (item.ID != "" && steer.itemID == item.ID) || (item.RPCID != "" && steer.requestID == item.RPCID) {
+						if _, duplicate := seen[steer]; !duplicate {
+							seen[steer] = struct{}{}
+							dropped = append(dropped, steer)
+						}
+					}
+				}
+			}
+		}
+		a.Mu.Unlock()
+		var failures error
+		for _, steer := range dropped {
+			failures = errors.Join(failures, a.settleDroppedSteerLocked(target, steer))
+		}
+		if failures != nil {
+			return failures
+		}
+	}
+
+	if updateInbox {
+		if stream.inbox == nil {
+			stream.inbox = map[string][]inboxItem{}
+		}
+		stream.inbox[queueName] = nextQueue
+	}
+	return nil
+}
+
 // Source kinds of a native user message that the Worker stores in a child tab. A person or the
 // parent agent wrote each one. The native process also injects the instruction file, the runtime
 // context and notices as user messages, and each of those has another kind.
@@ -391,7 +556,7 @@ const (
 	nativeAgentMessageSourceKind = "agent-message"
 )
 
-// isUnstoredChildInput reports whether a native user message of a child Session is an input that
+// isUnstoredChildSource reports whether a native user message of a child Session is an input that
 // LeapMux stored nowhere else. The root Session stores no native user message, because LeapMux
 // stores the message of the reader itself. A child reports every input as a native user message.
 // The Worker therefore keeps one only when nothing at LeapMux stored it: the task that the parent
@@ -400,41 +565,29 @@ const (
 // prompt already. A message that states no readable source is not an input that LeapMux can
 // attribute.
 // Source: `@deepseek-ai/dsh` 0.2.0-rc.2 (dsh-api-session-controller prompt, dsh-subagent).
-func isUnstoredChildInput(data []byte) bool {
-	var message struct {
-		Source struct {
-			Kind  string `json:"kind"`
-			RPCID string `json:"rpcId"`
-		} `json:"source"`
-	}
-	if json.Unmarshal(data, &message) != nil || message.Source.RPCID != "" {
+func isUnstoredChildSource(kind, rpcID string) bool {
+	if rpcID != "" {
 		return false
 	}
-	return message.Source.Kind == nativeUserSourceKind || message.Source.Kind == nativeAgentMessageSourceKind
+	return kind == nativeUserSourceKind || kind == nativeAgentMessageSourceKind
 }
 
-func nativeTurnCompletion(raw []byte) agent.MessageCompletion {
-	var data struct {
-		Reason struct {
-			Kind string `json:"kind"`
-		} `json:"reason"`
-	}
-	if json.Unmarshal(raw, &data) != nil {
-		return agent.MessageCompletionError
-	}
-	switch data.Reason.Kind {
+func classifyTurnEndReason(kind string) (agent.MessageCompletion, leapmuxv1.AgentInputTurnOutcome) {
+	switch kind {
 	case "completed", "max-tokens":
-		return agent.MessageCompletionComplete
+		return agent.MessageCompletionComplete, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
 	case "interrupted", "aborted":
-		return agent.MessageCompletionInterrupted
+		return agent.MessageCompletionInterrupted, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	case "blocked", "error":
+		return agent.MessageCompletionError, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
 	default:
-		return agent.MessageCompletionError
+		return agent.MessageCompletionError, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 	}
 }
 
 func (a *Agent) finishPendingTools(stream *sessionStream, completion agent.MessageCompletion) error {
 	sink := a.streamSink(stream)
-	discarding := a.discard.Load() || a.IsDiscardingOutput()
+	discarding := a.IsDiscardingOutput()
 	for _, id := range stream.pendingOrder {
 		raw, exists := stream.pending[id]
 		if !exists {

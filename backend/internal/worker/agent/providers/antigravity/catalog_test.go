@@ -151,7 +151,7 @@ func TestAntigravityCatalogRefreshSettlesUnavailableSelection(t *testing.T) {
 	rpc, sent := testCatalogSendRPC(t, `{"clientModelConfigs":[{"modelId":"gemini-new-low","modelOrAlias":{"model":"NEW_LOW"}}]}`)
 	a.rpc = rpc
 	a.refreshAccountCatalog()
-	require.NoError(t, a.SendInput("continue the session", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue the session", nil))
 	assert.Equal(t, "NEW_LOW", sentPlanModel(t, sent))
 	assert.Equal(t, "gemini-new", a.model)
 	assert.Equal(t, agent.EffortAuto, a.effort)
@@ -234,7 +234,7 @@ func TestAntigravityLoadCatalogResolvesInitialDefaultModel(t *testing.T) {
 	assert.Equal(t, agent.EffortAuto, effortGroup.GetCurrentValue())
 	assert.Equal(t, agent.EffortAuto, effortGroup.GetDefaultValue())
 
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 	assert.Equal(t, "NEON_HIGH", sentPlanModel(t, sent))
 }
 
@@ -324,7 +324,7 @@ func TestAntigravityCatalogRefreshIgnoresUnusableReply(t *testing.T) {
 			assert.Equal(t, "high", a.effort)
 			assert.True(t, agent.ModelInfosEqual(beforeModels, a.catalog.models))
 			assert.Zero(t, sink.SettingsRefreshCount())
-			require.NoError(t, a.SendInput("continue", nil))
+			require.NoError(t, agenttest.SendInput(a, "continue", nil))
 			assert.Equal(t, "MODEL_TEST", sentPlanModel(t, sent))
 		})
 	}
@@ -435,7 +435,7 @@ func TestAntigravityCatalogEffortlessModelHasNoEffortAxis(t *testing.T) {
 	a.UpdateSettings(optionmap.Map{agent.OptionIDModel: "gemini-4-neon"})
 	assert.Equal(t, "gemini-4-neon", a.model)
 	assert.Equal(t, agent.EffortAuto, a.effort)
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 	assert.Equal(t, "NEON_HIGH", sentPlanModel(t, sent))
 }
 

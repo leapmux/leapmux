@@ -283,12 +283,10 @@ export class ProxyEnvironment {
       '/usr/local/bin/leapmux',
       this.image,
       'recover',
-      'bootstrap',
       'create-admin',
+      ADMIN_USERNAME,
       '--data-dir',
       '/data/hub',
-      '--username',
-      ADMIN_USERNAME,
       '--password',
       this.password,
     ])
@@ -416,6 +414,21 @@ export class ProxyEnvironment {
     this.log('PASS: the web app loads over HTTP/2')
   }
 
+  async checkMetricsBlocked() {
+    const result = await this.curl([
+      '--write-out',
+      '\n%{http_code}',
+      `${HUB_URL}/metrics`,
+    ])
+    assert.equal(result.status, 0, result.stderr)
+    const lines = result.stdout.trimEnd().split('\n')
+    const code = lines.pop()
+    const body = lines.join('\n')
+    assert(['403', '404'].includes(code), `/metrics answered ${code}, expected 403 or 404`)
+    assert.doesNotMatch(body, /go_goroutines|leapmux_/, '/metrics body leaked Prometheus metrics')
+    this.log(`PASS: /metrics is blocked (${code})`)
+  }
+
   /**
    * Trust the proxy, then sign in once to check the client's address and secure cookie name. The proxy's
    * X-Forwarded-For header supplies that address, and its X-Forwarded-Proto header makes the Hub issue the
@@ -540,6 +553,7 @@ export class ProxyEnvironment {
     const { body } = await this.rpc('WorkerManagementService/CreateRegistrationKey', {}, cookie)
     this.workerVolume = await this.volume('worker')
     const result = await this.leapmux([
+      'daemon',
       'worker',
       'register',
       '--data-dir',
@@ -574,13 +588,15 @@ export class ProxyEnvironment {
         'exec',
         this.worker,
         '/usr/local/bin/leapmux',
+        'daemon',
         'worker',
         'status',
         '--data-dir',
         '/data/worker',
         '--json',
       ])
-      const status = JSON.parse(result.stdout)
+      // With --json, `leapmux daemon worker status` prints the report as {"data": ...}.
+      const status = JSON.parse(result.stdout).data
       if (status.readiness === 'ready' && status.connection?.state === 'connected')
         return status.registration.worker_id
       throw new Error(`readiness ${status.readiness}, connection ${status.connection?.state}`)
@@ -589,7 +605,7 @@ export class ProxyEnvironment {
     this.log(`PASS: the Worker connects through the proxy (${this.workerId})`)
   }
 
-  /** Write a CLI credential for an API token, as `leapmux control auth login` would after its browser step. */
+  /** Write a CLI credential for an API token, as `leapmux auth login` would after its browser step. */
   async authorizeCli(cookie, userId) {
     const { body } = await this.rpc('AdminUserService/IssueAPIToken', {
       user: { id: userId },
@@ -597,7 +613,7 @@ export class ProxyEnvironment {
       ttlSeconds: String(API_TOKEN_TTL_SECONDS),
       scopes: ['worker:read', 'file:read'],
     }, cookie)
-    writeFileSync(join(this.cliDirectory, `${PUBLIC_HOST}.json`), JSON.stringify({
+    writeFileSync(join(this.cliDirectory, `https_${PUBLIC_HOST}.json`), JSON.stringify({
       hub_url: HUB_URL,
       hub_id: 'reverse-proxy-test',
       access_token: body.accessToken,
@@ -624,21 +640,20 @@ export class ProxyEnvironment {
       `head -c ${TRANSFER_BYTES} /dev/urandom | base64 > ${path} && sha256sum ${path}`,
     ])
     const result = await this.leapmux([
-      'control',
       'file',
       'read',
+      path,
       '--hub',
       HUB_URL,
-      '--worker-id',
+      '--worker',
       this.workerId,
-      '--path',
-      path,
       '--limit',
       String(2 * TRANSFER_BYTES),
+      '--json',
     ])
     assert.equal(result.status, 0, `file read failed:\n${result.stdout}${result.stderr}`)
     const output = JSON.parse(result.stdout)
-    // `leapmux control` prints a success as {"data": ...}.
+    // With --json, `leapmux` prints a success as {"data": ...}.
     const content = output.data?.content
     assert.equal(typeof content, 'string', `file read returned no content: ${result.stdout.slice(0, 500)}`)
     assert.equal(createHash('sha256').update(content).digest('hex'), digest.split(' ')[0], 'the content changed in transit')
@@ -666,6 +681,7 @@ export class ProxyEnvironment {
     await this.start()
     await this.checkRedirect()
     await this.checkWebApp()
+    await this.checkMetricsBlocked()
     const { cookie, userId } = await this.checkForwardedHeaders()
     await this.rpc('UserService/ElevateSession', { currentPassword: this.password }, cookie)
     await this.startWebSocket(cookie, stabilitySeconds)

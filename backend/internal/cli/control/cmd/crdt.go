@@ -5,14 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hubrpc"
@@ -54,7 +55,7 @@ type CRDTBootstrap struct {
 // RPC using the agent's per-user delegation bearer).
 // Tenancy is the authenticated session, implied by the bearer -- no
 // user_id is sent on the wire.
-func crdtBootstrap(ctx context.Context, c *control.Client, workspaceIDs []string) (*CRDTBootstrap, error) {
+func crdtBootstrap(ctx context.Context, c control.Peer, workspaceIDs []string) (*CRDTBootstrap, error) {
 	initial, err := fetchMaterialized(ctx, c, workspaceIDs)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func crdtBootstrap(ctx context.Context, c *control.Client, workspaceIDs []string
 //
 // hubCallUnary selects the transport, so both transports share one error
 // rule: a local-IPC failure keeps its code, as a hub-transport failure does.
-func fetchMaterialized(ctx context.Context, c *control.Client, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
+func fetchMaterialized(ctx context.Context, c control.Peer, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
 	req := &leapmuxv1.GetMaterializedRequest{WorkspaceIds: workspaceIDs}
 	var resp leapmuxv1.GetMaterializedResponse
 	if err := hubCallUnary(ctx, c, leapmuxv1connect.UserCRDTGetMaterializedProcedure, req, &resp); err != nil {
@@ -90,19 +91,25 @@ func fetchMaterialized(ctx context.Context, c *control.Client, workspaceIDs []st
 // streamWatchUserLocal opens a StreamInner of the hub's user-event stream
 // (hubrpc.WatchUserStream) against the agent's local-IPC peer and drives
 // `onEvent` for every decoded `WatchUserEvent`. `onEvent` returns
-// (stop=true, _) to terminate the
-// loop after the current event (e.g. once the initial frame lands)
-// or (_, err) to propagate an error. The stream is closed when
-// streamWatchUserLocal returns. Its one caller is runEventsLocal, which
-// `events watch` runs on a local-IPC client and which stays open until ctx
-// cancellation; the bootstrap path uses the unary GetMaterialized instead.
+// (stop=true, _) to stop the loop after the current event, or (_, err) to
+// propagate an error. The stream closes when streamWatchUserLocal returns.
+// Callers such as hubUserEvents keep the stream open until ctx cancellation;
+// the bootstrap path uses the unary GetMaterialized RPC instead.
 func streamWatchUserLocal(
 	ctx context.Context,
-	c *control.Client,
-	workspaceIDs []string,
+	c *control.WorkerIPCClient,
+	opts channelwire.UserEventsOptions,
 	onEvent func(*leapmuxv1.WatchUserEvent) (stop bool, err error),
 ) error {
-	req := &leapmuxv1.WatchUserRequest{WorkspaceIds: workspaceIDs}
+	if opts.ResumeCursor != nil || opts.ResumeEpoch != 0 {
+		return cli.Newf(cli.CodeInvalidArgument, "local IPC WatchUser does not support CRDT resume cursors")
+	}
+	req := &leapmuxv1.WatchUserRequest{
+		WorkspaceIds:      opts.WorkspaceIDs,
+		Topics:            opts.Topics,
+		LayoutWorkspaceId: opts.LayoutWorkspaceID,
+		LayoutAfterCursor: opts.LayoutAfterCursor,
+	}
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal watchuser: %w", err)
@@ -164,9 +171,8 @@ func streamWatchUserLocal(
 // bootstrap-time epoch.
 func crdtSubmitBatch(
 	ctx context.Context,
-	c *control.Client,
+	c control.Peer,
 	bs *CRDTBootstrap,
-	workspaceID string,
 	batch *leapmuxv1.OpBatch,
 ) (*leapmuxv1.BatchResult, error) {
 	if bs == nil {
@@ -192,83 +198,55 @@ func crdtSubmitBatch(
 }
 
 // crdtCall bundles every value a CRDT-mutation subcommand needs after
-// the standard preamble: a deadlined context, the resolved hub client,
-// the workspace's bootstrap snapshot (epoch + initial state), and the
-// workspace id used for transport routing.
-//
-// Callers must invoke `close()` to release the deadline cancel.
+// the standard preamble: the session's context and client, and the
+// bootstrap snapshot (epoch + initial state).
 type crdtCall struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	c           *control.Client
-	bs          *CRDTBootstrap
-	workspaceID string
+	ctx context.Context
+	c   control.Peer
+	bs  *CRDTBootstrap
 }
 
-// openCRDTCall runs the standard CRDT-mutation preamble: requireClient
-// → rpcDeadline → crdtBootstrap. Errors are wrapped into the matching
-// `control.EmitError*` envelope so callers can `return err` directly
-// without re-classifying. Tenancy is the authenticated session, so no
-// user-id resolution is needed.
+// openCRDT bootstraps the CRDT for a mutation. Pass workspace IDs to scope the
+// snapshot, or pass none to bootstrap every readable workspace.
 //
-// This preamble does NOT validate workspaceID, and the bootstrap does not
+// This preamble does NOT validate workspaceIDs, and the bootstrap does not
 // double as a check. GetMaterialized resolves through
 // `auth.WorkspacesReadableByUser`, which silently skips an id with no row
-// rather than erroring, so an unknown --workspace-id bootstraps
-// "successfully" against an empty projection and every subsequent op is
-// emitted into nothing. Any command that must REJECT a bogus workspace id
-// has to check existence itself, before or after this call.
-func openCRDTCall(hub, workspaceID string) (*crdtCall, error) {
-	c, err := requireClient(hub)
+// rather than failing, so an unknown workspace bootstraps "successfully"
+// against an empty projection and every subsequent op is emitted into
+// nothing. Any command that must REJECT a bogus workspace id has to check
+// existence itself, before or after this call.
+func (s *session) openCRDT(workspaceIDs ...string) (*crdtCall, error) {
+	var deduped []string
+	for _, wsID := range workspaceIDs {
+		if wsID != "" && !slices.Contains(deduped, wsID) {
+			deduped = append(deduped, wsID)
+		}
+	}
+	bs, err := crdtBootstrap(s.ctx, s.c, deduped)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := rpcDeadline(context.Background())
-	return finishOpenCRDTCall(ctx, cancel, c, workspaceID)
-}
-
-func finishOpenCRDTCall(ctx context.Context, cancel context.CancelFunc, c *control.Client, workspaceID string) (*crdtCall, error) {
-	bs, err := crdtBootstrap(ctx, c, []string{workspaceID})
-	if err != nil {
-		cancel()
-		return nil, control.EmitErrorWith("crdt_bootstrap_failed", err)
-	}
-	return &crdtCall{ctx: ctx, cancel: cancel, c: c, bs: bs, workspaceID: workspaceID}, nil
-}
-
-// close releases the deadlined context. Safe on a nil receiver so
-// callers can `defer cc.close()` immediately after openCRDTCall even
-// when error handling rebinds `cc`.
-func (cc *crdtCall) close() {
-	if cc != nil && cc.cancel != nil {
-		cc.cancel()
-	}
+	return &crdtCall{ctx: s.ctx, c: s.c, bs: bs}, nil
 }
 
 // submitOps wraps ops in a fresh OpBatch, submits via the appropriate
-// transport, and unwraps the per-batch rejection into an EmitError*
-// envelope. Returns nil on commit.
+// transport, and reports a rejected batch as a conflict. Returns nil on
+// commit.
 func (cc *crdtCall) submitOps(ops []*leapmuxv1.CrdtOp) error {
-	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
-	if err != nil {
-		return control.EmitErrorWith("rpc_failed", err)
-	}
-	if err := crdtBatchError(res); err != nil {
-		return control.EmitErrorWith("batch_rejected", err)
-	}
-	return nil
+	_, _, err := cc.trySubmitOps(ops)
+	return err
 }
 
-// trySubmitOps is the non-emitting variant of submitOps. Returns
-// (committed, rejection-reason, err). When committed=true, reason is
-// UNSPECIFIED and err is nil. When committed=false, err is non-nil
-// and reason carries the hub's BatchRejectionReason (or UNSPECIFIED
-// for transport-level errors). Callers that want to branch on the
-// rejection reason -- e.g. `layout set` retrying TAB_PLACEMENT_INVALID
-// after re-bootstrapping the snapshot -- use this instead of
-// submitOps so the envelope isn't emitted prematurely.
+// trySubmitOps is the variant of submitOps that reports the rejection reason.
+// Returns (committed, rejection-reason, err). When committed=true, reason is
+// UNSPECIFIED and err is nil. When committed=false, err is non-nil: batch
+// rejections are wrapped as cli.CodeConflict, while transport-level errors are
+// returned unwrapped with reason UNSPECIFIED. Callers that want to branch on
+// the rejection reason — such as `layout set` retrying TAB_PLACEMENT_INVALID
+// after re-bootstrapping the snapshot — use this instead of submitOps.
 func (cc *crdtCall) trySubmitOps(ops []*leapmuxv1.CrdtOp) (bool, leapmuxv1.BatchRejectionReason, error) {
-	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
+	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, crdtNewBatch(ops))
 	if err != nil {
 		return false, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, err
 	}
@@ -277,7 +255,7 @@ func (cc *crdtCall) trySubmitOps(ops []*leapmuxv1.CrdtOp) (bool, leapmuxv1.Batch
 		if rej := res.GetRejected(); rej != nil {
 			reason = rej.GetReason()
 		}
-		return false, reason, batchErr
+		return false, reason, cli.Wrap(cli.CodeConflict, batchErr, "")
 	}
 	return true, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, nil
 }
@@ -303,16 +281,11 @@ func crdtNewBatch(ops []*leapmuxv1.CrdtOp) *leapmuxv1.OpBatch {
 	return &leapmuxv1.OpBatch{BatchId: id.Generate(), Ops: ops}
 }
 
-// nowMillis is the wall-clock helper Clock.Tick takes.
-func nowMillis() int64 {
-	return time.Now().UnixMilli()
-}
-
 // op-builder helpers — each returns a single-register-write CrdtOp
 // stamped with a fresh advisory client_hlc from `bs.Clock`. The hub
 // reassigns canonical HLCs on commit; client_hlc is just a hint.
 //
-// The Node-side counterparts live in layout.go. The proto generator
+// The Node-side counterparts live in layout_ops.go. The proto generator
 // makes the oneof `Field` interface package-private, so per-register
 // helpers can't share a single "set field" parameter type. Instead
 // they share the envelope-allocation core via newSetTabRegisterOp

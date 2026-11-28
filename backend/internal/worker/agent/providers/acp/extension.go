@@ -39,6 +39,36 @@ type ACPStopSnapshot struct {
 	Cancel func()
 }
 
+// UpdateMessageInfo carries the context of one session update so a provider
+// can identify its native message without stashing state between hooks.
+type UpdateMessageInfo struct {
+	SessionID        string
+	RowKey           string
+	UpdateType       string
+	UpdateMeta       map[string]json.RawMessage
+	NotificationMeta map[string]json.RawMessage
+	Raw              json.RawMessage
+}
+
+// ControlOwnerResolution describes the session, transcript sink, and optional
+// native reply attribution for one incoming control request.
+type ControlOwnerResolution struct {
+	// SessionID overrides the request's reported session when a provider
+	// attributes a root-scoped request to another served session. Empty keeps
+	// the incoming session ID.
+	SessionID string
+	// Sink overrides the target control sink when non-nil (for example a child
+	// transcript sink) and sets the control owner's session ID to SessionID.
+	Sink agent.ControlServices
+	// Refuse refuses the control request with the standard unserved-session
+	// refusal (for example when a child session has no served transcript).
+	Refuse bool
+	// TurnID overrides the base ACP turn attribution when non-empty.
+	TurnID string
+	// InputIDs lists the specific native inputs blocked by this control request.
+	InputIDs []string
+}
+
 // A zero hook keeps the base behavior that the hook controls.
 type Hooks struct {
 	// OpenRootTranscript allocates an immutable root output target under turnMu.
@@ -118,7 +148,8 @@ type Hooks struct {
 	// because its session is one that the agent does not serve. A provider whose
 	// agent withdraws such a request by an event of its own, rather than by the
 	// protocol's cancel notification, records what identifies it here.
-	ControlRequestObserver func(line *providerkit.ParsedLine)
+	// SessionID identifies the transcript that owns the request.
+	ControlRequestObserver func(sessionID string, line *providerkit.ParsedLine)
 	// AnswerlessControlsOutliveTurns states that each control request which the
 	// provider publishes with no cancel answer asks about the session or the
 	// process, not about the running turn. A stop and a context clear then
@@ -196,9 +227,9 @@ type Hooks struct {
 	// an extension. It returns true for an update that it claimed, and the caller
 	// then skips the merge, because nothing in such an update changes the row.
 	ToolNotification func(tcu ToolCallUpdateEnvelope) bool
-	// ToolOutputComplete drops the provider state for the output of one call,
-	// when the base completes the output of that call.
-	ToolOutputComplete func(toolCallID string)
+	// ToolOutputComplete drops the provider state of the completed call from
+	// the session that owns its transcript.
+	ToolOutputComplete func(sessionID, toolCallID string)
 	// ModelIDNormalizer, when set, rewrites each model id that the base parses
 	// from configOptions (for example Cursor's auto<->default aliasing) before
 	// the id reaches availableModels.
@@ -261,22 +292,33 @@ type Hooks struct {
 	// each update of a foreground subagent with the id of the tool call that
 	// spawned it. See children.go for the other route, a session of its own.
 	ChildUpdateRoute func(updateType string, metadata map[string]json.RawMessage) string
-	// ChunkMessageID reads a provider's own message identity from a content
-	// chunk's _meta. The kind tells answer text from reasoning before the
-	// provider selects an identity. A nonempty result overrides the spec's
-	// messageId field; an empty result uses that field. Kiro reads
-	// _meta.kiro.replayId to separate a plan answer from the default mode's
-	// answer.
-	// A changed identity closes the previous segment before the next chunk.
-	ChunkMessageID func(kind agent.AssembledMessageKind, metadata map[string]json.RawMessage) string
+	// UpdateMessageID returns a provider's own message identity for a root or
+	// child session update. A nonempty result overrides the spec's messageId
+	// field for text or thought chunks; an empty result keeps the frame's
+	// identity. A changed identity closes the previous segment before the next
+	// chunk.
+	UpdateMessageID func(UpdateMessageInfo) string
 	// SegmentText selects the stored text of one completed main-conversation segment.
 	// An empty result stores no row. The caller still completes the live progress scope.
 	// The hook can run on the reader or an off-reader flush, so it must limit any I/O.
 	SegmentText func(kind agent.AssembledMessageKind, messageID, text string) string
+	// AssistantTextKey identifies one assembled text row by its native
+	// assistant message. It allocates the key before the ordered write begins.
+	// During turn drain it runs under Mu before CaptureReplyReconciliation, so
+	// it must read only provider-owned state and never call the base or sink.
+	AssistantTextKey func(messageID string) string
+	// AssistantTextPrepared observes the text selected for a keyed write.
+	// The write and any subsequent native reply publication share the sink's queue.
+	AssistantTextPrepared func(messageID, key, text string)
 	// CaptureTurnOutputCleanup captures cleanup for the output that just drained.
 	// It runs under Mu and must read only provider-owned state. It must not call the base or sink.
 	// Its returned callback runs after pending output writes. A queued agent turn postpones capture.
 	CaptureTurnOutputCleanup func() func()
+	// CaptureReplyReconciliation captures proof that can change which input owns
+	// stored reply rows. Capture runs under Mu. The operation runs in output
+	// order after text persistence and before publication of the prompt end,
+	// receiving the turn's text completion state and whether output is discarded.
+	CaptureReplyReconciliation func() func(agent.MessageCompletion, bool) error
 	// ChildUserMessages states that a user_message_chunk that reaches the
 	// transcript of a subagent is a message that the agent gave that subagent:
 	// the instruction that opens a workflow step of Kiro, in the step's own
@@ -338,6 +380,14 @@ type Hooks struct {
 	// PromptParams adjusts the root params before the base sends them, including
 	// follow-up prompts. Grok Build uses it to identify its own prompts.
 	PromptParams func(params map[string]any)
+	// RootPromptTransport prepares a native sender for a typed root prompt.
+	// A nil sender leaves the prompt on ACP. A selected sender owns reply proof.
+	RootPromptTransport func(agent.NativeInputReceipt, PreparedPrompt) (func(func(json.RawMessage, error)) error, error)
+	// ControlOwner resolves the owning session, child control sink, and
+	// optional native turn/input attribution for an incoming control request.
+	// Returning an error refuses the request with that error message.
+	// needsTurn is false when the control outlives turns.
+	ControlOwner func(sessionID string, line *providerkit.ParsedLine, needsTurn bool) (ControlOwnerResolution, error)
 	// SessionParams adjusts the params of a session/new, a session/load or a
 	// session/resume request before the base sends it. A provider adds its own
 	// `_meta` keys there, or states the cwd that its store recorded for a

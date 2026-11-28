@@ -64,6 +64,7 @@ func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *leapmuxv1.Adm
 	}
 	params := store.ListWorkersAdminParams{
 		UserID:     userFilter,
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}
 	if st := req.GetStatus(); st != leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED {
@@ -124,9 +125,7 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 	if n == 0 {
 		return nil, connect.Errorf(connect.CodeNotFound, "worker %s not found or not active", req.GetId())
 	}
-	if err := s.deregisterEffects.Apply(ctx, req.GetId(), w.RegisteredBy); err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
+	s.deregisterEffects.Apply(ctx, req.GetId(), w.RegisteredBy)
 	return &leapmuxv1.AdminWorkerServiceDeregisterWorkerResponse{}, nil
 }
 
@@ -134,6 +133,7 @@ func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *leap
 	page, err := s.store.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
 		PageParams:     pageParams(req.GetPage()),
 		IncludeExpired: req.GetIncludeExpired(),
+		IDPrefix:       req.GetIdPrefix(),
 	})
 	if err != nil {
 		return nil, storeConnectError(err, "list registration keys")

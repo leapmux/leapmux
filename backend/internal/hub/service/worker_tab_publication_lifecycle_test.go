@@ -33,10 +33,11 @@ var errPublicationLifecycleRead = errors.New("workspace lifecycle listing failed
 var errPublicationReceiptRead = errors.New("publication receipt read failed")
 
 type publicationLifecycleGate struct {
-	enabled  atomic.Bool
-	arrivals atomic.Int32
-	ready    chan struct{}
-	released sync.Once
+	enabled     atomic.Bool
+	enteredOnce sync.Once
+	entered     chan struct{}
+	ready       chan struct{}
+	released    sync.Once
 }
 
 func (g *publicationLifecycleGate) release() { g.released.Do(func() { close(g.ready) }) }
@@ -44,9 +45,7 @@ func (g *publicationLifecycleGate) wait(ctx context.Context) error {
 	if !g.enabled.Load() {
 		return nil
 	}
-	if g.arrivals.Add(1) == 2 {
-		g.release()
-	}
+	g.enteredOnce.Do(func() { close(g.entered) })
 	select {
 	case <-g.ready:
 		return nil
@@ -139,6 +138,7 @@ func newPublicationLifecycleFixture(t *testing.T) *publicationLifecycleFixture {
 	owner := storetest.SeedUser(t, f.base, "publication-lifecycle-owner")
 	worker, workerToken := hubtestutil.CreateTestWorker(t, f.base, owner.ID)
 	f.owner, f.workerID = userid.MustNew(owner.ID), worker.ID
+	f.gate.entered = make(chan struct{})
 	f.gate.ready = make(chan struct{})
 	f.wrapped = publicationLifecycleFaults{Store: f.base, failList: &f.failList, lists: &f.lists, failReceipt: &f.failReceipt, gate: &f.gate, failConsumeID: &f.failConsumeID}
 	registry := publicationRegistry(t, f.wrapped)
@@ -340,6 +340,8 @@ func TestWorkerTabPublication_ConcurrentCatchUpPublishesBothTabs(t *testing.T) {
 			results <- outcome{response, err}
 		})
 	}
+	<-f.gate.entered
+	f.gate.release()
 	callers.Wait()
 	close(results)
 	positions := make(map[string]bool)

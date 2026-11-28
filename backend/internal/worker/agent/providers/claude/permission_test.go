@@ -81,14 +81,55 @@ func TestClaudeBypassApprovesPendingAndLaterToolsWithDeferredAcknowledgement(t *
 }
 
 func TestClaudeRefusesUnknownAndRepeatedPermissionAnswers(t *testing.T) {
-	a, _, peer := newPermissionAgent(t, false)
+	a, sink, peer := newPermissionAgent(t, false)
 	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"permission","response":{"behavior":"allow","updatedInput":{}}}}`)
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(sink.Answer("permission", answer)))
 	assert.Empty(t, peer.String())
 	a.HandleOutput(nativeToolPermission("permission", "Bash"))
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("permission", answer)))
+	assert.Error(t, a.SendRawInput(sink.Answer("permission", answer)))
 	assert.Equal(t, 1, strings.Count(peer.String(), `"request_id":"permission"`))
+}
+
+// Claude Code can ask again under a request ID that waits for an answer, with
+// another request (claudeCodeHandleControlRequest). The second request
+// replaces the first instance, and Claude Code applies an answer to the
+// request that its ID identifies now. So an answer reaches Claude Code only while
+// the instance that it answers is current, and an answer that states no
+// instance reaches nothing.
+func TestClaudeRefusesAnAnswerToAReplacedRequest(t *testing.T) {
+	a, sink, peer := newPermissionAgent(t, false)
+	a.HandleOutput(nativeToolPermission("permission", "Bash"))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	replaced := sink.LastPublishedControl()
+	a.HandleOutput(nativeToolPermission("permission", "Write"))
+	require.Equal(t, 2, sink.PublishedControlCount())
+	current := sink.LastPublishedControl()
+	require.NotEqual(t, replaced.InstanceID, current.InstanceID)
+
+	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"permission","response":{"behavior":"allow","updatedInput":{}}}}`)
+	assert.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: replaced.InstanceID}), agent.ErrControlInstanceReplaced)
+	assert.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlInstanceUnstated)
+	assert.Empty(t, peer.String(), "no answer reaches the request that replaced the answered one")
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: current.InstanceID}))
+	assert.Equal(t, 1, strings.Count(peer.String(), `"request_id":"permission"`))
+}
+
+func TestClaudeReplacedPublishedControlCancelsPreviousInstanceUnderBypass(t *testing.T) {
+	a, sink, _ := newPermissionAgent(t, false)
+	a.HandleOutput(nativeToolPermission("permission", "Bash"))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	replaced := sink.LastPublishedControl()
+
+	// Switch to bypass mode and receive a replacement payload under the same request_id.
+	a.Mu.Lock()
+	a.confirmedPermissionMode = contracts.ClaudeModeBypassPermissions
+	a.Mu.Unlock()
+	a.HandleOutput(nativeToolPermission("permission", "Write"))
+
+	require.NotEmpty(t, replaced.InstanceID)
+	assert.Contains(t, sink.CanceledControls(), "permission",
+		"replacing a published control under bypass mode must cancel the superseded instance")
 }
 
 func TestClaudeDeferredModeReplyWithoutModeStillSettlesTheRequest(t *testing.T) {
@@ -248,4 +289,41 @@ func TestClaudeCanConfirmTheSameModeAfterAnUnresolvedReply(t *testing.T) {
 	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModeDefault})
 	assert.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDPermissionMode].State)
 	assert.Contains(t, peer.String(), `"subtype":"set_permission_mode"`)
+}
+
+func TestClaudeControlReplacementDuringPublicationWaitReportsReplaced(t *testing.T) {
+	a, _, peer := newPermissionAgent(t, false)
+	first := &claudePendingControl{
+		instanceID:      "inst-1",
+		sessionID:       a.sessionID,
+		publicationDone: make(chan struct{}),
+	}
+	a.Mu.Lock()
+	if a.incomingControls == nil {
+		a.incomingControls = make(map[string]*claudePendingControl)
+	}
+	a.incomingControls["req-1"] = first
+	a.Mu.Unlock()
+
+	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
+	done := make(chan error, 1)
+	go func() {
+		done <- a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: "inst-1"})
+	}()
+
+	// Replace the pending request with a newer instance while the caller waits on publicationDone.
+	replacement := &claudePendingControl{
+		instanceID:      "inst-2",
+		sessionID:       a.sessionID,
+		published:       true,
+		publicationDone: make(chan struct{}),
+	}
+	close(replacement.publicationDone)
+	a.Mu.Lock()
+	a.incomingControls["req-1"] = replacement
+	a.Mu.Unlock()
+	close(first.publicationDone)
+
+	require.ErrorIs(t, <-done, agent.ErrControlInstanceReplaced)
+	assert.Empty(t, peer.String())
 }

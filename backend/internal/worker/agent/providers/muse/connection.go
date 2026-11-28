@@ -18,6 +18,7 @@ var museOptedOutMethods = []string{
 	methodSessionStatusChanged, methodSessionStarted, methodSessionClosed, methodSkillChanged,
 	methodAccountChanged, methodAccountLoginCompleted, methodMcpOAuthLoginCompleted,
 	methodSessionBranchChanged, methodSessionNameChanged, methodSessionPermissionProfileChanged, methodTurnForegroundCompleted,
+	methodTurnModelAttemptStarted,
 }
 
 // prepareConnection owns the launch setup for a session host or a query host.

@@ -21,7 +21,6 @@ import (
 	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -324,7 +323,9 @@ func newZCodeTestAgentWithClock(t *testing.T, sink agent.ProviderServices, stdin
 		toolInvocations: map[string]*zcodeToolInvocation{},
 		pendingControls: map[string]*pendingControl{},
 	}
-	a.sink = zcodeProgressSink{ProviderServices: agent.NewModelProgressResetSink(a.sink)}
+	a.sink = agent.DecorateProviderServices(agent.NewModelProgressResetSink(a.sink), func(direct agent.ProviderServices) agent.ProviderServices {
+		return zcodeProgressSink{ProviderServices: direct}
+	})
 	// Suppress automatic replay scheduling: tests that need replay call
 	// replayZCodeEvents directly.
 	a.replayScheduler = func(func()) {}

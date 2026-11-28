@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -32,12 +33,12 @@ func TestPlanApprovalSettingsPersistOutsideTheNativeResponse(t *testing.T) {
 			require.NoError(t, err)
 			response := []byte(" {\"type\":\"control_response\",\"extra\":9007199254740993,\"response\":{\"subtype\":\"success\",\"request_id\":\"plan\",\"response\":{\"behavior\":\"allow\"}}} \n")
 			var sent [][]byte
-			svc.sendControlResponseFn = func(_ string, bytes []byte) error {
-				sent = append(sent, append([]byte(nil), bytes...))
+			svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+				sent = append(sent, append([]byte(nil), answer.Data...))
 				return nil
 			}
-			request := &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", RequestId: "plan", ClaimToken: "claim", Content: response, PlanApproval: settings}
-			require.NoError(t, svc.processControlResponse(row, request))
+			chosen := workerAnswer{claimToken: "claim", content: response, planApproval: settings}
+			require.NoError(t, svc.processControlAnswer(row, chosen))
 			expectedNative := response
 			if settings.PermissionMode != "" {
 				expectedNative = bytes.Replace(response, []byte(`"behavior":"allow"`), []byte(`"behavior":"allow","updatedPermissions":[{"destination":"session","mode":"default","type":"setMode"}]`), 1)
@@ -51,8 +52,8 @@ func TestPlanApprovalSettingsPersistOutsideTheNativeResponse(t *testing.T) {
 			require.NoError(t, protojson.Unmarshal(answer.PlanApprovalSettings, &recorded))
 			require.True(t, proto.Equal(settings, &recorded))
 			require.JSONEq(t, `{"permissionMode":"`+settings.PermissionMode+`","clearContext":false}`, string(answer.PlanApprovalSettings))
-			request.PlanApproval = &leapmuxv1.PlanApprovalSettings{PermissionMode: "bypassPermissions", ClearContext: true}
-			require.NoError(t, svc.processControlResponse(row, request))
+			chosen.planApproval = &leapmuxv1.PlanApprovalSettings{PermissionMode: "bypassPermissions", ClearContext: true}
+			require.NoError(t, svc.processControlAnswer(row, chosen))
 			require.Len(t, sent, 1, "a completed response cannot resend or replace its saved settings")
 			retained, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim"})
 			require.NoError(t, err)
@@ -77,15 +78,15 @@ func TestPlanSettingsRequireAMatchingApprovalBeforeReservation(t *testing.T) {
 			}))
 			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-				Payload: []byte(fmt.Sprintf(`{"request":{"tool_name":%q}}`, tc.tool)),
+				Payload: []byte(fmt.Sprintf(`{"type":"control_request","request_id":"request","request":{"tool_name":%q}}`, tc.tool)),
 			})
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			writes := 0
-			svc.sendControlResponseFn = func(string, []byte) error { writes++; return nil }
-			err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-				ClaimToken: "claim", PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: tc.mode},
-				Content: []byte(fmt.Sprintf(`{"response":{"request_id":"request","response":{"behavior":%q}}}`, tc.behavior)),
+			svc.sendControlResponseFn = func(string, agent.RawInput) error { writes++; return nil }
+			err = svc.processControlAnswer(row, workerAnswer{
+				claimToken: "claim", planApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: tc.mode},
+				content: []byte(fmt.Sprintf(`{"response":{"request_id":"request","response":{"behavior":%q}}}`, tc.behavior)),
 			})
 			require.ErrorContains(t, err, tc.expectedError)
 			require.Zero(t, writes)
@@ -106,7 +107,7 @@ func TestSavedPlanSettingsStaySeparateDuringRecording(t *testing.T) {
 			PlanApprovalSettings: []byte(settings),
 		})
 		require.NoError(t, err)
-		content, err := controlResponseMessageContent(plan)
+		content, err := controlResponseMessageContent(plan, nil)
 		require.NoError(t, err)
 		require.Equal(t, response, content.Original)
 		require.Equal(t, request, content.Supplemental)
@@ -118,25 +119,17 @@ func TestSavedPlanSettingsStaySeparateDuringRecording(t *testing.T) {
 	require.ErrorContains(t, err, "read saved plan approval settings")
 }
 
-func TestRecordingRejectsNewPlanSettings(t *testing.T) {
-	svc, _, _ := setupTestService(t)
-	_, err := svc.respondToControlRequest(db.Agent{ID: "agent-1"}, &leapmuxv1.SendControlResponseRequest{
-		RequestId: "plan", RecordOnly: true, PlanApproval: &leapmuxv1.PlanApprovalSettings{},
-	})
-	require.ErrorContains(t, err, "a recording request cannot contain a new response or plan settings")
-}
-
 func TestClaudePlanApprovalIncludesTheNativePermissionUpdate(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
 	var delivered []byte
-	svc.sendControlResponseFn = func(_ string, content []byte) error {
-		delivered = append([]byte(nil), content...)
+	svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+		delivered = append([]byte(nil), answer.Data...)
 		return nil
 	}
-	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow","updatedInput":{}}}}`),
-		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: "bypassPermissions"},
+	require.NoError(t, svc.processControlAnswer(row, workerAnswer{
+		claimToken: "claim", content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow","updatedInput":{}}}}`),
+		planApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: "bypassPermissions"},
 	}))
 	var native struct {
 		Response struct {
@@ -164,7 +157,7 @@ func TestSavedPlanSettingsReachTheTranscriptAsStored(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, stored, plan.settingsJSON)
 
-	content, err := controlResponseMessageContent(plan)
+	content, err := controlResponseMessageContent(plan, nil)
 	require.NoError(t, err)
 	var metadata map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(content.Metadata, &metadata))

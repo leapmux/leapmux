@@ -56,7 +56,7 @@ func TestEncryptedRegistryMatchesSqlcOverrides(t *testing.T) {
 			expected[key] = col.Nullable
 		}
 	}
-	require.Len(t, expected, 37, "expected 37 encrypted columns across 15 tables")
+	require.Len(t, expected, 39, "expected 39 encrypted columns across 17 tables")
 
 	for _, dialect := range hubDialects {
 		t.Run(dialect, func(t *testing.T) {

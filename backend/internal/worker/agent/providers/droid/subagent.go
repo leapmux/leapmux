@@ -134,11 +134,12 @@ func (a *Agent) registerChildSession(parentSessionID string, payload []byte) (st
 	}
 	childID, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
-		SpawnSpanID:  spawnSpanID, ProviderChildKey: n.ChildSessionID, Title: title})
+		SpawnSpanID:  spawnSpanID, ProviderChildKey: n.ChildSessionID, AgentSessionID: n.ChildSessionID, Title: title})
 	if err != nil {
 		slog.Warn("droid: ensure child", "session_id", n.ChildSessionID, "error", err)
 		return "", false, nil, false
 	}
+	parent.sink.ChildSink(childID).UpdateSessionID(n.ChildSessionID)
 	if err := parent.sink.PersistChildPrompt(childID, spawn.prompt); err != nil {
 		slog.Warn("droid: persist child prompt", "session_id", n.ChildSessionID, "error", err)
 		return "", false, nil, false

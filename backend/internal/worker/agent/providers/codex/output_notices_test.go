@@ -107,7 +107,7 @@ func TestCodexAnswerReleasesInputThatCannotBeRetried(t *testing.T) {
 	retained := a.mainTurn.input
 	a.Mu.Unlock()
 	require.Empty(t, retained, "the answer permanently ends retry eligibility")
-	require.NoError(t, a.SteerInput("another instruction", nil))
+	require.NoError(t, agenttest.SteerInput(a, agentapi.SteerRequest{Content: "another instruction"}))
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	assert.Empty(t, a.mainTurn.input, "a later steer must not restore unusable retry input")

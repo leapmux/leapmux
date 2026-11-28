@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -42,6 +43,9 @@ func (s *WorkspaceService) runLifecycleMutation(ctx context.Context, m lifecycle
 	if err != nil {
 		return err
 	}
+	// Wake any long-polling layout readers even if the prompt drain below fails
+	// so they observe the pending outbox row without waiting for a periodic timer.
+	s.registry.SignalLayoutEvents(userID)
 	s.drainLifecycleOutbox(ctx, userID)
 	return nil
 }
@@ -91,11 +95,7 @@ func (s *WorkspaceService) drainLifecycleOutbox(ctx context.Context, userID stri
 	if s.registry == nil || userID == "" {
 		return
 	}
-	mgr, err := s.registry.Get(ctx, userID)
-	if err != nil {
-		return
-	}
-	_ = mgr.SubmitLifecycle(ctx, lifecycleOutboxAdapter{store: s.store})
+	_ = s.registry.DrainLifecycle(ctx, userID)
 }
 
 // buildSeedRootOps returns the two ops a freshly-created workspace
@@ -124,6 +124,11 @@ func buildSeedRootOps(workspaceID, rootID string) []*leapmuxv1.CrdtOp {
 			},
 		},
 	}
+}
+
+// NewLifecycleOutboxReader returns a crdt.LifecycleOutboxReader backed by st.
+func NewLifecycleOutboxReader(st store.Store) crdt.LifecycleOutboxReader {
+	return lifecycleOutboxAdapter{store: st}
 }
 
 // lifecycleOutboxAdapter bridges store.LifecycleOutboxStore to the
@@ -156,18 +161,50 @@ func (a lifecycleOutboxAdapter) ListPendingLifecycleOutbox(ctx context.Context, 
 	out := make([]crdt.LifecycleOutboxRow, len(rows))
 	for i, r := range rows {
 		out[i] = crdt.LifecycleOutboxRow{
-			ID:      r.ID,
-			UserID:  r.UserID,
-			OpType:  crdt.LifecycleOpType(r.OpType),
-			Payload: r.Payload,
+			ID:                r.ID,
+			UserID:            r.UserID,
+			OpType:            crdt.LifecycleOpType(r.OpType),
+			Payload:           r.Payload,
+			LayoutFactWritten: r.LayoutFactWritten,
 		}
 	}
 	return out, nil
 }
 
-func (a lifecycleOutboxAdapter) MarkLifecycleOutboxConsumed(ctx context.Context, id int64, consumedAt time.Time) error {
+func (a lifecycleOutboxAdapter) MarkLifecycleOutboxConsumed(ctx context.Context, rowID int64, consumedAt time.Time) error {
 	return a.store.LifecycleOutbox().MarkConsumed(ctx, store.MarkLifecycleOutboxConsumedParams{
-		ID:         id,
+		ID:         rowID,
 		ConsumedAt: consumedAt,
+	})
+}
+
+func (a lifecycleOutboxAdapter) ConsumeLifecycleOutboxWithLayoutFact(ctx context.Context, row crdt.LifecycleOutboxRow, consumedAt time.Time, fact *leapmuxv1.LayoutEventFact) error {
+	if fact == nil {
+		return errors.New("lifecycle outbox: layout event fact is required")
+	}
+	owner, err := mintTenant(row.UserID)
+	if err != nil {
+		return err
+	}
+	payloads, err := marshalLayoutFacts([]*leapmuxv1.LayoutEventFact{fact})
+	if err != nil {
+		return err
+	}
+	mark := store.MarkLifecycleOutboxConsumedParams{
+		ID:         row.ID,
+		ConsumedAt: consumedAt,
+	}
+	return a.store.RunInTransaction(ctx, func(tx store.Store) error {
+		events := tx.LayoutEvents()
+		claimed, err := events.ClaimLifecycle(ctx, owner, row.ID)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			if err := appendLayoutEvents(ctx, events, owner, consumedAt.UnixMilli(), payloads, ""); err != nil {
+				return err
+			}
+		}
+		return tx.LifecycleOutbox().MarkConsumed(ctx, mark)
 	})
 }

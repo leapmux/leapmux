@@ -5,11 +5,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/hub/auth"
 )
 
 // The admin surface takes the elevation gate by a hand-written call in each
@@ -34,16 +32,10 @@ import (
 type adminElevationClass int
 
 const (
-	// adminNeedsElevatedSession calls requireElevatedSessionForDurableAuthority:
-	// an elevated SESSION, and a bearer is refused outright.
-	adminNeedsElevatedSession adminElevationClass = iota
 	// adminNeedsElevatedCredential calls requireElevatedActor, directly or
 	// through writeUnderElevation: any credential that can carry an
 	// elevation, a command-line credential included.
-	adminNeedsElevatedCredential
-	// adminNeedsElevatedSessionForSomeFields takes the strict session rule
-	// for one class of field and the credential rule for the rest.
-	adminNeedsElevatedSessionForSomeFields
+	adminNeedsElevatedCredential adminElevationClass = iota
 	// adminNeedsElevationFromInterceptor means the interceptor's window
 	// check is the whole elevation requirement. The handler adds no gate of
 	// its own: what the procedure does (a read, a revocation, a purge of
@@ -82,14 +74,13 @@ var adminProcedureElevation = map[string]struct {
 
 	// --- AdminUserService ---
 	//
-	// The strict session rule covers the verbs that create DURABLE NEW
-	// AUTHORITY. requireElevatedSessionForDurableAuthority states the whole
-	// of that rule.
-	leapmuxv1connect.AdminUserServiceCreateUserProcedure:    {adminNeedsElevatedSession, "mints an account, optionally an administrator, with a password the caller chooses"},
-	leapmuxv1connect.AdminUserServiceSetUserAdminProcedure:  {adminNeedsElevatedSession, "grants administration itself"},
-	leapmuxv1connect.AdminUserServiceResetPasswordProcedure: {adminNeedsElevatedSession, "sets any account's password without the old one"},
-	leapmuxv1connect.AdminUserServiceUpdateUserProcedure: {adminNeedsElevatedSessionForSomeFields,
-		"the email fields are a recovery identity, so they take the strict session rule; a display name or a cleared pending address takes the credential rule"},
+	// Every write verb requires an elevated administrator credential (browser
+	// session or CLI credential with admin:users scope that completed browser
+	// step-up elevation) and commits under commitUnderElevation.
+	leapmuxv1connect.AdminUserServiceCreateUserProcedure:    {adminNeedsElevatedCredential, "mints an account, optionally an administrator, with a password the caller chooses"},
+	leapmuxv1connect.AdminUserServiceSetUserAdminProcedure:  {adminNeedsElevatedCredential, "grants or revokes administration itself"},
+	leapmuxv1connect.AdminUserServiceResetPasswordProcedure: {adminNeedsElevatedCredential, "sets any account's password without the old one"},
+	leapmuxv1connect.AdminUserServiceUpdateUserProcedure:    {adminNeedsElevatedCredential, "rewrites profile, email, and verification fields under elevation"},
 
 	// The credential rule: an elevated command-line credential is admitted,
 	// because each of these has a documented headless verb and none of them
@@ -128,10 +119,11 @@ var adminProcedureElevation = map[string]struct {
 	// A provider row installs a sign-in route for the WHOLE hub, and one with
 	// trust_email set links an incoming identity to any account whose verified
 	// address it presents. writeUnderElevation states the rest.
-	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:        {adminNeedsElevatedCredential, "installs an identity provider, which is a sign-in route for every account"},
-	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      {adminNeedsElevationFromInterceptor, "a read of the provider inventory; the interceptor's check is the whole requirement"},
-	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:     {adminNeedsElevatedCredential, "removes a login method for every user"},
-	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: {adminNeedsElevatedCredential, "turns a login method on or off for every user"},
+	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:          {adminNeedsElevatedCredential, "installs an identity provider, which is a sign-in route for every account"},
+	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:        {adminNeedsElevationFromInterceptor, "a read of the provider inventory; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:       {adminNeedsElevatedCredential, "removes a login method for every user"},
+	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure:   {adminNeedsElevatedCredential, "turns a login method on or off for every user"},
+	leapmuxv1connect.AdminIdPServiceUpdateOAuthProviderSecretProcedure: {adminNeedsElevatedCredential, "rotates a sign-in provider's client secret in place"},
 }
 
 // TestEveryAdminProcedureIsElevationClassified is the tripwire: a new admin
@@ -139,7 +131,7 @@ var adminProcedureElevation = map[string]struct {
 // on and why.
 //
 // It checks the RECORD, not the handler. The other half is behavioral --
-// TestAdminIdPService_WritesNeedAnElevatedSession,
+// TestAdminIdPService_WritesNeedAProvenFactor,
 // TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession,
 // TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor and
 // TestAdminSettingsService_WriteGate drive the protected verbs through a real
@@ -190,24 +182,4 @@ func TestAdminWriteProceduresAreClassifiedProtected(t *testing.T) {
 				"procedure %q creates or rewrites state that other accounts stand on, so it may not be classified adminNeedsElevationFromInterceptor -- wire it to a gate, or rename it if it only reduces access", procedure)
 		}
 	}
-}
-
-// TestIsSessionOnlyAdminProcedureMatchesElevatedSessionClass pins the
-// agreement between the interceptor's session-only set and the
-// classification: exactly the procedures whose handlers demand an elevated
-// SESSION (and refuse every bearer) are the ones the interceptor refuses
-// non-session credentials for before the step-up prompt.
-func TestIsSessionOnlyAdminProcedureMatchesElevatedSessionClass(t *testing.T) {
-	t.Parallel()
-
-	seen := false
-	for procedure, entry := range adminProcedureElevation {
-		want := entry.class == adminNeedsElevatedSession
-		if want {
-			seen = true
-		}
-		assert.Equalf(t, want, auth.IsSessionOnlyAdminProcedure(procedure),
-			"the session-only set and adminNeedsElevatedSession must agree on %q", procedure)
-	}
-	require.True(t, seen, "no procedure holds adminNeedsElevatedSession; the agreement proves nothing")
 }

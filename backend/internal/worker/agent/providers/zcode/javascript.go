@@ -4,54 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
 )
-
-// zcodeJSONStringify encodes the arrays and ordered records used in ZCode's
-// credential keys and account scopes. Native JSON.stringify leaves U+2028 and
-// U+2029 literal, while Go escapes them even with HTML escaping disabled.
-func zcodeJSONStringify(value any) string {
-	var out strings.Builder
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		panic(fmt.Sprintf("zcodeJSONStringify: %v", err))
-	}
-	encoded := strings.TrimSuffix(out.String(), "\n")
-	if !strings.Contains(encoded, `\u2028`) && !strings.Contains(encoded, `\u2029`) {
-		return encoded
-	}
-	var native strings.Builder
-	native.Grow(len(encoded))
-	for i := 0; i < len(encoded); {
-		if encoded[i] != '\\' {
-			native.WriteByte(encoded[i])
-			i++
-			continue
-		}
-		// The encoder guarantees a complete JSON escape. Consume it together
-		// so a literal backslash followed by "u2028" remains literal text.
-		end := i + 2
-		if encoded[i+1] == 'u' {
-			end = i + 6
-		}
-		switch encoded[i:end] {
-		case `\u2028`:
-			native.WriteString("\u2028")
-		case `\u2029`:
-			native.WriteString("\u2029")
-		default:
-			native.WriteString(encoded[i:end])
-		}
-		i = end
-	}
-	return native.String()
-}
 
 // zcodeEncodeURIComponent preserves the ASCII characters that JavaScript keeps,
 // and percent-encodes every other UTF-8 byte in uppercase hexadecimal.

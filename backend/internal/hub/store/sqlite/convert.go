@@ -115,34 +115,6 @@ func listWorkersAdminLiveByUserParams(userID string, cursor string, limit int64)
 	})
 }
 
-// listWorkersAdminActiveParams builds the typed cursor for ListWorkersAdminActive.
-func listWorkersAdminActiveParams(cursor string, limit int64) (gendb.ListWorkersAdminActiveParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminActiveParams {
-		return gendb.ListWorkersAdminActiveParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminActiveByUserParams builds the typed cursor for ListWorkersAdminActiveByUser.
-func listWorkersAdminActiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminActiveByUserParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminActiveByUserParams {
-		return gendb.ListWorkersAdminActiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringParams builds the typed cursor for ListWorkersAdminDeregistering.
-func listWorkersAdminDeregisteringParams(cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeregisteringParams {
-		return gendb.ListWorkersAdminDeregisteringParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringByUserParams builds the typed cursor for ListWorkersAdminDeregisteringByUser.
-func listWorkersAdminDeregisteringByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeregisteringByUserParams {
-		return gendb.ListWorkersAdminDeregisteringByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
 // listWorkersAdminDeletedParams builds the typed cursor for ListWorkersAdminDeleted.
 func listWorkersAdminDeletedParams(cursor string, limit int64) (gendb.ListWorkersAdminDeletedParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeletedParams {
@@ -255,4 +227,40 @@ func (c *sqliteConn) queryError(err error) error {
 		err = sqlutil.WithTransactionCancellation(c.transactionContext, err)
 	}
 	return mapErr(err)
+}
+
+// parseIDPrefixPage validates an optional ID-prefix filter and pagination
+// cursor for list methods that switch to primary-key ordering when IDPrefix is
+// non-empty. When active is false, the caller runs its default timestamp-keyset
+// query. When active and empty are both true, no row can match and the caller
+// returns an empty page without querying the database.
+func parseIDPrefixPage(prefix, cursor string, limit int64) (filter store.IDPrefixFilter, idGt string, fetchLimit int64, active, empty bool, err error) {
+	filter, active, err = store.ParseIDPrefix(prefix)
+	if err != nil || !active {
+		return store.IDPrefixFilter{}, "", 0, false, false, err
+	}
+	c, err := store.ParseCursor(cursor)
+	if err != nil {
+		return store.IDPrefixFilter{}, "", 0, true, false, err
+	}
+	idGt, cursorEmpty := filter.CursorAfter(c)
+	fetchLimit = store.FetchLimit(limit)
+	if cursorEmpty || (!filter.Exact && !filter.HasUpper) || fetchLimit == 0 {
+		return filter, "", 0, true, true, nil
+	}
+	return filter, idGt, fetchLimit, true, false, nil
+}
+
+// optionalUserIDFilter unpacks an admin *string user filter into the string
+// bound by ID-prefix queries (where "" means all users). A non-nil pointer to
+// an empty string matches no user, so empty returns true and the caller returns
+// an empty page without querying.
+func optionalUserIDFilter(userID *string) (id string, empty bool) {
+	if userID == nil {
+		return "", false
+	}
+	if *userID == "" {
+		return "", true
+	}
+	return *userID, false
 }

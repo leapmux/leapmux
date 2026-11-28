@@ -22,6 +22,10 @@ func (piProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) erro
 	return providerkit.ValidateTextAndImageAttachment("pi", attachment)
 }
 
+// SupportsFork reports that Pi supports native conversation-history forking by
+// atomically cloning the JSONL session file with a new session ID and cwd.
+func (piProvider) SupportsFork() bool { return true }
+
 // ListStoredSessions reads Pi's native transcripts from sessions.go.
 // It returns the session ID that Pi reports at runtime.
 // The worker uses that ID to identify duplicate session records.

@@ -163,16 +163,41 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 		}
 		return
 	}
+	if msgType == claudeMsgTypeUser {
+		if routing.isReplay && a.acknowledgeClaudeSteer(routing.sessionID, &env) {
+			return
+		}
+		if a.acknowledgeClaudeInputReply(routing.sessionID, &env) || routing.isReplay && claudeReplayedPrompt(&env) {
+			a.flushHeldAPIErrorIfPending()
+			return
+		}
+	}
 	var result *claudeReceivedResult
 	var inputEvidence *claudeInferredTurnEvidence
+	var reply agent.NativeInputReceipt
+	var outcome leapmuxv1.AgentInputTurnOutcome
 	if !claudeIsSyntheticContext(msgType, &env) && !routing.isReplay && a.liveClaudeOutput() {
 		switch msgType {
 		case claudeMsgTypeResult:
 			if (env.Origin.Kind != "peer" || !env.Origin.Handback) &&
 				(routing.sessionID == "" || routing.sessionID == a.nativeTranscriptSession()) {
-				result = a.captureClaudeResultEdge()
+				result = a.captureClaudeResultEdge(routing.sessionID, env.Origin.Kind == "peer")
+				if result != nil && result.reply != nil {
+					outcome = claudeReplyOutcome(&env, routing.subtype, result.interrupted)
+					if outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+						a.retireUnprovedClaudeReply(result.reply)
+						result.reply = nil
+					} else {
+						reply = result.reply.receipt
+					}
+				}
 			}
-		case claudeMsgTypeAssistant, claudeMsgTypeUser:
+		case claudeMsgTypeAssistant:
+			if env.Origin.Kind != "peer" {
+				reply = a.currentClaudeReplyTurn(routing.sessionID)
+			}
+			inputEvidence = a.reserveClaudeInferredTurn()
+		case claudeMsgTypeUser:
 			inputEvidence = a.reserveClaudeInferredTurn()
 		}
 	}
@@ -181,11 +206,24 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 		frame := destination.captureFrame(content, msgType, &env)
 		if frame.spans == nil {
 			a.releaseClaudeInferredTurn(inputEvidence)
+			if result != nil {
+				a.retireUnprovedClaudeReply(result.reply)
+				result.reply = nil
+			}
 			return func(agent.TranscriptSequence) error {
 				return errors.New("the Claude frame has no retained span authority")
 			}
 		}
 		frame.result = result
+		if reply.InputID != "" {
+			if frame.content.AgentSessionID == reply.SessionID {
+				frame.content.NativeTurnID = reply.InputID
+				frame.content.InputTurnOutcome = outcome
+			} else if result != nil {
+				a.retireUnprovedClaudeReply(result.reply)
+				result.reply = nil
+			}
+		}
 		frame.inputEvidence = inputEvidence
 		if routing.sessionID != "" && routing.sessionID != frame.content.AgentSessionID {
 			a.releaseClaudeInferredTurn(frame.inputEvidence)
@@ -211,6 +249,9 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 	})
 	if err != nil {
 		a.releaseClaudeInferredTurn(inputEvidence)
+		if result != nil {
+			a.retireUnprovedClaudeReply(result.reply)
+		}
 		a.reportClaudeSequenceError("process Claude conversation frame", err)
 		return
 	}
@@ -266,25 +307,41 @@ type claudeReceivedResult struct {
 	inputRevision uint64
 	busyRevision  uint64
 	interrupted   bool
+	reply         *claudeInputReply
 }
 
-func (a *Agent) captureClaudeResultEdge() *claudeReceivedResult {
+func (a *Agent) captureClaudeResultEdge(sessionID string, fromPeer bool) *claudeReceivedResult {
 	a.Mu.Lock()
+	if fromPeer && a.inputReply != nil && a.inputReply.acknowledged && (sessionID == "" || a.inputReply.receipt.SessionID == sessionID) {
+		// A peer result can arrive while the ordinary input still owns the turn.
+		a.Mu.Unlock()
+		return nil
+	}
 	a.turnEndRevision++
 	result := &claudeReceivedResult{
 		endRevision: a.turnEndRevision, inputRevision: a.turnInputRevision,
 		busyRevision: a.nativeBusyRevision, interrupted: a.interruptRequested,
 	}
 	a.interruptRequested = false
+	unproved := a.inputReply
+	if unproved != nil && unproved.acknowledged && unproved.receipt.SessionID == sessionID {
+		result.reply = unproved
+		unproved = nil
+	}
+	a.inputReply = nil
 	retired := a.takeControlsLocked(func(record *claudePendingControl) bool { return record.agentID == "" })
 	a.Mu.Unlock()
 	a.cancelControls(retired)
+	a.retireUnprovedClaudeReply(unproved)
 	return result
 }
 
 func (a *Agent) processClaudeRootFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, retractions *claudeFrameRetractions) error {
 	accepted, err := a.admitClaudeFrame(sequence, frame, retractions)
 	if err != nil || !accepted {
+		if err == nil && frame.result != nil {
+			a.retireUnprovedClaudeReply(frame.result.reply)
+		}
 		return err
 	}
 	msgType, env := frame.msgType, frame.envelope
@@ -489,6 +546,10 @@ func (a *Agent) receiveClaudeSessionState(state string) {
 		a.nativeBusyRevision++
 	}
 	busyRevision := a.nativeBusyRevision
+	var observedSteers []*claudePendingSteer
+	if !busy {
+		observedSteers = a.observedClaudeSteersLocked()
+	}
 	a.Mu.Unlock()
 	if busy {
 		a.armTurn()
@@ -497,11 +558,15 @@ func (a *Agent) receiveClaudeSessionState(state string) {
 	a.routeClaudeRootSequence("apply Claude session state", func(func()) claudeRootSequence {
 		destination := a.rootTranscript()
 		captured := destination.capture(agent.MessageContent{}, agent.SpanInfo{})
+		var settle func() error
 		return func(agent.TranscriptSequence) error {
-			if agent.TranscriptFrameIsCurrent(captured) {
-				a.noteSessionIdle(busyRevision, agent.DirectProviderServices(destination.sink))
+			if settle == nil && agent.TranscriptFrameIsCurrent(captured) {
+				settle = a.prepareSessionIdle(busyRevision, agent.DirectProviderServices(destination.sink), observedSteers)
 			}
-			return nil
+			if settle == nil {
+				return nil
+			}
+			return settle()
 		}
 	})
 }
@@ -551,6 +616,20 @@ func (a *Agent) resolveHeldAPIError(sequence agent.TranscriptSequence, resolver 
 	}
 	a.clearHeldAPIError(held)
 	return nil
+}
+
+func (a *Agent) flushHeldAPIErrorIfPending() {
+	a.heldAPIErrorMu.Lock()
+	hasHeld := a.heldAPIError != nil
+	a.heldAPIErrorMu.Unlock()
+	if !hasHeld {
+		return
+	}
+	a.routeClaudeRootSequence("flush held Claude API error", func(func()) claudeRootSequence {
+		return func(sequence agent.TranscriptSequence) error {
+			return a.resolveHeldAPIError(sequence, nil)
+		}
+	})
 }
 
 func (a *Agent) clearHeldAPIError(held *claudeHeldAPIError) {
@@ -676,7 +755,7 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 				return nil
 			}
 			content.Metadata = a.MessageWithToolUses(raw).Metadata
-			if userInterruptedResult {
+			if content.InputTurnOutcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED || userInterruptedResult {
 				content.Completion = agent.MessageCompletionInterrupted
 			}
 		}

@@ -44,4 +44,47 @@ test.describe('Worker Management', () => {
     await expectClipsToOneLine(name)
     await expectClipsLongText(name)
   })
+
+  test('vertically centers the status dot with the worker name and menu trigger', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const workersSection = sidebarSectionHeader(page, 'workers')
+    await expandSidebarSection(workersSection)
+
+    const row = workersSection.getByTestId('worker-row').filter({ hasText: 'Local' })
+    const name = row.getByTestId('worker-name')
+    const dot = row.locator('[data-status]')
+    const trigger = row.locator('button[aria-expanded]')
+    await expect(dot).toBeVisible()
+
+    const [nameBox, dotBox, triggerBox] = await Promise.all([
+      name.boundingBox(),
+      dot.boundingBox(),
+      trigger.boundingBox(),
+    ])
+    expect(nameBox).not.toBeNull()
+    expect(dotBox).not.toBeNull()
+    expect(triggerBox).not.toBeNull()
+
+    const centerY = (box: { y: number, height: number }) => box.y + box.height / 2
+    const centerX = (box: { x: number, width: number }) => box.x + box.width / 2
+
+    // The status dot and the kebab trigger must occupy the same action-slot cell
+    // rather than stacking into two grid rows when `<ot-dropdown>` and `<Tooltip>`
+    // use `display: contents`.
+    expect(Math.abs(centerY(dotBox!) - centerY(triggerBox!))).toBeLessThanOrEqual(1)
+    expect(Math.abs(centerX(dotBox!) - centerX(triggerBox!))).toBeLessThanOrEqual(1)
+    expect(Math.abs(centerY(dotBox!) - centerY(nameBox!))).toBeLessThanOrEqual(2)
+
+    const restingRowBox = await row.boundingBox()
+    expect(restingRowBox).not.toBeNull()
+
+    // Hovering swaps the dot for the kebab trigger in place without shifting row size.
+    await row.hover()
+    await expect(trigger).toHaveCSS('opacity', '1')
+    await expect(dot).toHaveCSS('opacity', '0')
+    const hoveredRowBox = await row.boundingBox()
+    expect(hoveredRowBox).not.toBeNull()
+    expect(Math.abs(hoveredRowBox!.height - restingRowBox!.height)).toBeLessThanOrEqual(1)
+    expect(Math.abs(hoveredRowBox!.width - restingRowBox!.width)).toBeLessThanOrEqual(1)
+  })
 })

@@ -1,15 +1,8 @@
+import type { ControlPayloadFault, ControlPrompt } from '~/components/chat/model/controlPrompt'
+import type { ControlEditorRole } from '~/components/chat/model/controlPromptWire'
 import type { AgentControlCancelRequest, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore, produce } from 'solid-js/store'
 import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
-
-/**
- * Why `payload` is empty although the agent sent bytes.
- *
- * `malformed`: the bytes are not JSON at all.
- * `not-an-object`: the bytes are valid JSON, but a scalar, a null, or an array, and every
- * reader of a payload expects an object.
- */
-export type ControlPayloadFault = 'malformed' | 'not-an-object'
 
 export interface ControlRequest {
   requestId: string
@@ -17,12 +10,20 @@ export interface ControlRequest {
   agentSessionId?: string
   /** The provider from the control event remains available before agent metadata loads. */
   agentProvider?: AgentProvider
+  /**
+   * What the request asks, as the Worker's provider package read it. The banner draws
+   * this, and an answer is a decision about it (AnswerControl).
+   */
+  prompt: ControlPrompt
+  /** What text in the composer means while this request waits. */
+  editorRole: ControlEditorRole
   payload: Record<string, unknown>
   /**
-   * Set when LeapMux could not read the bytes into `payload`, which is then empty. The
-   * request is still kept: a BLOCKING request makes the agent wait for an answer, so
-   * dropping it leaves a turn that never ends and a reader with no question.
-   * `originalPayload` holds what arrived.
+   * Set when LeapMux could not read the bytes as a request of the agent's provider. When
+   * the bytes are no JSON object, `payload` is empty. An `unrecognized` request is a JSON
+   * object, so `payload` holds it. The request is still kept: a BLOCKING request makes
+   * the agent wait for an answer, so dropping it leaves a turn that never ends and a
+   * reader with no question. `originalPayload` holds what arrived.
    */
   payloadFault?: ControlPayloadFault
   /** Original provider bytes remain available for copying and inspection. */

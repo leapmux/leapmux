@@ -24,6 +24,7 @@ const (
 	qoderSubtypeCommandsChanged        = "commands_changed"
 	qoderSubtypeControlRequestProgress = "control_request_progress"
 	qoderSubtypeTaskProgress           = "task_progress"
+	qoderSubtypeMCPServerUpdated       = "query.mcp.server_updated"
 )
 
 // These task lifecycle subtypes update the background-task registry and carry
@@ -74,6 +75,7 @@ type MessageEnvelope struct {
 // UserInputMessage is written to stdin with --input-format stream-json.
 type UserInputMessage struct {
 	Type    string           `json:"type"`
+	UUID    string           `json:"uuid,omitempty"`
 	Message UserInputContent `json:"message"`
 }
 
@@ -115,6 +117,7 @@ type controlResponseEnvelope struct {
 
 // controlRequestEnvelope is a control_request in either direction.
 type controlRequestEnvelope struct {
+	SessionID string          `json:"session_id"`
 	RequestID string          `json:"request_id"`
 	Request   json.RawMessage `json:"request"`
 }
@@ -126,15 +129,30 @@ type systemInitMessage struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-// assistantMessage is the part of an assistant line the worker reads.
-type assistantMessage struct {
-	ParentToolUseID *string `json:"parent_tool_use_id"`
-	SessionID       string  `json:"session_id"`
+// qoderToolBlock is one tool_use or tool_result block inside message.content.
+type qoderToolBlock struct {
+	Type    string          `json:"type"`
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
+	CallID  string          `json:"tool_use_id"`
+	IsError bool            `json:"is_error"`
+}
+
+// qoderNativeFrame is the envelope of an assistant or user frame that the worker inspects.
+type qoderNativeFrame struct {
+	Type            string          `json:"type"`
+	SessionID       json.RawMessage `json:"session_id"`
+	Aborted         json.RawMessage `json:"aborted"`
+	ParentToolUseID json.RawMessage `json:"parent_tool_use_id"`
+	Message         struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
 }
 
 // canUseToolAnswer is the object the Qoder control_response carries for a
-// can_use_tool decision. The browser sends the neutral behavior envelope; the
-// worker translates it here.
+// can_use_tool decision. AnswerControlRequest builds the neutral behavior
+// envelope; the worker translates it here.
 //
 // Qoder accepts an outcome or a behavior with its associated fields.
 // The native outcomes are:

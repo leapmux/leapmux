@@ -55,8 +55,10 @@ type Descriptor struct {
 // Registry is the single source of truth for hub methods, keyed by the full
 // procedure path. Adding a method only requires one entry.
 var Registry = registry(
+	entry[leapmuxv1.GetSystemInfoRequest, leapmuxv1.GetSystemInfoResponse](leapmuxv1connect.SystemServiceGetSystemInfoProcedure),
 	entry[leapmuxv1.LocateTabRequest, leapmuxv1.LocateTabResponse](leapmuxv1connect.WorkspaceServiceLocateTabProcedure),
 	entry[leapmuxv1.LocateTileRequest, leapmuxv1.LocateTileResponse](leapmuxv1connect.WorkspaceServiceLocateTileProcedure),
+	entry[leapmuxv1.ReadLayoutEventsRequest, leapmuxv1.ReadLayoutEventsResponse](leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure),
 	entry[leapmuxv1.ListTabsRequest, leapmuxv1.ListTabsResponse](leapmuxv1connect.WorkspaceServiceListTabsProcedure),
 	entry[leapmuxv1.SubmitOpsRequest, leapmuxv1.SubmitOpsResponse](leapmuxv1connect.UserCRDTSubmitOpsProcedure),
 	entry[leapmuxv1.UpdatePresenceRequest, leapmuxv1.UpdatePresenceResponse](leapmuxv1connect.UserCRDTUpdatePresenceProcedure),
@@ -65,8 +67,15 @@ var Registry = registry(
 	entry[leapmuxv1.GetWorkspaceRequest, leapmuxv1.GetWorkspaceResponse](leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure),
 	entry[leapmuxv1.CreateWorkspaceRequest, leapmuxv1.CreateWorkspaceResponse](leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure),
 	entry[leapmuxv1.RenameWorkspaceRequest, leapmuxv1.RenameWorkspaceResponse](leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure),
+	entry[leapmuxv1.MoveWorkspaceRequest, leapmuxv1.MoveWorkspaceResponse](leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure),
 	entry[leapmuxv1.DeleteWorkspaceRequest, leapmuxv1.DeleteWorkspaceResponse](leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure),
+	entry[leapmuxv1.ListSectionsRequest, leapmuxv1.ListSectionsResponse](leapmuxv1connect.SectionServiceListSectionsProcedure),
+	entry[leapmuxv1.CreateSectionRequest, leapmuxv1.CreateSectionResponse](leapmuxv1connect.SectionServiceCreateSectionProcedure),
+	entry[leapmuxv1.RenameSectionRequest, leapmuxv1.RenameSectionResponse](leapmuxv1connect.SectionServiceRenameSectionProcedure),
+	entry[leapmuxv1.DeleteSectionRequest, leapmuxv1.DeleteSectionResponse](leapmuxv1connect.SectionServiceDeleteSectionProcedure),
+	entry[leapmuxv1.MoveSectionRequest, leapmuxv1.MoveSectionResponse](leapmuxv1connect.SectionServiceMoveSectionProcedure),
 	entry[leapmuxv1.ListWorkersRequest, leapmuxv1.ListWorkersResponse](leapmuxv1connect.WorkerManagementServiceListWorkersProcedure),
+	entry[leapmuxv1.GetWorkerInventoryRequest, leapmuxv1.GetWorkerInventoryResponse](leapmuxv1connect.WorkerManagementServiceGetWorkerInventoryProcedure),
 	entry[leapmuxv1.GetWorkerRequest, leapmuxv1.GetWorkerResponse](leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure),
 )
 

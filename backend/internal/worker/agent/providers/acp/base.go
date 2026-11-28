@@ -2,6 +2,7 @@ package acp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -34,7 +35,8 @@ import (
 const (
 	MethodInitialize                  = "initialize"
 	acpMethodSessionUpdate            = "session/update"
-	acpMethodSessionRequestPermission = "session/request_permission"
+	MethodSessionRequestPermission    = "session/request_permission"
+	acpMethodSessionRequestPermission = MethodSessionRequestPermission
 	MethodSessionCancel               = "session/cancel"
 	// An agent sends this JSON-RPC notification to withdraw a request.
 	// The providers use two spellings:
@@ -53,6 +55,7 @@ const (
 	//   - Qwen Code.
 	// A session/load replay would draw the entire conversation in the transcript again.
 	MethodSessionResume   = "session/resume"
+	MethodSessionFork     = "session/fork"
 	MethodSessionPrompt   = "session/prompt"
 	MethodSessionSetModel = "session/set_model"
 	MethodSessionSetMode  = "session/set_mode"
@@ -102,6 +105,9 @@ type Base struct {
 	settingsPublications agentapi.OutputQueue
 	nativeModeID         string
 	promptOutputDrained  bool
+	// rootPromptRequest identifies the detached request that may end the prompt.
+	// turnMu protects the request and its captured output.
+	rootPromptRequest *acpRootPromptRequest
 
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
@@ -118,10 +124,10 @@ type Base struct {
 	agentTurnActive bool
 	// agentTurnQueued records an agent turn that starts before the base processes the preceding prompt's end.
 	// The prompt's end transfers the busy state to that turn. See BeginAgentTurn.
-	// queuedAgentTurnEnd holds the agent turn's end frame when that frame arrives before the prompt's end.
+	// queuedAgentTurnEnd holds the agent turn's end record while the preceding prompt finishes.
 	// b.Mu protects these fields.
 	agentTurnQueued    bool
-	queuedAgentTurnEnd json.RawMessage
+	queuedAgentTurnEnd *acpAgentTurnEnd
 	publishTurnActive  func(active bool, seq uint64)
 	steerMethod        string
 	steerRunID         string
@@ -130,6 +136,9 @@ type Base struct {
 	// session/close, which a context clear sends for the session that it
 	// replaced. Guarded by b.Mu.
 	closesSessions bool
+	// forksSessions records that the initialize response advertised
+	// session/fork during initialize. Guarded by b.Mu.
+	forksSessions bool
 	// openRows holds the registry rows that this agent opened and did not close
 	// yet, which a context clear closes. See session_retirement.go.
 	openRows acpOpenRows
@@ -257,7 +266,7 @@ func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 	textCompletion, incomplete := b.turnOutputCompletions(stopped)
 	turn := b.detachRootPrompt(!stopped)
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
-		b.persistPromptResponseTo(writer, frame, count, turn.sessionID, stopped)
+		b.persistPromptResponseTo(writer, agentapi.MessageContent{Original: frame}, count, turn.sessionID, stopped)
 	})
 	if stopped {
 		b.releaseAwaitedTerminals()
@@ -301,14 +310,14 @@ func (b *Base) finishFailedRootSnapshot(turn acpTurnSnapshot, err error, ending 
 	slog.Error("ACP prompt failed", "agent_id", b.AgentID(), "error", err)
 	b.finishRootSnapshot(turn, agentapi.MessageCompletionError, agentapi.MessageCompletionError, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
 		if !ending.NoteWritten {
-			if turn.endingAdmission == nil {
+			if !turn.endingAdmission.captured() {
 				b.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err)})
 			} else {
 				b.persistRootFailure(writer, err)
 			}
 		}
 		if len(ending.EndFrame) > 0 {
-			b.persistPromptResponseTo(writer, ending.EndFrame, count, turn.sessionID, false)
+			b.persistPromptResponseTo(writer, agentapi.MessageContent{Original: ending.EndFrame}, count, turn.sessionID, false)
 		}
 	})
 }
@@ -324,7 +333,12 @@ func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCo
 }
 
 func (b *Base) finishACPTurnFor(turn acpTurnSnapshot, completion agentapi.MessageCompletion, reason RootTranscriptEnd) {
+	if turn.answeredPrompt != nil {
+		b.finishRootSnapshot(*turn.answeredPrompt, completion, completion, reason, nil)
+		b.retireAbandonedInputReply(turn.answeredPrompt.endingAdmission)
+	}
 	b.finishRootSnapshot(turn, completion, completion, reason, nil)
+	b.retireAbandonedInputReply(turn.endingAdmission)
 	providerkit.ResetSpansAndProgress(b.sink)
 }
 
@@ -344,6 +358,11 @@ type acpUpdateHeader struct {
 }
 
 func (b *Base) handleACPUpdate(update json.RawMessage) {
+	b.handleACPUpdateWithMeta(acpSessionUpdate{SessionID: b.CurrentSessionID(), Update: update})
+}
+
+func (b *Base) handleACPUpdateWithMeta(wrapper acpSessionUpdate) {
+	update := wrapper.Update
 	var header acpUpdateHeader
 	if err := json.Unmarshal(update, &header); err != nil {
 		slog.Warn("acp session update unmarshal header failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
@@ -355,7 +374,7 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 	// An update whose tag identifies no child transcript stays in the main transcript, where the reader can still see it.
 	if b.hooks.ChildUpdateRoute != nil {
 		if rowKey := b.hooks.ChildUpdateRoute(header.SessionUpdate, header.Meta); rowKey != "" &&
-			b.routeToChild(rowKey, header, update) != childRouteUnknown {
+			b.routeToChild(rowKey, header, acpSessionUpdate{Update: update}) != childRouteUnknown {
 			return
 		}
 	}
@@ -368,7 +387,11 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 	if header.Role == contracts.ACPRoleResult {
 		return
 	}
-	if b.main().handleUpdate(header, update) {
+	sessionID := wrapper.SessionID
+	if sessionID == "" {
+		sessionID = b.CurrentSessionID()
+	}
+	if b.main().handleUpdate(header, update, sessionID, "", wrapper.Meta) {
 		return
 	}
 
@@ -1318,8 +1341,9 @@ func acpStandardInitParams(hooks *Hooks) (json.RawMessage, error) {
 	return encoded, nil
 }
 
-// buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
-// When present, adjust changes the params before encoding. See Hooks.SessionParams.
+// buildACPSessionRequest builds a session/new, session/load, session/resume, or
+// session/fork JSON-RPC request. When present, adjust changes the params before
+// encoding. See Hooks.SessionParams.
 func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod string, adjust func(method string, params map[string]any)) (method string, params []byte) {
 	p := map[string]any{
 		"cwd":        workingDir,
@@ -1661,8 +1685,8 @@ func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string 
 	return c.Text
 }
 
-func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp json.RawMessage, numToolUses int, sessionID string, resetSpans bool) {
-	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(agentapi.MessageContent{Original: resp}, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
+func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, content agentapi.MessageContent, numToolUses int, sessionID string, resetSpans bool) {
+	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(content, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
 		slog.Error("persist ACP prompt result", "agent_id", b.AgentID(), "error", err)
 	}
 	if resetSpans {
@@ -1949,6 +1973,10 @@ func (b *Base) handleUsageUpdate(update json.RawMessage) {
 type SessionConfig struct {
 	NewMethod    string // e.g. "session/new"
 	ResumeMethod string // e.g. "session/load" or "session/resume"
+	// ForkRequiresLoad loads the source session via ResumeMethod in the fresh
+	// ACP process before invoking session/fork (required by providers such as
+	// Junie that only fork a session already loaded in the current process).
+	ForkRequiresLoad bool
 }
 
 // acpDefaultSessionConfig is the standard ACP session config used by most providers.
@@ -2009,30 +2037,65 @@ func (b *Base) startACPHandshake(
 	if b.hooks.InitializeResponse != nil {
 		b.hooks.InitializeResponse(initResp)
 	}
-	closesSessions := advertisesSessionClose(initResp)
+	closesSessions, forksSessions := readSessionCapabilities(initResp)
 	b.Mu.Lock()
 	b.steerMethod = steerMethod
 	b.closesSessions = closesSessions
+	b.forksSessions = forksSessions
 	b.Mu.Unlock()
 
-	// 2. Send session request (resume or new).
-	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
-	// The session/load reply separates replayed history from live output.
-	// The Worker already stores the history sent before that reply, so the startup drain drops it. See acpSessionUpdates.
-	// The reader records the boundary while routing the reply and immediately buffers each later line.
-	// This goroutine wakes afterwards and cannot itself distinguish a live line from replayed history.
-	//
-	// session/resume sends no replay, so every update before its reply is live output.
-	// OpenCode and Kilo forward output from each session client, and that output can arrive during this interval.
-	var observeReply func(json.RawMessage, error)
-	if opts.ResumeSessionID != "" && sessionMethod == MethodSessionLoad {
+	if err := opts.ValidateSessionSource(); err != nil {
+		cleanup()
+		return nil, b.FormatStartupError(MethodSessionFork, err)
+	}
+
+	// 2. Send session request (fork, resume, or new).
+	var (
+		sessionMethod string
+		sessionParams []byte
+		observeReply  func(json.RawMessage, error)
+	)
+	forkID := opts.Session.ForkID()
+	resumeID := opts.Session.ResumeID()
+	if forkID != "" {
+		if !forksSessions {
+			cleanup()
+			return nil, b.FormatStartupError(MethodSessionFork, errors.New("provider does not advertise ACP session/fork capability"))
+		}
+		if sessionCfg.ForkRequiresLoad {
+			loadDir := cmp.Or(opts.Session.ForkSourceWorkingDir(), opts.WorkingDir)
+			loadMethod, loadParams := buildACPSessionRequest(forkID, loadDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
+			// Do not record replayCutoff on the pre-fork load: markSessionReplayCutoff
+			// only records the first cutoff, so marking early would leave replay
+			// notifications emitted during session/fork above the cutoff.
+			if _, err := b.SendRequestObserved(loadMethod, json.RawMessage(loadParams), timeout, nil); err != nil {
+				cleanup()
+				return nil, b.FormatStartupError(loadMethod, err)
+			}
+		}
+		sessionMethod, sessionParams = buildACPSessionRequest(forkID, opts.WorkingDir, sessionCfg.NewMethod, MethodSessionFork, b.hooks.SessionParams)
+		// Drop any conversation history replayed before the session/fork reply
+		// (including any replay emitted during a pre-fork load) because the
+		// Worker already cloned the SQLite transcript.
 		observeReply = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
+	} else {
+		sessionMethod, sessionParams = buildACPSessionRequest(resumeID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
+		// The session/load reply separates replayed history from live output.
+		// The Worker already stores the history sent before that reply, so the startup drain drops it. See acpSessionUpdates.
+		// The reader records the boundary while routing the reply and immediately buffers each later line.
+		// This goroutine wakes afterwards and cannot itself distinguish a live line from replayed history.
+		//
+		// session/resume sends no replay, so every update before its reply is live output.
+		// OpenCode and Kilo forward output from each session client, and that output can arrive during this interval.
+		if resumeID != "" && sessionMethod == MethodSessionLoad {
+			observeReply = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
+		}
 	}
 	sessionResp, err := b.SendRequestObserved(sessionMethod, json.RawMessage(sessionParams), timeout, observeReply)
 	if err != nil {
 		cleanup()
-		if opts.ResumeSessionID != "" {
-			return nil, b.FormatStartupError(sessionMethod, providerkit.ResumeFailedError(opts.ResumeSessionID, err))
+		if resumeID != "" {
+			return nil, b.FormatStartupError(sessionMethod, providerkit.ResumeFailedError(resumeID, err))
 		}
 		return nil, b.FormatStartupError(sessionMethod, err)
 	}
@@ -2043,12 +2106,16 @@ func (b *Base) startACPHandshake(
 		cleanup()
 		return nil, b.FormatStartupError("session parse", err)
 	}
-	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == sessionCfg.ResumeMethod {
-		session.SessionID = opts.ResumeSessionID
+	if session.SessionID == "" && resumeID != "" && sessionMethod == sessionCfg.ResumeMethod {
+		session.SessionID = resumeID
 	}
 	if session.SessionID == "" {
 		cleanup()
 		return nil, b.FormatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
+	}
+	if forkID != "" && session.SessionID == forkID {
+		cleanup()
+		return nil, b.FormatStartupError(sessionMethod, fmt.Errorf("response returned the source session ID %q", forkID))
 	}
 
 	// The reader starts before initialization completes.

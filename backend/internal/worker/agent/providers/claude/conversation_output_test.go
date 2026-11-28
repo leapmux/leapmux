@@ -124,13 +124,13 @@ func TestClaudePendingReceiptReservesFreshInputUntilItResolves(t *testing.T) {
 
 	sink.receiptErr = errors.New("receipt lookup unavailable")
 	a.HandleOutput(persistedAssistant("removed", "replayed output"))
-	assert.ErrorIs(t, a.SendInput("wait for the receipt", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "wait for the receipt", nil), agent.ErrAgentBusy)
 	assert.Empty(t, stdin.String())
 	assert.NotContains(t, sink.TurnActives(), true)
 
 	sink.receiptErr = nil
 	require.NoError(t, agent.FlushPendingOutput(services))
-	require.NoError(t, a.SendInput("send after the receipt", nil))
+	require.NoError(t, agenttest.SendInput(a, "send after the receipt", nil))
 	assert.Contains(t, stdin.String(), "send after the receipt")
 }
 

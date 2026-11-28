@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -562,7 +563,7 @@ func TestAnAgentEndThatAQueuedSteerContinuesPersistsTheRunsText(t *testing.T) {
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"First run's text"}}`)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "also check the tests"}))
 	r.emit(`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 
 	messages := r.sink.Messages()
@@ -601,19 +602,6 @@ func TestAgentEndCompletion(t *testing.T) {
 			assert.Equal(t, tc.want, env.completion())
 		})
 	}
-}
-
-func TestTurnDurationMs(t *testing.T) {
-	t.Parallel()
-	start := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
-	assert.Nil(t, turnDurationMs(time.Time{}, start), "a turn whose start this worker never saw")
-	assert.Nil(t, turnDurationMs(start, start.Add(-time.Millisecond)), "a clock that moved backwards")
-	zero := turnDurationMs(start, start)
-	require.NotNil(t, zero, "a real zero is stated, not left out")
-	assert.Equal(t, int64(0), *zero)
-	long := turnDurationMs(start, start.Add(90*time.Minute+1500*time.Millisecond))
-	require.NotNil(t, long)
-	assert.Equal(t, int64(5401500), *long)
 }
 
 func TestMessageText(t *testing.T) {
@@ -673,7 +661,7 @@ func TestAnAgentEndThatAQueuedSteerContinuesKeepsTheTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`, frameBashStart, frameBashEnd)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "also check the tests"}))
 	r.emit(`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 
 	active, _ := r.sink.LastTurnActive()
@@ -751,7 +739,7 @@ func TestASteerThatNeverEntersARunContinuesNothing(t *testing.T) {
 				return nil
 			})
 			r.emit(`{"type":"agent_start"}`)
-			require.NoError(t, r.agent.SteerInput("/session info", nil))
+			require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "/session info"}))
 			if tc.after != nil {
 				r.emit(tc.after(t, r.commandsOfType(CommandPrompt)[0].ID)...)
 			}
@@ -776,8 +764,8 @@ func TestASteerThatOmpTookStillContinuesTheTurnBesideALocalOne(t *testing.T) {
 		return nil
 	})
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
-	require.NoError(t, r.agent.SteerInput("/session info", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "also check the tests"}))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "/session info"}))
 
 	r.emit(`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 	active, _ := r.sink.LastTurnActive()
@@ -798,7 +786,7 @@ func TestAnAgentEndThatOmpContinuesAfterTheSteerWasTakenEndsTheTurn(t *testing.T
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "also check the tests"}))
 	r.emit(`{"type":"message_end","message":{"role":"user","steering":true,"content":[{"type":"text","text":"also check the tests"}]}}`,
 		`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 
@@ -1019,4 +1007,62 @@ func TestOhMyPiFinishOutputClosesAllShellsAndResetsSpans(t *testing.T) {
 	}
 	assert.Equal(t, 1, r.sink.ResetSpanCount())
 	assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestAgentEndEnvelopeYielded(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(v bool) *bool { return &v }
+	for _, tc := range []struct {
+		name       string
+		yielded    *bool
+		isTerminal *bool
+		end        bool
+		want       bool
+	}{
+		{name: "pause yielded nil isTerminal nil", end: false, want: false},
+		{name: "pause yielded nil isTerminal true", isTerminal: boolPtr(true), end: false, want: false},
+		{name: "pause yielded false isTerminal true", yielded: boolPtr(false), isTerminal: boolPtr(true), end: false, want: false},
+		{name: "pause yielded true isTerminal false", yielded: boolPtr(true), isTerminal: boolPtr(false), end: false, want: true},
+		{name: "end yielded nil isTerminal nil", end: true, want: true},
+		{name: "end yielded nil isTerminal true", isTerminal: boolPtr(true), end: true, want: true},
+		{name: "end yielded nil isTerminal false", isTerminal: boolPtr(false), end: true, want: false},
+		{name: "end yielded false isTerminal nil", yielded: boolPtr(false), end: true, want: false},
+		{name: "end yielded false isTerminal true", yielded: boolPtr(false), isTerminal: boolPtr(true), end: true, want: false},
+		{name: "end yielded true isTerminal false", yielded: boolPtr(true), isTerminal: boolPtr(false), end: true, want: true},
+		{name: "end yielded true isTerminal true", yielded: boolPtr(true), isTerminal: boolPtr(true), end: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := agentEndEnvelope{Yielded: tc.yielded, IsTerminal: tc.isTerminal}
+			assert.Equal(t, tc.want, env.yielded(tc.end))
+		})
+	}
+}
+
+func TestHandleAgentEndYieldedWhilePendingSteersKeepsTurnActiveAndClosesReply(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	lead, err := r.agent.SendInput("Start work.", nil)
+	require.NoError(t, err)
+	r.emit(
+		`{"type":"agent_start"}`,
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Before yield."}]}}`,
+	)
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Next steer."}))
+	r.emit(`{"type":"agent_end","isTerminal":false,"yielded":true,"messages":[]}`)
+
+	assert.True(t, r.agent.PublishTurnActive().Active, "pending steer must keep the turn active across a non-terminal yield")
+	assert.Empty(t, turnEndRows(r.sink.Messages()), "non-terminal agent_end with pending steers must not persist a turn divider")
+
+	r.emit(
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"After yield."}]}}`,
+		ompResultFrame(lead.InputID, "completed"),
+	)
+	assert.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: lead.SessionID,
+		TurnID:    lead.TurnID,
+		Outcome:   leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs:    []agent.NativeReplyBoundary{{InputID: lead.InputID, AfterOrdinal: 1}},
+		Items:     []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "omp-reply:" + lead.TurnID + ":2"}},
+	}}, r.sink.NativeReplyTurns(), "yielded reply boundary must exclude assistant messages emitted after yield")
 }

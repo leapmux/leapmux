@@ -3,11 +3,14 @@ package amp
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -121,4 +124,76 @@ func TestResumesThreadAfterExit(t *testing.T) {
 	assert.False(t, failedResume.resumesThreadAfterExit(true), "a resume that failed before its init line")
 	failedResume.resumeAfterExit.Store(true)
 	assert.False(t, failedResume.resumesThreadAfterExit(false), "a resume that failed before its init line")
+}
+
+func TestAmpProcessMarkEndingAndEndingSignal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idempotent double markEnding", func(t *testing.T) {
+		t.Parallel()
+		fp := newFakeProc("agent-1", false)
+		sig := fp.endingSignal()
+		select {
+		case <-sig:
+			t.Fatal("endingSignal must be open before markEnding")
+		default:
+		}
+		fp.markEnding()
+		fp.markEnding()
+		assert.True(t, fp.ending())
+		select {
+		case <-sig:
+		default:
+			t.Fatal("endingSignal must be closed after markEnding")
+		}
+	})
+
+	t.Run("markEnding before endingSignal returns closed channel", func(t *testing.T) {
+		t.Parallel()
+		fp := newFakeProc("agent-1", false)
+		fp.markEnding()
+		select {
+		case <-fp.endingSignal():
+		default:
+			t.Fatal("endingSignal must already be closed when markEnding ran first")
+		}
+	})
+
+	t.Run("stopped process reports ending and returns closed endingSignal", func(t *testing.T) {
+		t.Parallel()
+		fp := newFakeProc("agent-1", false)
+		fp.Stop()
+		assert.True(t, fp.ending())
+		select {
+		case <-fp.endingSignal():
+		default:
+			t.Fatal("endingSignal must be closed for an already-stopped process")
+		}
+	})
+
+	t.Run("concurrent markEnding and endingSignal calls are race-free", func(t *testing.T) {
+		t.Parallel()
+		fp := newFakeProc("agent-1", false)
+		ctx := testutil.DeadlineContext(t)
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				fp.markEnding()
+			}()
+			go func() {
+				defer wg.Done()
+				sig := fp.endingSignal()
+				_ = fp.ending()
+				select {
+				case <-sig:
+				case <-ctx.Done():
+					assert.Fail(t, "endingSignal never closed")
+				}
+			}()
+		}
+		wg.Wait()
+		require.True(t, fp.ending())
+	})
 }

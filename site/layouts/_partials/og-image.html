@@ -4,11 +4,11 @@
   Unless the page sets an explicit `images` front-matter entry, the card is
   generated at build time by compositing onto the shared background
   (assets/og/base.png): the LeapMux app icon on the right (assets/og/icon.png,
-  derived from icons/leapmux-icon-square.svg via `task prepare-frontend`), and on
-  the left a "LeapMux" wordmark, the (word-wrapped) page title, and a path-aware
-  docs URL that encodes the section (e.g. leapmux.dev/docs/using). Hugo caches the
-  processed image, so calling this from both opengraph.html and twitter_cards.html
-  is cheap.
+  copied from frontend/public/icons/leapmux-icon-512.png), and on the left a
+  "LeapMux" wordmark, the (word-wrapped) page title, and a path-aware docs URL
+  that encodes the section (e.g. leapmux.dev/docs/using). Hugo caches the
+  processed image, so calling this from both opengraph.html and
+  twitter_cards.html is cheap.
 
   Single top-level return -- Hugo returning partials reject nested returns.
 */ -}}
@@ -20,7 +20,11 @@
   {{- with $.Resources.GetMatch $first -}}
     {{- $img = .Permalink -}}
   {{- else -}}
-    {{- $img = $first | absURL -}}
+    {{- if or (hasPrefix $first "http://") (hasPrefix $first "https://") -}}
+      {{- $img = $first -}}
+    {{- else -}}
+      {{- $img = strings.TrimPrefix "/" $first | relURL | absURL -}}
+    {{- end -}}
   {{- end -}}
 {{- end -}}
 
@@ -31,7 +35,7 @@
   {{- $fontReg := resources.Get "fonts/Inter-Regular.ttf" -}}
 
   {{- /* Title, footer URL (path-aware), and title type size. */ -}}
-  {{- $title := .Title -}}
+  {{- $title := .Title | default .Site.Title -}}
   {{- $url := "leapmux.dev" -}}
   {{- $titleSize := 68 -}}
   {{- $maxChars := 18 -}}
@@ -39,16 +43,19 @@
     {{- $title = "A workspace for a fleet of coding agents" -}}
     {{- $titleSize = 60 -}}
     {{- $maxChars = 23 -}}
-  {{- else -}}
+  {{- else if hasPrefix .RelPermalink "/docs/" -}}
     {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
     {{- $url = "leapmux.dev/docs" -}}
     {{- if $seg -}}{{- $url = printf "leapmux.dev/docs/%s" $seg -}}{{- end -}}
+  {{- else -}}
+    {{- $seg := index (split (strings.TrimPrefix "/" .RelPermalink) "/") 0 -}}
+    {{- if $seg -}}{{- $url = printf "leapmux.dev/%s" $seg -}}{{- end -}}
   {{- end -}}
 
   {{- /* Wrap the title. One line if it fits; otherwise, if it has an " & ",
-         break right after the ampersand (so "Security & Threat Model" becomes
-         "Security &" / "Threat Model" instead of orphaning "Model"); else
-         greedy-wrap word by word. */ -}}
+         break right after the ampersand (so "Security & Authentication" breaks
+         cleanly); else greedy-wrap word by word without prepending blank lines
+         when a single token exceeds $maxChars. */ -}}
   {{- $lines := slice -}}
   {{- $amp := split $title " & " -}}
   {{- if le (len $title) $maxChars -}}
@@ -59,7 +66,7 @@
     {{- $cur := "" -}}
     {{- range $w := split $title " " -}}
       {{- $try := cond (eq $cur "") $w (printf "%s %s" $cur $w) -}}
-      {{- if le (len $try) $maxChars -}}
+      {{- if or (eq $cur "") (le (len $try) $maxChars) -}}
         {{- $cur = $try -}}
       {{- else -}}
         {{- $lines = $lines | append $cur -}}

@@ -8,8 +8,6 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -312,8 +310,12 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
-	_, err = a.submitReservedPrompt(submission, parts)
-	return agent.ChildInputResult{}, err
+	reply, err := a.submitReservedPrompt(submission, parts)
+	receipt, _, err := a.settlePromptSubmission(submission, reply, err)
+	if err != nil {
+		return agent.ChildInputResult{}, err
+	}
+	return agent.ChildInputResult{NativeReceipt: receipt}, nil
 }
 
 func (a *Agent) reserveChildPromptSubmission(childKey string, input agent.ChildInput) (*kimiPromptSubmission, error) {
@@ -345,6 +347,7 @@ func (a *Agent) reserveChildPromptSubmission(childKey string, input agent.ChildI
 		return nil, err
 	}
 	submission.ready = input.Ready
+	submission.replySink = a.runSink(run)
 	if input.Ready != nil {
 		submission.readyCapture = agent.CaptureTranscript(a.runSink(run), agent.MessageContent{}, agent.SpanInfo{})
 	}
@@ -354,9 +357,11 @@ func (a *Agent) reserveChildPromptSubmission(childKey string, input agent.ChildI
 
 // SteerChildInput is not possible: the server steers the main agent's queue
 // alone, and a steer for a subagent's queued prompt reports it as not pending.
-func (a *Agent) SteerChildInput(string, string, []*leapmuxv1.Attachment) error {
-	return agent.ErrChildOperationUnsupported
+func (a *Agent) SteerChildInput(string, agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, agent.ErrChildOperationUnsupported
 }
+
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 // ActiveChildTurnState reports a subagent's turn. It takes no steering.
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {

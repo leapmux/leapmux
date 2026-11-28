@@ -45,7 +45,8 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	return err
 }
 
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	raw, stop := input.Data, input.Stop
 	var message frame
 	if err := json.Unmarshal(raw, &message); err != nil {
 		return err
@@ -69,7 +70,7 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 			if identity.ApprovalID == "" || identity.UserInputID != "" {
 				return fmt.Errorf("the Muse approval answer has an invalid identity")
 			}
-			identity.Requirement = json.RawMessage(paramsRawField(message.Params, "requirementId"))
+			identity.Requirement = providerkit.RawFields(message.Params)["requirementId"]
 		} else if identity.UserInputID == "" || identity.ApprovalID != "" {
 			return fmt.Errorf("the Muse question answer has an invalid identity")
 		}
@@ -116,12 +117,4 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	default:
 		return fmt.Errorf("the Muse raw input method %q is unsupported", message.Method)
 	}
-}
-
-func paramsRawField(raw []byte, key string) []byte {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
-		return nil
-	}
-	return fields[key]
 }

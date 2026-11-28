@@ -8,6 +8,7 @@ import {
   AgentInputProcessRecoverySchema,
   AgentInputQueueSnapshotSchema,
   AgentInputState,
+  AgentMessageSenderSchema,
   AgentProvider,
   QueuedAgentInputSchema,
   QueueHeadDispatch,
@@ -55,6 +56,7 @@ function renderQueue(overrides: {
   queueHeadDispatch?: QueueHeadDispatch
   activeEditInputId?: string
   recovery?: boolean
+  tabTitle?: (tabId: string) => string | undefined
 } = {}) {
   const handlers = {
     onEdit: vi.fn(),
@@ -81,6 +83,9 @@ function renderQueue(overrides: {
         ? { activeEditInputId: overrides.activeEditInputId }
         : {})}
       queueHeadDispatch={overrides.queueHeadDispatch ?? QueueHeadDispatch.NONE}
+      {...(overrides.tabTitle !== undefined
+        ? { tabTitle: overrides.tabTitle }
+        : {})}
       {...handlers}
     />
   ))
@@ -839,5 +844,101 @@ describe('AgentInputQueue scheduled rows', () => {
       expect.objectContaining({ id: 'b' }),
       'a',
     )
+  })
+})
+
+// A message that another agent sent states its sender in place of its kind, and
+// the user cannot edit it: its text is the other agent's, and the agent reads it
+// under that agent's name.
+describe('AgentInputQueue a message from another agent', () => {
+  // The refusal that the Worker states for an agent message, as it states it.
+  const workerRefusal = 'an agent wrote this message, so it cannot be edited; delete it and send your own'
+  const fromAgent = (id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) => item(id, {
+    kind: AgentInputKind.AGENT_MESSAGE,
+    text: 'Run the tests',
+    sender: create(AgentMessageSenderSchema, { tabId: 'sender-tab', provider: AgentProvider.CLAUDE_CODE }),
+    editRefusal: workerRefusal,
+    ...overrides,
+  })
+
+  it('states the title of the sending tab and its provider', () => {
+    renderQueue({
+      items: [
+        fromAgent('agent'),
+        item('user'),
+      ],
+      tabTitle: id => (id === 'sender-tab'
+        ? 'Fix flaky spec'
+        : undefined),
+    })
+    const sender = screen.getByTestId('queued-input-sender-agent')
+    expect(sender).toHaveTextContent('Message from Fix flaky spec (Claude Code)')
+    expect(sender.querySelector('svg')).not.toBeNull()
+    expect(screen.getByTestId('queued-input-agent')).toHaveTextContent('Message from Fix flaky spec (Claude Code) · Queued')
+    expect(screen.queryByTestId('queued-input-sender-user')).toBeNull()
+    expect(screen.getByTestId('queued-input-user')).toHaveTextContent('Message · Queued')
+  })
+
+  it('states the tab id when the browser holds no title for the sender', () => {
+    renderQueue({
+      items: [
+        fromAgent('agent'),
+      ],
+    })
+    expect(screen.getByTestId('queued-input-sender-agent')).toHaveTextContent('Message from sender-tab (Claude Code)')
+  })
+
+  it('offers no edit, and states the reason that the Worker gives', async () => {
+    const handlers = renderQueue({
+      items: [
+        fromAgent('agent'),
+        item('user'),
+      ],
+    })
+    const row = within(screen.getByTestId('queued-input-agent'))
+    expect(row.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    const refused = row.getByRole('button', { name: 'An agent wrote this message, so it cannot be edited; delete it and send your own' })
+    expect(refused).toBeDisabled()
+    await fireEvent.click(refused)
+    expect(handlers.onEdit).not.toHaveBeenCalled()
+    expect(within(screen.getByTestId('queued-input-user')).getByRole('button', { name: 'Edit' })).toBeEnabled()
+  })
+
+  // The Worker decides which item refuses an edit; the kind decides nothing
+  // here, so a rule that the Worker drops reaches the browser at once.
+  it('offers the edit of any item whose snapshot states no refusal', () => {
+    renderQueue({
+      items: [
+        fromAgent('agent', { editRefusal: '' }),
+        item('refused', { editRefusal: 'the item cannot be edited' }),
+      ],
+    })
+    expect(within(screen.getByTestId('queued-input-agent')).getByRole('button', { name: 'Edit' })).toBeEnabled()
+    expect(within(screen.getByTestId('queued-input-refused')).getByRole('button', { name: 'The item cannot be edited' })).toBeDisabled()
+  })
+
+  it('keeps the other actions that manage the queue', async () => {
+    const handlers = renderQueue({
+      queueHeadDispatch: QueueHeadDispatch.STEER,
+      items: [
+        item('user'),
+        fromAgent('agent'),
+      ],
+    })
+    const row = within(screen.getByTestId('queued-input-agent'))
+    await fireEvent.click(row.getByRole('button', { name: 'Move Up' }))
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent' }), 'user')
+    expect(row.getByRole('button', { name: 'Delete' })).toBeEnabled()
+  })
+
+  it('offers Steer for an agent message that the Worker marks steerable', async () => {
+    const handlers = renderQueue({
+      queueHeadDispatch: QueueHeadDispatch.STEER,
+      items: [
+        fromAgent('agent', { canSteer: true }),
+      ],
+    })
+    await fireEvent.click(within(screen.getByTestId('queued-input-agent')).getByRole('button', { name: 'Steer' }))
+    expect(handlers.onSteer).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent' }))
   })
 })

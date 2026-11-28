@@ -30,7 +30,7 @@ export const QUESTIONS = [
 ]
 
 /** A stored approval of one tool call. */
-export function approvalPayload(toolName: string, input: Record<string, unknown>, fields: Record<string, unknown> = {}): Record<string, unknown> {
+export function approvalPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
   return {
     type: 'control_request',
     request_id: 'approval:ap1',
@@ -42,7 +42,6 @@ export function approvalPayload(toolName: string, input: Record<string, unknown>
       tool_name: toolName,
       description: 'The tool\'s static description.',
       intent_summary: null,
-      ...fields,
     }),
   }
 }

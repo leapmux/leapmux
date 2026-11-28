@@ -1,0 +1,339 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+
+	"connectrpc.com/connect/v2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
+)
+
+type replayIPCWorker struct {
+	requests chan *leapmuxv1.WatchSemanticEventsRequest
+	handle   func(target string, request *leapmuxv1.WatchSemanticEventsRequest, send func(*leapmuxv1.InnerStreamMessage) error) error
+}
+
+func (*replayIPCWorker) CallInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest) ([]byte, error) {
+	return nil, fmt.Errorf("unexpected unary Worker request")
+}
+
+func (w *replayIPCWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest,
+	send func(*leapmuxv1.InnerStreamMessage) error, _ func(channel.StreamController),
+) error {
+	if target != "worker-B" || req.GetMethod() != semanticWatchProcedure {
+		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
+	}
+	request := new(leapmuxv1.WatchSemanticEventsRequest)
+	if err := proto.Unmarshal(req.GetPayload(), request); err != nil {
+		return err
+	}
+	select {
+	case w.requests <- request:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return w.handle(target, request, send)
+}
+
+func TestCheckpointedEventsOverIPCResumesAfterTheSiblingWorkerDisconnects(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	terminalID := fullTestID("terminal")
+	var attempt atomic.Int32
+	worker := &replayIPCWorker{
+		requests: make(chan *leapmuxv1.WatchSemanticEventsRequest, 3),
+		handle: func(target string, request *leapmuxv1.WatchSemanticEventsRequest, send func(*leapmuxv1.InnerStreamMessage) error) error {
+			n := attempt.Add(1)
+			if n > 2 {
+				return connect.NewError(connect.CodeFailedPrecondition, "unexpected retry")
+			}
+			frame := func(value *leapmuxv1.WatchSemanticEventsResponse) error {
+				raw, err := proto.Marshal(value)
+				if err != nil {
+					return err
+				}
+				return send(&leapmuxv1.InnerStreamMessage{Payload: raw})
+			}
+			if err := frame(&leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{
+				Ready: &leapmuxv1.SemanticWatchReady{
+					Tab: request.GetTab(), WorkerId: target, JournalId: "journal", TabStreamId: "tab-stream",
+					HighWaterSequence: int64(n - 1), Cursor: []byte("initial position"),
+				},
+			}}); err != nil {
+				return err
+			}
+			if n == 1 {
+				return connect.NewError(connect.CodeCanceled, "sibling Worker channel closed")
+			}
+			return frame(checkpointBell(1))
+		},
+	}
+	startSpawnIPC(t, &recordingHub{
+		workers: workerRows("worker-A", "worker-B"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:    &leapmuxv1.TabIdent{TabType: checkpointTerminalType, TabId: terminalID},
+			TileId: "root-1", WorkerId: "worker-B", WorkspaceId: "ws-1",
+		},
+	}, newEventsWorker(), func(r *controlipc.Router) { r.CrossWorker = worker })
+	path := filepath.Join(t.TempDir(), "position.json")
+	run := runControlLive(t, "events", "--tab", terminalID, "--checkpoint", path, "--limit", "1", "--json")
+	assert.Empty(t, receive(t, ctx, worker.requests).GetAfterCursor())
+	assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+	assert.Equal(t, kindStreamUnavailable, run.next(t, ctx).Kind)
+	assert.Equal(t, []byte("initial position"), receive(t, ctx, worker.requests).GetAfterCursor())
+	assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+	bell := run.next(t, ctx)
+	assert.Equal(t, kindTerminalBell, bell.Kind)
+	require.NotNil(t, bell.Replayed)
+	assert.True(t, *bell.Replayed)
+	assert.Equal(t, cli.ExitOK, receive(t, ctx, run.code))
+	checkpoint, err := openEventCheckpoint(path)
+	require.NoError(t, err)
+	defer checkpoint.close()
+	saved, err := checkpoint.read()
+	require.NoError(t, err)
+	require.NotNil(t, saved)
+	require.NotNil(t, saved.Tab)
+	assert.Equal(t, int64(1), saved.Tab.Position.Sequence)
+	assert.Equal(t, []byte("next signed position"), saved.Tab.Position.Cursor)
+}
+
+type localEventHistoryWorker struct {
+	requests chan *leapmuxv1.WatchSemanticEventsRequest
+}
+
+func (w *localEventHistoryWorker) DispatchWith(ctx context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
+	request := new(leapmuxv1.WatchSemanticEventsRequest)
+	if req.GetMethod() != semanticWatchProcedure || proto.Unmarshal(req.GetPayload(), request) != nil {
+		_ = writer.SendError(3, "unexpected event history request")
+		return
+	}
+	select {
+	case w.requests <- request:
+	case <-ctx.Done():
+		return
+	}
+	send := func(frame *leapmuxv1.WatchSemanticEventsResponse, end bool) {
+		raw, err := proto.Marshal(frame)
+		if err != nil {
+			_ = writer.SendError(13, err.Error())
+			return
+		}
+		_ = writer.SendStream(&leapmuxv1.InnerStreamMessage{Payload: raw, End: end})
+	}
+	send(&leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{
+		Ready: &leapmuxv1.SemanticWatchReady{
+			Tab: request.GetTab(), WorkerId: "worker-A", JournalId: "journal", TabStreamId: "tab-stream",
+			Cursor: []byte("initial position"),
+		},
+	}}, false)
+	send(&leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Record{
+		Record: &leapmuxv1.SemanticWatchRecord{
+			Sequence: 1, Cursor: []byte("next position"),
+			Fact: &leapmuxv1.SemanticTabFact{Event: &leapmuxv1.SemanticTabFact_AgentTurnEnd{AgentTurnEnd: &leapmuxv1.AgentTurnEnd{}}},
+		},
+	}}, true)
+}
+
+func TestCheckpointedEventsOverIPCResolvesSelfWithoutTheHub(t *testing.T) {
+	t.Run("from ambient env vars", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		worker := &localEventHistoryWorker{requests: make(chan *leapmuxv1.WatchSemanticEventsRequest, 1)}
+		startSpawnIPC(t, &recordingHub{}, worker)
+		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "agent-1")
+		t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", "agent")
+		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+		run := runControlLive(t, "events", "--tab", "self", "--checkpoint", filepath.Join(t.TempDir(), "position.json"), "--limit", "1", "--json")
+		require.Equal(t, cli.ExitOK, receive(t, ctx, run.code))
+		assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+		assert.Equal(t, kindAgentTurnEnd, run.next(t, ctx).Kind)
+		request := receive(t, ctx, worker.requests)
+		assert.Equal(t, "agent-1", request.GetTab().GetTabId())
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, request.GetTab().GetTabType())
+	})
+
+	t.Run("via SelfIdentity Whoami without ambient env vars", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		worker := &localEventHistoryWorker{requests: make(chan *leapmuxv1.WatchSemanticEventsRequest, 1)}
+		startSpawnIPC(t, &recordingHub{}, worker)
+		run := runControlLive(t, "events", "--tab", "self", "--checkpoint", filepath.Join(t.TempDir(), "position.json"), "--limit", "1", "--json")
+		require.Equal(t, cli.ExitOK, receive(t, ctx, run.code))
+		assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+		assert.Equal(t, kindAgentTurnEnd, run.next(t, ctx).Kind)
+		request := receive(t, ctx, worker.requests)
+		assert.Equal(t, "agent-1", request.GetTab().GetTabId())
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, request.GetTab().GetTabType())
+	})
+}
+
+func TestCheckpointedClosedTerminalOverIPCUsesItsSavedSourceAndRequiresEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  bool
+		code int
+	}{
+		{"final retirement", true, cli.ExitOK},
+		{"retirement without end", false, cli.ExitFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testutil.DeadlineContext(t)
+			worker := &replayIPCWorker{
+				requests: make(chan *leapmuxv1.WatchSemanticEventsRequest, 1),
+				handle: func(target string, request *leapmuxv1.WatchSemanticEventsRequest, send func(*leapmuxv1.InnerStreamMessage) error) error {
+					saved := validCheckpoint()
+					frames := []*leapmuxv1.WatchSemanticEventsResponse{
+						{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{Ready: &leapmuxv1.SemanticWatchReady{
+							Tab: request.GetTab(), WorkerId: target, JournalId: saved.Tab.Position.JournalID, TabStreamId: saved.Tab.TabStreamID,
+							AfterSequence: saved.Tab.Position.Sequence, HighWaterSequence: saved.Tab.Position.Sequence, Cursor: request.GetAfterCursor(),
+						}}},
+						{Event: &leapmuxv1.WatchSemanticEventsResponse_Retired{Retired: &leapmuxv1.SemanticWatchRetired{FinalSequence: saved.Tab.Position.Sequence}}},
+					}
+					for _, frame := range frames {
+						raw, err := proto.Marshal(frame)
+						if err != nil {
+							return err
+						}
+						if err := send(&leapmuxv1.InnerStreamMessage{Payload: raw, End: frame.GetRetired() != nil && tc.end}); err != nil {
+							return err
+						}
+					}
+					return nil
+				},
+			}
+			startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A", "worker-B")}, newEventsWorker(), func(r *controlipc.Router) { r.CrossWorker = worker })
+			saved := validCheckpoint()
+			saved.Tab.TabID, saved.Tab.WorkerID = fullTestID("terminal"), "worker-B"
+			path := filepath.Join(t.TempDir(), "closed-terminal.json")
+			checkpoint, err := openEventCheckpoint(path)
+			require.NoError(t, err)
+			require.NoError(t, checkpoint.save(saved))
+			checkpoint.close()
+
+			run := runControlLive(t, "events", "--tab", saved.Tab.TabID, "--checkpoint", path, "--kind", "stream,terminal.bell", "--json")
+			assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+			request := receive(t, ctx, worker.requests)
+			assert.Equal(t, saved.Tab.TabID, request.GetTab().GetTabId())
+			assert.Equal(t, checkpointTerminalType, request.GetTab().GetTabType())
+			assert.Equal(t, saved.Tab.Position.Cursor, request.GetAfterCursor())
+			if tc.end {
+				last := run.next(t, ctx)
+				assert.Equal(t, kindStreamRetired, last.Kind)
+				require.NotNil(t, last.Sequence)
+				assert.Equal(t, saved.Tab.Position.Sequence, *last.Sequence)
+			}
+			assert.Equal(t, tc.code, receive(t, ctx, run.code))
+		})
+	}
+}
+
+func TestLayoutCheckpointOverIPCRequiresTheHubEndAfterADeletion(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	workspace := fullTestID("workspace")
+	path := filepath.Join(t.TempDir(), "layout.json")
+	checkpoint, err := openEventCheckpoint(path)
+	require.NoError(t, err)
+	require.NoError(t, checkpoint.save(&eventCheckpoint{
+		Version: eventCheckpointVersion,
+		Scope:   layoutCheckpointScope,
+		Filter:  []string{kindWorkspaceDeleted},
+		Layout: &layoutEventCheckpoint{
+			WorkspaceID: workspace,
+			Position:    &eventHistoryPosition{JournalID: "layout", Sequence: 1, Cursor: []byte("one")},
+		},
+	}))
+	checkpoint.close()
+	userEvents := newFakeUserEvents()
+	hub := &recordingHub{readLayoutEvents: func(request *leapmuxv1.ReadLayoutEventsRequest) (*leapmuxv1.ReadLayoutEventsResponse, error) {
+		if request.GetWorkspaceId() != workspace || string(request.GetAfterCursor()) != "one" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, "unexpected layout request")
+		}
+		return &leapmuxv1.ReadLayoutEventsResponse{
+			JournalId: "layout", Cursor: []byte("one"), HighWaterSequence: 2, AfterSequence: 1,
+			ScannedSequence: 2, ScannedCursor: []byte("two"),
+			Records: []*leapmuxv1.LayoutEventRecord{{
+				Sequence: 2, Cursor: []byte("two"),
+				Fact: &leapmuxv1.LayoutEventFact{Event: &leapmuxv1.LayoutEventFact_Workspace{Workspace: &leapmuxv1.LayoutWorkspaceChange{
+					WorkspaceId: workspace, Operation: leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_DELETE,
+				}}},
+			}},
+		}, nil
+	}}
+	startSpawnIPC(t, hub, nil, func(r *controlipc.Router) { r.HubStreams = userEvents })
+	run := runControlLive(t, "events", "--workspace", workspace, "--checkpoint", path,
+		"--kind", "stream.ready,workspace.deleted", "--json")
+	assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+	assert.Equal(t, kindWorkspaceDeleted, run.next(t, ctx).Kind)
+
+	// Subsequent pages arrive over /ws/userevents with the layout_journal topic (no polling!).
+	req := receive(t, ctx, userEvents.requests)
+	assert.Equal(t, []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL}, req.GetTopics())
+	assert.Equal(t, workspace, req.GetLayoutWorkspaceId())
+	assert.Equal(t, []byte("two"), req.GetLayoutAfterCursor())
+	wsSession := receive(t, ctx, userEvents.sessions)
+	wsSession.send(&leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_LayoutEvents{
+			LayoutEvents: &leapmuxv1.ReadLayoutEventsResponse{
+				JournalId: "layout", Cursor: []byte("two"), HighWaterSequence: 2, AfterSequence: 2,
+				ScannedSequence: 2, ScannedCursor: []byte("two"),
+				End: &leapmuxv1.LayoutEventEnd{FinalSequence: 3},
+			},
+		},
+	})
+
+	assert.NotEqual(t, cli.ExitOK, receive(t, ctx, run.code), "the invalid Hub end must fail")
+	assert.Equal(t, []string{
+		leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure,
+	}, hub.called(), "unary ReadLayoutEvents runs once for admission; live pages stream over WebSocket")
+	checkpoint, err = openEventCheckpoint(path)
+	require.NoError(t, err)
+	defer checkpoint.close()
+	saved, err := checkpoint.read()
+	require.NoError(t, err)
+	require.NotNil(t, saved)
+	require.NotNil(t, saved.Layout)
+	assert.Equal(t, int64(2), saved.Layout.Position.Sequence)
+	assert.Equal(t, []byte("two"), saved.Layout.Position.Cursor)
+}
+
+func TestLayoutCheckpointOverIPCAcceptsTabFamilyAndSnapshotFinishesImmediately(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	workspace := fullTestID("workspace")
+	path := filepath.Join(t.TempDir(), "layout-tab.json")
+	var calls atomic.Int32
+	hub := &recordingHub{
+		workspaces: []*leapmuxv1.Workspace{{Id: workspace, Title: "Main"}},
+		readLayoutEvents: func(request *leapmuxv1.ReadLayoutEventsRequest) (*leapmuxv1.ReadLayoutEventsResponse, error) {
+			calls.Add(1)
+			return &leapmuxv1.ReadLayoutEventsResponse{
+				JournalId: "layout", Cursor: []byte("h0"), HighWaterSequence: 0, AfterSequence: 0,
+				ScannedSequence: 0, ScannedCursor: []byte("h0"),
+			}, nil
+		},
+	}
+	startSpawnIPC(t, hub, nil)
+	run := runControlLive(t, "events", "--workspace", workspace, "--checkpoint", path,
+		"--kind", "stream.ready,tab", "--snapshot", "--json")
+	assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+	assert.Equal(t, cli.ExitOK, receive(t, ctx, run.code))
+	assert.Equal(t, int32(1), calls.Load())
+
+	checkpoint, err := openEventCheckpoint(path)
+	require.NoError(t, err)
+	defer checkpoint.close()
+	saved, err := checkpoint.read()
+	require.NoError(t, err)
+	require.NotNil(t, saved)
+	assert.Equal(t, []string{kindTabOpened, kindTabClosed, kindTabMoved}, saved.Filter)
+}

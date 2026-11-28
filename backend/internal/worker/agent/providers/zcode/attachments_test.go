@@ -389,7 +389,7 @@ func TestZCodeSendInput_RefusesARejectedAttachmentWithoutSending(t *testing.T) {
 	a.model = "builtin:zai/GLM-5.3"
 	a.Mu.Unlock()
 
-	err := a.SendInput("look", []*leapmuxv1.Attachment{
+	err := agenttest.SendInput(a, "look", []*leapmuxv1.Attachment{
 		zcodeAttachment("shot.png", "image/png", []byte("bytes")),
 	})
 	require.Error(t, err)
@@ -405,7 +405,7 @@ func TestZCodeSendInput_RefusesWithNoSession(t *testing.T) {
 	a.sessionID = ""
 	a.Mu.Unlock()
 
-	require.Error(t, a.SendInput("hi", nil))
+	require.Error(t, agenttest.SendInput(a, "hi", nil))
 	assert.Empty(t, stdin.Frames())
 }
 
@@ -423,7 +423,7 @@ func TestZCodeSendInput_SendsTheResolvedPayload(t *testing.T) {
 	// The native refusal completes the request. This test checks its outgoing payload.
 	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
-	_ = a.SendInput("look", []*leapmuxv1.Attachment{
+	_ = agenttest.SendInput(a, "look", []*leapmuxv1.Attachment{
 		zcodeAttachment("shot.png", "image/png", []byte("bytes")),
 		zcodeAttachment("notes.txt", "text/plain", []byte("inline me")),
 		zcodeAttachment("spec.pdf", "application/pdf", []byte("%PDF-1.7")),
@@ -461,7 +461,7 @@ func TestZCodeSendInput_OmitsTheAttachmentsKeyWhenThereAreNone(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
-	_ = a.SendInput("hi", nil)
+	_ = agenttest.SendInput(a, "hi", nil)
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)

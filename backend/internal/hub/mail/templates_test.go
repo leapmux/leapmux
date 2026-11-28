@@ -37,7 +37,7 @@ func expectedRegistrationBody(command, hubURL string) string {
 	b.WriteString("Register on the machine where the worker should run:\n\n    ")
 	b.WriteString(command)
 	b.WriteString("\n\n")
-	b.WriteString("After registration succeeds, start the worker:\n\n    leapmux worker start\n\n")
+	b.WriteString("After registration succeeds, start the worker:\n\n    leapmux daemon worker start\n\n")
 	b.WriteString("The registration key only works while the dialog stays open in your browser, ")
 	b.WriteString("so keep that tab open until registration completes.\n\n")
 	b.WriteString(verificationFooterTrailingSpace + "\n")
@@ -171,7 +171,7 @@ func ExampleRenderer_RegistrationInstructions() {
 	r := mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }}
 	msg := r.RegistrationInstructions(
 		"bob@example.test",
-		"leapmux worker register --hub 'https://hub.example.com' --registration-key 'abc123'",
+		"leapmux daemon worker register --hub 'https://hub.example.com' --registration-key 'abc123'",
 	)
 	fmt.Print(printForExample(msg))
 	// Output:
@@ -181,11 +181,11 @@ func ExampleRenderer_RegistrationInstructions() {
 	//
 	// Register on the machine where the worker should run:
 	//
-	//     leapmux worker register --hub 'https://hub.example.com' --registration-key 'abc123'
+	//     leapmux daemon worker register --hub 'https://hub.example.com' --registration-key 'abc123'
 	//
 	// After registration succeeds, start the worker:
 	//
-	//     leapmux worker start
+	//     leapmux daemon worker start
 	//
 	// The registration key only works while the dialog stays open in your browser, so keep that tab open until registration completes.
 	//

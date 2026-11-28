@@ -229,7 +229,7 @@ func newGeminiPeerAgent(t *testing.T, duringPrompt ...json.RawMessage) (*Agent, 
 // runGeminiPrompt sends one prompt and waits until its reply ended the turn.
 func runGeminiPrompt(t *testing.T, a *Agent) {
 	t.Helper()
-	require.NoError(t, a.SendInput("Continue the resumed session.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Continue the resumed session.", nil))
 	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
 }
 

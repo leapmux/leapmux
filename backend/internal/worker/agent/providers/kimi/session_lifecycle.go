@@ -62,6 +62,7 @@ func (a *Agent) adoptSessionLocked(sessionID string, frames []kimiFrame) {
 	a.sessionID = sessionID
 	a.Mu.Unlock()
 	if previousSessionID != sessionID {
+		a.retireKimiSessionReplies(previousSessionID)
 		a.cancelMediaSession(previousSessionID)
 	}
 	a.sink.UpdateSessionID(sessionID)

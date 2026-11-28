@@ -2,6 +2,7 @@ import type { Projection } from '~/lib/crdt'
 import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import type { TabStatusStore } from '~/stores/tabStatus.store'
 import type { DetachedTerminal, TabView } from '~/stores/tabView'
 import { createMemo } from 'solid-js'
 import { useFocusInvariant } from '~/components/shell/useFocusInvariant'
@@ -11,6 +12,7 @@ import { createLayoutStore } from '~/stores/layout.store'
 import { createQuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { createTabSelectionStore } from '~/stores/tabSelection.store'
+import { createTabStatusStore } from '~/stores/tabStatus.store'
 import { createTabView } from '~/stores/tabView'
 
 /**
@@ -27,6 +29,7 @@ import { createTabView } from '~/stores/tabView'
 export interface TestTabStores {
   view: TabView
   metadata: TabMetadataStore
+  statuses: TabStatusStore
   selection: TabSelectionStore
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: ReturnType<typeof createFloatingWindowStore>
@@ -68,10 +71,12 @@ export function createTestTabStores(
 ): TestTabStores {
   const { state, projection } = projectionMemo()
   const metadata = createTabMetadataStore()
+  const statuses = createTabStatusStore()
   const view = createTabView({
     projection,
     state,
     metadata,
+    statuses,
     ...(detachedTerminals !== undefined
       ? { detachedTerminals }
       : {}),
@@ -95,6 +100,7 @@ export function createTestTabStores(
   return {
     view,
     metadata,
+    statuses,
     selection,
     layoutStore,
     floatingWindowStore,

@@ -99,7 +99,7 @@ func TestManager_SendInput(t *testing.T) {
 	// SendInput sends a user JSON message; the mock echoes it back.
 	// Since it's a simple user text echo, HandleOutput drops it.
 	// Send raw assistant NDJSON to verify the full pipeline.
-	require.NoError(t, m.SendRawInput("s2", []byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n"), agent.StopContext{}), "SendRawInput")
+	require.NoError(t, m.SendRawInput("s2", agent.RawInput{Data: []byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}` + "\n")}), "SendRawInput")
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > 0
@@ -132,7 +132,8 @@ func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 
 	sendErr := make(chan error, 1)
 	go func() {
-		sendErr <- m.SendInput(agentID, "sent while the agent was restarting", nil)
+		_, err := m.SendInput(agentID, "sent while the agent was restarting", nil)
+		sendErr <- err
 	}()
 
 	// Nothing can deliver this yet, so the send must still be in flight. A send
@@ -236,7 +237,10 @@ func TestManager_SendInputDoesNotHoldTheLifecycleLockAcrossTheWrite(t *testing.T
 	require.NoError(t, err, "StartAgent")
 
 	sendDone := make(chan error, 1)
-	go func() { sendDone <- m.SendInput(agentID, "a message that blocks", nil) }()
+	go func() {
+		_, err := m.SendInput(agentID, "a message that blocks", nil)
+		sendDone <- err
+	}()
 
 	select {
 	case <-entered:
@@ -414,8 +418,8 @@ type blockingSendAgent struct {
 	release chan struct{}
 }
 
-func (a *blockingSendAgent) SendInput(string, []*leapmuxv1.Attachment) error {
+func (a *blockingSendAgent) SendInput(string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	close(a.entered)
 	<-a.release
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }

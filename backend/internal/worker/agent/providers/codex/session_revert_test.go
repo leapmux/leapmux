@@ -84,7 +84,7 @@ func TestCodexPendingRevertKeepsItsIdentityAndQueueHold(t *testing.T) {
 			clock.Advance(timeout).MustWait(ctx)
 			<-sink.reported
 			feedCodexLines(a, `{"method":"thread/reverted","params":{"threadId":"main-thread"}}`, `{"method":"thread/reverted","params":{"threadId":"main-thread"}}`)
-			require.ErrorIs(t, a.SendInput("Must wait.", nil), agent.ErrAgentBusy)
+			require.ErrorIs(t, agenttest.SendInput(a, "Must wait.", nil), agent.ErrAgentBusy)
 			require.Equal(t, []string{"turn/interrupt", "thread/revert"}, requestMethods(requests()))
 			switch outcome {
 			case "context clear":
@@ -101,7 +101,7 @@ func TestCodexPendingRevertKeepsItsIdentityAndQueueHold(t *testing.T) {
 				assert.False(t, a.retryingForTest())
 			case "user stop":
 				require.NoError(t, a.Interrupt(agent.StopContext{}))
-				require.ErrorIs(t, a.SendInput("Still must wait.", nil), agent.ErrAgentBusy)
+				require.ErrorIs(t, agenttest.SendInput(a, "Still must wait.", nil), agent.ErrAgentBusy)
 				reply(agenttest.RPCReply{Result: json.RawMessage(retryRevertReply)})
 				require.ErrorIs(t, <-done, errCodexTurnRetryCancelled)
 				assert.False(t, a.retryingForTest())
@@ -112,7 +112,7 @@ func TestCodexPendingRevertKeepsItsIdentityAndQueueHold(t *testing.T) {
 					reply(agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"History changed, but reload failed."}`)})
 				}
 				require.Error(t, <-done)
-				require.ErrorIs(t, a.SendInput("Unsafe after a partial mutation.", nil), agent.ErrAgentBusy)
+				require.ErrorIs(t, agenttest.SendInput(a, "Unsafe after a partial mutation.", nil), agent.ErrAgentBusy)
 				_, err := a.ClearContext()
 				require.NoError(t, err)
 				assert.False(t, a.retryingForTest())
@@ -146,7 +146,7 @@ func TestCodexRetryRequiresAConfirmedDurablePaginatedStart(t *testing.T) {
 			a, sink, requests := newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
 				if method == "turn/start" {
 					feedCodexLines(a, `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)
-					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+					return agenttest.RPCReply{Result: json.RawMessage(`{"turn":{"id":"turn-1","status":"inProgress","items":[]}}`)}
 				}
 				return agenttest.RPCReply{Result: json.RawMessage(fmt.Sprintf(`{"thread":{"id":"main-thread",%s},"model":"gpt-5.4"}`, test.metadata))}
 			})
@@ -158,7 +158,7 @@ func TestCodexRetryRequiresAConfirmedDurablePaginatedStart(t *testing.T) {
 			require.NoError(t, err)
 			a.applyThreadResult(thread)
 			a.threadID = thread.ID
-			require.NoError(t, a.SendInput("Retained input.", nil))
+			require.NoError(t, agenttest.SendInput(a, "Retained input.", nil))
 			feedCodexLines(a, `{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`)
 			offer, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyTurnRetryOffer)
 			assert.Equal(t, test.eligible, exists && offer != nil)

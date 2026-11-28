@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -218,7 +219,7 @@ func TestAgentTeamsRefusedRebuild(t *testing.T) {
 	assert.Equal(t, false, refused["enableTeams"])
 	assert.Equal(t, true, restored["enableTeams"])
 	assert.False(t, r.turnActive())
-	require.NoError(t, r.agent.SendInput("Continue with the restored team setting.", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "Continue with the restored team setting.", nil))
 }
 
 func TestAgentTeamsRebuildClosesTeammateRuns(t *testing.T) {

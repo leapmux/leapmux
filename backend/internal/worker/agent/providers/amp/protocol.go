@@ -1,5 +1,7 @@
 package amp
 
+import "github.com/leapmux/leapmux/generated/contracts"
+
 // Amp's own words that only the worker reads. The words both sides read are in
 // contracts/amp-protocol.json. These stay here under the contracts rule's
 // one-side-only exemption.
@@ -22,6 +24,17 @@ const (
 	imageSourceBase64 = "base64"
 	roleUser          = "user"
 )
+
+// ampStoredPermissionRequest is the payload of a permission request as the
+// Worker stores it: the contract's envelope, which the browser reads, and the
+// request's key, which the Worker alone reads (ampProvider.ControlRequestKey).
+// The helper states no id of its own, so the bridge's id keys the request,
+// and the payload states that id as the control_request envelope states its
+// key, so that the Worker can check the stored request against its key.
+type ampStoredPermissionRequest struct {
+	contracts.AmpPermissionRequest
+	RequestID string `json:"request_id"`
+}
 
 // toolAskUserChoice is Amp's question tool. In stream-JSON mode Amp rejects the
 // question and ENDS the session, so the generated settings disable the tool.

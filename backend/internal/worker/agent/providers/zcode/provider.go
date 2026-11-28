@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -226,20 +225,32 @@ func (zcodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) e
 	return nil
 }
 
-// ResolveControlResponse turns the frontend's neutral answer into the app-server's
-// reply frame.
+// ControlRequestKey reads the key of a stored ZCode request: the request id
+// that the app-server stated, which the Worker writes as the envelope's
+// request_id (handlePreparedPermissionRequest,
+// handlePreparedUserInputRequest). LeapMux's workspace-trust question states no
+// key, so its session gives it (providerkit.WorkspaceTrustRequestKey).
+func (zcodeProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	if providerkit.IsWorkspaceTrustQuestion(payload) {
+		return providerkit.WorkspaceTrustRequestKey(payload, agentSessionID)
+	}
+	return agent.EnvelopeControlRequestKey(payload)
+}
+
+// ResolveControlResponse turns the neutral answer of AnswerControlRequest into the
+// app-server's reply frame.
 //
-// This is where the two protocols meet. The frontend speaks allow/deny (plus the
-// AskUserQuestion answers under `updatedInput.answers`); the app-server wants a
+// This is where the two protocols meet. The neutral answer speaks allow/deny (plus
+// the AskUserQuestion answers under `updatedInput.answers`); the app-server wants a
 // permission decision or an accept/decline action, addressed by the WIRE id of its
 // own request. The transformed bytes are what the service forwards to stdin, so the
-// reply is a complete ZCode frame and not the envelope the frontend sent.
+// reply is a complete ZCode frame and not the neutral envelope.
 func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	res := agent.DefaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) == 0 {
 		// The pending request is gone (a teardown, or a duplicate answer that read it
 		// after the winner deleted it). There is nothing to address the reply to, and
-		// forwarding the frontend envelope would put a frame the app-server cannot
+		// forwarding the neutral envelope would put a frame the app-server cannot
 		// parse on its stdin.
 		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
@@ -256,23 +267,17 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 	}
 	res.PlanModeControl = zcodeProvider{}.PlanModeControl(stored.Request.ToolName)
 	if stored.Method == contracts.ZCodeMethodRequestUserInput && stored.Request.ToolName == zcodeControlMCPElicitation {
-		// An MCP server's form: the browser answers it as an MCP form, not with
-		// allow or deny.
+		// An MCP server's form: AnswerControlRequest answers it as an MCP form
+		// (agent.AnswerElicitation), not with allow or deny.
 		return zcodeResolveMCPElicitation(stored, ctx.ResponseContent, res)
 	}
 
-	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !ok || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	if !ok || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		// Not a recognizable allow/deny. Withholding the forward is the safe answer:
 		// the app-server keeps waiting (and the user can answer again) rather than
 		// receiving a frame that means nothing.
 		res.Refuse(agent.RefusalNoDecision)
-		return res
-	}
-	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
-		slog.Warn("zcode control response addressed another request",
-			"answered", requestID, "stored", stored.RequestID)
-		res.Refuse(agent.RefusalOtherRequest)
 		return res
 	}
 	if len(stored.WireID) == 0 {
@@ -294,13 +299,13 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		return res
 	}
 	res.Content = encoded
-	if stored.Method == contracts.ZCodeMethodRequestUserInput && behavior == agent.ControlBehaviorDeny && message != "" {
+	if stored.Method == contracts.ZCodeMethodRequestUserInput && behavior == contracts.ControlAnswerBehaviorDeny && message != "" {
 		// The RAW message, not the trimmed one, and the second decode is what reaches it.
 		//
 		// The app-server cannot carry this text, so the service queues it as the next USER
 		// INPUT. That makes it the reader's own typed message, and LeapMux delivers a typed
 		// message byte for byte. `message` above is the TRIMMED value, and it decides only
-		// whether a reason exists at all -- it excludes the ControlRejectedByUserMessage
+		// whether a reason exists at all -- it excludes the contracts.ControlAnswerMessageRejectedByUser
 		// sentinel and a whitespace-only reason, which is what this guard needs it for.
 		var original agent.ControlBehaviorEnvelope
 		if json.Unmarshal(ctx.ResponseContent, &original) == nil {
@@ -308,4 +313,23 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		}
 	}
 	return res
+}
+
+// ResolveProviderData applies stored supplements to native events for semantic extractors.
+func (zcodeProvider) ResolveProviderData(content agent.MessageContent) []byte {
+	if len(content.Supplemental) == 0 {
+		return content.Original
+	}
+	original, ok := parseZCodeEvent(content.Original)
+	if !ok {
+		return content.Original
+	}
+	switch original.Type {
+	case contracts.ZCodeEventSessionUpdated:
+		return zcodeResolveReplyCoverage(original, content)
+	case contracts.ZCodeEventToolUpdated:
+		return zcodeResolveToolInput(original, content)
+	default:
+		return content.Original
+	}
 }

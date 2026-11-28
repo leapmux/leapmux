@@ -42,7 +42,7 @@ func (reasonixProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) s
 
 // ResolveControlResponse maps native plan approval and delegates other ACP replies.
 func (p reasonixProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
-	if len(ctx.RequestPayload) > 0 && isPlanApproval(ctx.RequestPayload) && !isReasonixJSONRPCReply(ctx.ResponseContent) {
+	if len(ctx.RequestPayload) > 0 && isPlanApproval(ctx.RequestPayload) && !acp.IsJSONRPCReply(ctx.ResponseContent) {
 		return resolvePlanApproval(ctx)
 	}
 	return p.Provider.ResolveControlResponse(ctx)

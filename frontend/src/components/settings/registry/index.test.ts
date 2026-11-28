@@ -152,7 +152,7 @@ describe('browserSettings registry', () => {
     const customRows = browserSettings.filter(
       decl => decl.protoKey === undefined && decl.control.kind === 'custom',
     )
-    expect(customRows.length).toBe(8)
+    expect(customRows.length).toBe(9)
     for (const decl of customRows)
       expect(decl.bind(prefs), `row "${decl.id}"`).toBe(CUSTOM_EDITOR_OWNS_ITS_VALUE)
   })
@@ -603,7 +603,7 @@ describe('buildBrowserReset', () => {
   it('resets default-off tiers to false (delete the opt-in key)', () => {
     for (const action of buildBrowserReset(fake as unknown as PreferencesState))
       action.reset()
-    expect(fake.setTerminalOsNotifications).toHaveBeenCalledWith(false)
+    expect(fake.setDesktopNotifications).toHaveBeenCalledWith(false)
     expect(fake.setShowHiddenMessages).toHaveBeenCalledWith(false)
   })
 

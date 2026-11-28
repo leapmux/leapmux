@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
@@ -282,7 +281,7 @@ func TestZCodeToolDenylist_StaysOffSessionSend(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":0}`)
-	require.NoError(t, a.SendInput("guide", nil))
+	require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)

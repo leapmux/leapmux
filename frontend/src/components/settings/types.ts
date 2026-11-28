@@ -32,6 +32,7 @@ export const CUSTOM_EDITOR_IDS = [
   'theme',
   'terminalTheme',
   'syntaxTheme',
+  'agentSkills',
 ] as const
 
 export type CustomEditorId = typeof CUSTOM_EDITOR_IDS[number]

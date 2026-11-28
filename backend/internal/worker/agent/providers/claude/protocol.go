@@ -29,6 +29,7 @@ type MessageEnvelope struct {
 type UserInputMessage struct {
 	Type     MessageType      `json:"type"`
 	Message  UserInputContent `json:"message"`
+	UUID     string           `json:"uuid,omitempty"`
 	Priority string           `json:"priority,omitempty"`
 }
 

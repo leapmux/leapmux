@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
@@ -25,22 +24,25 @@ func TestWorkerPinListForwardsItsArguments(t *testing.T) {
 	} {
 		store, err := crossworker.NewPinStore(directory)
 		require.NoError(t, err)
-		commit, err := store.Resolve(context.Background(), id, []byte{1}, []byte{2}, []byte{3})
+		commit, err := store.Resolve(t.Context(), id, []byte{1}, []byte{2}, []byte{3})
 		require.NoError(t, err)
-		require.NoError(t, commit(context.Background()))
+		require.NoError(t, commit(t.Context()))
 	}
 	for _, args := range [][]string{{"--data-dir", selected}, {"--data-dir=" + selected}} {
-		result := invokeLifecycleCLI(t, home, append([]string{"worker", "cross-worker-pins", "list"}, args...)...)
+		result := invokeLifecycleCLI(t, home, append([]string{"worker", "cross-worker-pins", "list", "--json"}, args...)...)
 		require.Zero(t, result.exitCode, result.stderr)
-		var pins map[string]tofupins.Entry
-		require.NoError(t, json.Unmarshal([]byte(result.stdout), &pins))
-		require.Contains(t, pins, "selected-worker")
-		assert.NotContains(t, pins, "default-worker")
-		assert.Len(t, pins, 1)
+		var envelope struct {
+			Data struct {
+				Pins []crossWorkerPin `json:"pins"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(result.stdout), &envelope), result.stdout)
+		require.Len(t, envelope.Data.Pins, 1)
+		assert.Equal(t, "selected-worker", envelope.Data.Pins[0].WorkerID)
 	}
 	result := invokeLifecycleCLI(t, home, "worker", "cross-worker-pins", "list", "--unknown-option")
-	assert.Equal(t, 1, result.exitCode)
-	assert.Contains(t, result.stderr, "flag provided but not defined")
+	assert.Equal(t, cli.ExitUsage, result.exitCode)
+	assert.Contains(t, result.stderr, "unknown flag: --unknown-option")
 }
 
 func TestWorkerPinRemoveUpdatesAnExistingHandle(t *testing.T) {
@@ -59,48 +61,49 @@ func TestWorkerPinRemoveUpdatesAnExistingHandle(t *testing.T) {
 	require.NoError(t, err)
 
 	result := invokeLifecycleCLI(t, home, "worker", "cross-worker-pins", "remove",
-		"--data-dir="+workerDir, "--target-worker-id=worker-to-remove")
+		"worker-to-remove", "--data-dir="+workerDir, "--json")
 	require.Zero(t, result.exitCode, result.stderr)
-	assert.JSONEq(t, `{"removed_target_worker_id":"worker-to-remove"}`, result.stdout)
+	assert.JSONEq(t, `{"data":{"removed":"worker-to-remove"}}`, result.stdout)
 	require.ErrorContains(t, waitingCommit(t.Context()), "removal revision changed")
 	after, err := store.Snapshot(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]tofupins.Entry{"worker-to-keep": before["worker-to-keep"]}, after)
 }
 
-func TestWorkerPinListAndShowDistinguishReadErrorsFromMissingPins(t *testing.T) {
+func TestWorkerPinListAndGetDistinguishReadErrorsFromMissingPins(t *testing.T) {
 	home, workerDir := t.TempDir(), t.TempDir()
 	path := filepath.Join(workerDir, "cross_worker_pins.json")
 	require.NoError(t, os.WriteFile(path, []byte("{invalid"), 0o600))
 	list := []string{"worker", "cross-worker-pins", "list", "--data-dir=" + workerDir}
-	show := []string{"worker", "cross-worker-pins", "show", "--data-dir=" + workerDir, "--target-worker-id=missing"}
-	for _, args := range [][]string{list, show} {
+	get := []string{"worker", "cross-worker-pins", "get", "missing", "--data-dir=" + workerDir}
+	for _, args := range [][]string{list, get} {
 		result := invokeLifecycleCLI(t, home, args...)
-		assert.Equal(t, 1, result.exitCode)
+		assert.Equal(t, cli.ExitFailure, result.exitCode)
 		assert.Empty(t, result.stdout)
 		assert.Contains(t, result.stderr, "parse pins")
 	}
 
 	require.NoError(t, os.WriteFile(path, []byte(`{"pins":{}}`), 0o600))
-	result := invokeLifecycleCLI(t, home, list...)
+	result := invokeLifecycleCLI(t, home, append(list, "--json")...)
 	require.Zero(t, result.exitCode, result.stderr)
-	assert.JSONEq(t, "{}", result.stdout)
-	result = invokeLifecycleCLI(t, home, show...)
-	assert.Equal(t, 1, result.exitCode)
+	assert.JSONEq(t, `{"data":{"pins":[]}}`, result.stdout)
+	result = invokeLifecycleCLI(t, home, get...)
+	assert.Equal(t, cli.ExitNotFound, result.exitCode)
 	assert.Empty(t, result.stdout)
-	assert.Contains(t, result.stderr, "no pin recorded")
+	assert.Contains(t, result.stderr, "no pin for the sibling Worker")
 }
 
-func TestMissingModeVerbDiagnosticEndsWithANewline(t *testing.T) {
+// A flag before the command of a mode fails before anything runs, and the
+// refusal states where the flag goes.
+func TestAFlagBeforeTheModeCommandStatesWhereItGoes(t *testing.T) {
 	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
-		var stdout, stderr bytes.Buffer
-		code := runCLI([]string{mode, "--listen", ":4327"}, &stdout, &stderr, cliRunners{runMode: func(string, []string) error {
-			t.Fatal("missing lifecycle verbs must not dispatch")
-			return nil
-		}})
-		assert.Equal(t, 1, code)
-		assert.Empty(t, stdout.String())
-		assert.Equal(t, fmt.Sprintf("error: the %s command is required before any flags, as in `leapmux %s start [flags]`\n", mode, mode), stderr.String())
+		o := runTestCLI(t, "daemon", mode, "--listen", ":4327")
+		assert.Equal(t, cli.ExitUsage, o.code)
+		assert.Empty(t, o.stdout)
+		assert.Equal(t, fmt.Sprintf("error: usage: unknown flag: --listen\n"+
+			"hint: a flag goes after the command that takes it, as in \"leapmux daemon %s <command> [flags]\"\n"+
+			"hint: a value that starts with \"-\" goes after \"--\", as in: -- -v\n"+
+			"hint: run \"leapmux daemon %s --help\" for usage\n", mode, mode), o.stderr)
 	}
 }
 
@@ -108,7 +111,7 @@ func TestDisableRejectsUnsupportedRuntimeTimeout(t *testing.T) {
 	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
 		for _, timeout := range [][]string{{"--timeout=1s"}, {"--timeout", "1s"}} {
 			_, _, err := loadLifecycleCommand(mode, "disable", append([]string{"--data-dir", t.TempDir()}, timeout...))
-			require.ErrorContains(t, err, "flag provided but not defined")
+			require.ErrorContains(t, err, "unknown flag: --timeout")
 		}
 	}
 }

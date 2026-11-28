@@ -1,16 +1,23 @@
 package ohmypi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
@@ -454,4 +461,198 @@ func parseSessionHead(lines [][]byte) (sessionHead, bool) {
 	}
 	head.title = strings.TrimSpace(*slot.Title)
 	return head, true
+}
+
+const (
+	ompSessionTimestampLayout     = "2006-01-02T15:04:05.000Z"
+	ompSessionFileTimestampLayout = "2006-01-02T15-04-05-000Z"
+)
+
+// forkOhMyPiSessionFile atomically clones an Oh My Pi JSONL session file into
+// the target working directory's session directory with a fresh UUID,
+// timestamp, canonical target cwd, and parentSession pointer while preserving
+// the fixed-size title slot (line 1) and all subsequent JSONL entry lines
+// verbatim. It returns the absolute path of the newly written session file.
+func forkOhMyPiSessionFile(q agent.StoredSessionQuery, forkFromHandle, srcWorkingDir, targetWorkingDir string) (string, error) {
+	resolved, err := (ompProvider{}).ResolveResumeHandle(forkFromHandle, q.Home())
+	if err != nil {
+		return "", fmt.Errorf("cannot fork Oh My Pi session %q: invalid session handle: %w", forkFromHandle, err)
+	}
+	targetWorkingDir = strings.TrimSpace(targetWorkingDir)
+	if targetWorkingDir == "" {
+		return "", errors.New("cannot fork Oh My Pi session: target working directory is empty")
+	}
+
+	srcPath, err := locateSessionFile(q, resolved, cmp.Or(strings.TrimSpace(srcWorkingDir), targetWorkingDir), targetWorkingDir)
+	if err != nil {
+		return "", err
+	}
+
+	targetDir := sessionDir(q, targetWorkingDir)
+	if targetDir == "" {
+		return "", errors.New("cannot resolve Oh My Pi target session directory")
+	}
+	newUUID, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("create forked Oh My Pi session ID: %w", err)
+	}
+	newID := newUUID.String()
+	now := time.Now().UTC()
+	dstPath := filepath.Join(targetDir, now.Format(ompSessionFileTimestampLayout)+"_"+newID+".jsonl")
+
+	err = providerkit.StreamForkJSONL(srcPath, dstPath, 0o600, func(lr *providerkit.JSONLLineReader) ([][]byte, error) {
+		firstLine, readErr := lr.ReadLine()
+		if errors.Is(readErr, io.EOF) || (readErr == nil && len(firstLine) == 0) {
+			return nil, fmt.Errorf("source Oh My Pi session %q is empty", srcPath)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read Oh My Pi source session %q: %w", srcPath, readErr)
+		}
+		var firstObj map[string]any
+		if err := json.Unmarshal(firstLine, &firstObj); err != nil {
+			return nil, fmt.Errorf("parse Oh My Pi session record in %q: %w", srcPath, err)
+		}
+
+		var (
+			titleLine []byte
+			header    map[string]any
+		)
+		switch typ, _ := firstObj["type"].(string); typ {
+		case "title":
+			titleLine = firstLine
+			secondLine, readErr := lr.ReadLine()
+			if errors.Is(readErr, io.EOF) || (readErr == nil && len(secondLine) == 0) {
+				return nil, fmt.Errorf("source Oh My Pi session %q has no session header after title slot", srcPath)
+			}
+			if readErr != nil {
+				return nil, fmt.Errorf("read Oh My Pi source session %q: %w", srcPath, readErr)
+			}
+			if err := json.Unmarshal(secondLine, &header); err != nil {
+				return nil, fmt.Errorf("parse Oh My Pi session header in %q: %w", srcPath, err)
+			}
+			if hType, _ := header["type"].(string); hType != "session" {
+				return nil, fmt.Errorf("source Oh My Pi session %q line 2 is not a session header", srcPath)
+			}
+		case "session":
+			header = firstObj
+		default:
+			return nil, fmt.Errorf("source Oh My Pi session %q does not start with a title slot or session header", srcPath)
+		}
+
+		header["id"] = newID
+		header["timestamp"] = now.Format(ompSessionTimestampLayout)
+		header["cwd"] = canonicalPath(targetWorkingDir)
+		header["parentSession"] = srcPath
+
+		encodedHeader, err := json.Marshal(header)
+		if err != nil {
+			return nil, fmt.Errorf("encode forked Oh My Pi session header: %w", err)
+		}
+		if len(titleLine) > 0 {
+			return [][]byte{titleLine, encodedHeader}, nil
+		}
+		return [][]byte{encodedHeader}, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return dstPath, nil
+}
+
+func locateSessionFile(q agent.StoredSessionQuery, resolved, srcWorkingDir, targetWorkingDir string) (string, error) {
+	if filepath.IsAbs(resolved) || strings.HasSuffix(resolved, ".jsonl") || strings.ContainsAny(resolved, `/\`) {
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", fmt.Errorf("stat source Oh My Pi session file %q: %w", resolved, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("source Oh My Pi session %q is not a regular file", resolved)
+		}
+		return resolved, nil
+	}
+
+	var dirs []string
+	if srcDir := sessionDir(q, srcWorkingDir); srcDir != "" {
+		dirs = append(dirs, srcDir)
+	}
+	if targetDir := sessionDir(q, targetWorkingDir); targetDir != "" && (len(dirs) == 0 || targetDir != dirs[0]) {
+		dirs = append(dirs, targetDir)
+	}
+	if len(dirs) == 0 {
+		return "", errors.New("cannot resolve Oh My Pi session directory")
+	}
+	for _, dir := range dirs {
+		if path, ok := findSessionByID(dir, resolved); ok {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("source Oh My Pi session %q not found", resolved)
+}
+
+func findSessionByID(dir, sessionID string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	// Pass 1: zero-I/O filename match (newest-first by timestamp prefix).
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !isSessionFile(entry) {
+			continue
+		}
+		stem := strings.TrimSuffix(entry.Name(), ".jsonl")
+		if stem == sessionID {
+			return filepath.Join(dir, entry.Name()), true
+		}
+		if idx := strings.LastIndex(stem, "_"); idx >= 0 && stem[idx+1:] == sessionID {
+			return filepath.Join(dir, entry.Name()), true
+		}
+	}
+	// Pass 2: header scan newest-first, matching both titled and title-less
+	// headers across session versions (consistent with forkOhMyPiSessionFile).
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !isSessionFile(entry) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		lines, _, err := sessionstore.JSONLHead(path, sessionstore.JSONLProbeBytes)
+		if err != nil || len(lines) == 0 {
+			continue
+		}
+		if ohMyPiHeaderSessionID(lines) == sessionID {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// ohMyPiHeaderSessionID reads the session ID from line 1 (title-less) or line 2
+// (following a title slot) without requiring a specific header version.
+func ohMyPiHeaderSessionID(lines [][]byte) string {
+	var first struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+	}
+	if json.Unmarshal(lines[0], &first) != nil {
+		return ""
+	}
+	switch first.Type {
+	case "session":
+		return strings.TrimSpace(first.ID)
+	case "title":
+		if len(lines) < 2 {
+			return ""
+		}
+		var second struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if json.Unmarshal(lines[1], &second) != nil || second.Type != "session" {
+			return ""
+		}
+		return strings.TrimSpace(second.ID)
+	default:
+		return ""
+	}
 }

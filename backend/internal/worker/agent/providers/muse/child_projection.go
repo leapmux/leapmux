@@ -329,7 +329,7 @@ func childBookkeepingMethod(method string) bool {
 	switch method {
 	case methodSessionModelChanged, methodSessionEffortChanged, methodSessionApprovalChanged, methodSessionGoalChanged,
 		methodSessionStatusChanged, methodSessionStarted, methodSessionClosed, methodSessionBranchChanged, methodSessionNameChanged,
-		methodSessionPermissionProfileChanged, methodSessionViewHealthChanged, methodTurnForegroundCompleted,
+		methodSessionPermissionProfileChanged, methodSessionViewHealthChanged, methodTurnForegroundCompleted, methodTurnModelAttemptStarted,
 		methodSkillChanged, methodAccountChanged, methodAccountLoginCompleted, methodMcpOAuthLoginCompleted, methodSessionListChanged:
 		return true
 	default:

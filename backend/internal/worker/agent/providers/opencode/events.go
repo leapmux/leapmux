@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -231,22 +232,65 @@ func (s *openCodeSessionRuntime) observeInbox(event openCodeEvent) (bool, error)
 	if data.InboxID == "" {
 		return true, errors.New("the OpenCode inbox event has no input ID")
 	}
-	s.mu.Lock()
 	if event.sessionID != s.id {
-		s.mu.Unlock()
 		return true, errors.New("the OpenCode inbox event belongs to another session")
 	}
-	if admission := s.admissions[data.InboxID]; admission != nil {
+	switch event.Type {
+	case "session.inbox.delivered":
+		return true, s.confirmProjectedInput(data.InboxID)
+	case "session.inbox.cancelled":
+		s.confirmInputAdmission(data.InboxID)
+		steer, err := s.resolveSteer(data.InboxID, agent.SteerOutcomeDropped)
+		if steer || err != nil {
+			return true, err
+		}
+		receipt := s.replyReceipt(openCodeStoredMessage{ID: data.InboxID, Type: contracts.OpenCodeNativeMessageTypeUser})
+		if receipt.InputID != "" {
+			return true, s.retireInputReply(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED)
+		}
+	case "session.inbox.enqueued":
+		s.confirmInputAdmission(data.InboxID)
+	}
+	return true, nil
+}
+
+func (s *openCodeSessionRuntime) confirmProjectedInput(inputID string) error {
+	s.confirmInputAdmission(inputID)
+	_, err := s.resolveSteer(inputID, agent.SteerOutcomeEchoed)
+	return err
+}
+
+func (s *openCodeSessionRuntime) confirmInputAdmission(inputID string) {
+	s.mu.Lock()
+	if admission := s.admissions[inputID]; admission != nil {
 		admission.admitted = true
 	}
 	s.mu.Unlock()
-	switch event.Type {
-	case "session.inbox.delivered":
-		s.steers.EchoID(data.InboxID)
-	case "session.inbox.cancelled":
-		s.steers.DropID(data.InboxID)
+}
+
+// resolveSteer reports the input that the native inbox changed. The ordered
+// sink retains the report behind any preceding transcript writes.
+func (s *openCodeSessionRuntime) resolveSteer(inputID string, outcome agent.SteerOutcome) (bool, error) {
+	s.mu.Lock()
+	resolution, tracked := s.steers[inputID]
+	if !tracked {
+		s.mu.Unlock()
+		return false, nil
 	}
-	s.steers.Settle(s.sink)
+	resolution.Outcome = outcome
+	if outcome == agent.SteerOutcomeEchoed {
+		resolution.Receipt = s.replyInputs[inputID]
+	}
+	s.mu.Unlock()
+	if err := agent.RetainSteerResolution(s.sink, resolution); !agent.OutputRetained(err) {
+		return true, err
+	}
+	s.mu.Lock()
+	delete(s.steers, inputID)
+	if outcome == agent.SteerOutcomeDropped {
+		delete(s.replyInputs, inputID)
+	}
+	s.mu.Unlock()
 	return true, nil
 }
 

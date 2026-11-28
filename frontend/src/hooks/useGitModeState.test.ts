@@ -385,12 +385,17 @@ describe('setupForCreateWorktree', () => {
 })
 
 describe('setupForUseWorktree', () => {
-  it('selects use_worktree_path with the path', () => {
+  it('selects the exact worktree path', () => {
     expect(setupForUseWorktree({
       mode: GitMode.UseWorktree,
       useWorktreePath: '/abs/path',
     })).toEqual({
-      mode: { case: 'useWorktreePath', value: '/abs/path' },
+      mode: {
+        case: 'useWorktree',
+        value: {
+          selector: { case: 'path', value: '/abs/path' },
+        },
+      },
     })
   })
 })
@@ -430,11 +435,16 @@ describe('toGitSetup projects every active mode onto one setup case', () => {
     })
   })
 
-  it('selects use_worktree_path for the useWorktree mode', () => {
+  it('sends the selected worktree path', () => {
     const s = useGitModeState()
     s.handleGitModeChange({ mode: GitMode.UseWorktree, useWorktreePath: '/wt' })
     expect(s.toGitSetup()).toEqual({
-      mode: { case: 'useWorktreePath', value: '/wt' },
+      mode: {
+        case: 'useWorktree',
+        value: {
+          selector: { case: 'path', value: '/wt' },
+        },
+      },
     })
   })
 

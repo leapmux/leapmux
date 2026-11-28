@@ -33,7 +33,7 @@ func TestAntigravityRejectsMissingAndReplacedSessions(t *testing.T) {
 func TestAntigravityBusyRefusalRepublishesTheTurn(t *testing.T) {
 	a, sink := testAgent(t)
 	a.beginTurn(a.root)
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later", nil))
 }
 
 func TestAntigravityRisingTurnTokens(t *testing.T) {
@@ -504,4 +504,48 @@ func TestAntigravityTurnTwoInterruptClosesTurnOneToolStepInSortedOrder(t *testin
 	assert.Equal(t, []string{"cmd-1", "cmd-2"}, sink.ClosedSpans(), "interrupted Turn 2 closes Turn 1 and Turn 2 tool steps in ascending step index order")
 	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestAntigravityManualCheckpointErrorAndCanceledEndCompactionWithoutRow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		status      string
+		wantOutcome string
+	}{
+		{name: "error", status: contracts.AntigravityStepStatusError, wantOutcome: contracts.CompactionEndOutcomeFailed},
+		{name: "canceled", status: contracts.AntigravityStepStatusCanceled, wantOutcome: contracts.CompactionEndOutcomeAborted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			a.sink.AdoptNativeSession(a.root.id)
+			execID := "exec-compact"
+			a.beginManualCompaction(a.root, execID)
+			raw, err := json.Marshal(map[string]any{
+				"type":     contracts.AntigravityStepTypeCheckpoint,
+				"status":   tc.status,
+				"metadata": map[string]any{"executionId": execID},
+			})
+			require.NoError(t, err)
+			step, err := decodeStep(raw)
+			require.NoError(t, err)
+
+			require.NoError(t, a.persistStep(a.root, 0, step, raw))
+			assert.Empty(t, transcriptMessages(sink), "failed or canceled checkpoint must not persist a transcript row")
+			a.Mu.Lock()
+			assert.True(t, a.root.steps[0].consumed)
+			assert.Nil(t, a.root.manualCompactionExecutionID)
+			a.Mu.Unlock()
+
+			notices := sink.LeapMuxNotifications()
+			require.Contains(t, notices, map[string]any{
+				contracts.NotificationFieldType:    contracts.NotificationTypeCompactionEnded,
+				contracts.NotificationFieldOutcome: tc.wantOutcome,
+			})
+			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, ok)
+			assert.Nil(t, value)
+		})
+	}
 }

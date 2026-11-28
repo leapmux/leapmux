@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -37,6 +38,7 @@ type Agent struct {
 	thinkingLevel string // stored as the agent's "effort"
 	workingDir    string
 	sink          agent.ProviderServices
+	directory     *agentdir.Dir
 
 	sessionID   string // Pi's runtime sessionId (rotates on new_session)
 	sessionFile string // Pi's persistent session file path (durable identifier)
@@ -56,9 +58,14 @@ type Agent struct {
 	// outputMu serializes dispatched output handling with idle-interrupt and
 	// process-exit transcript cleanup. Acquire it before a.Mu and never hold it
 	// across interruptOutput.mu, sessionMu, or settleOpenDialogs.
-	outputMu    sync.Mutex
-	heldDivider *piHeldDivider
-	steers      providerkit.SteerLedger
+	outputMu         sync.Mutex
+	heldDivider      *piHeldDivider
+	steers           providerkit.SteerLedger
+	steerBridge      *piSteerBridge
+	steerBridgeReady bool
+	identifiedSteers map[string]agent.SteerResolution
+	replyPending     agent.NativeInputReceipt
+	replyRun         *piReplyRun
 	// turnStartedAt records the first agent_start until agent_settled.
 	// The final divider includes all runs and compaction in that interval.
 	// A zero value means the worker did not observe the start, so the divider omits duration.
@@ -196,8 +203,8 @@ func (a *Agent) applyPiSessionIdentityLocked(sessionID, sessionFile string) bool
 
 // SendInput starts a regular Pi prompt. SteerInput sends explicit guidance
 // with streamingBehavior:"steer" during an active turn.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, false)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputForSession(nil, content, attachments, nil)
 }
 
 // Agent steers. Manager.SupportsSteering answers false, with no build error, for a
@@ -216,70 +223,111 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 // handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	_, err := a.sendInputForSession(nil, request.Content, request.Attachments, &request)
+	return agent.NativeInputReceipt{}, err
 }
 
-func (a *Agent) sendInput(content string, attachments []*leapmuxv1.Attachment, steer bool) error {
-	return a.sendInputForSession(nil, content, attachments, steer)
+type piInputDispatch struct {
+	receipt agent.NativeInputReceipt
+	wait    func() error
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
-	wait, err := a.preparePiInput(expected, content, attachments, steer)
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, steerReq *agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	dispatch, err := a.preparePiInput(expected, content, attachments, steerReq)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	if wait != nil {
-		return wait()
+	if dispatch.wait != nil {
+		err = dispatch.wait()
 	}
-	return nil
+	return dispatch.receipt, err
 }
 
 // preparePiInput holds the session lock through validation and the command write, never through its response wait.
-func (a *Agent) preparePiInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) (func() error, error) {
+func (a *Agent) preparePiInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steerReq *agent.SteerRequest) (piInputDispatch, error) {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
+	var dispatch piInputDispatch
+	steer := steerReq != nil
 	a.Mu.Lock()
-	if err := providerkit.CheckInputSession(expected, a.sessionHandleLocked()); err != nil {
+	sessionID := a.sessionHandleLocked()
+	if err := providerkit.CheckInputSession(expected, sessionID); err != nil {
 		a.Mu.Unlock()
-		return nil, err
+		return dispatch, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return nil, fmt.Errorf("agent is stopped")
+		return dispatch, fmt.Errorf("agent is stopped")
 	}
 	turnActive := a.currentTurnActive
+	identifiedSteer := steer && a.steerBridgeReady && sessionID != "" && steerReq.InputID != "" && steerReq.AttemptID != ""
+	replyPending := a.replyPending.InputID != "" || a.replyRun != nil
 	a.Mu.Unlock()
 	if steer && !turnActive {
-		return nil, agent.ErrNoActiveTurn
+		return dispatch, agent.ErrNoActiveTurn
 	}
-	if !steer && turnActive {
-		return nil, agent.ErrAgentBusy
+	if !steer && (turnActive || replyPending) {
+		return dispatch, agent.ErrAgentBusy
 	}
 	if instructions, compact := piCompactInstruction(content); compact && !steer {
-		if len(attachments) > 0 {
-			return nil, fmt.Errorf("pi compaction does not accept attachments")
-		}
-		payload := map[string]any{}
-		if instructions != "" {
-			payload["customInstructions"] = instructions
-		}
-		wait, err := a.beginPiCommand(CommandCompact, payload)
-		if err != nil {
-			return nil, err
-		}
-		return func() error {
-			_, err := wait(0)
-			if err != nil {
-				a.endPiCompaction()
-			}
-			// Compaction ends without agent_end. Publish the idle turn after the
-			// native compact response so queued input can proceed.
-			a.PublishTurnActive()
-			return err
-		}, nil
+		return a.preparePiCompact(instructions, attachments)
 	}
 
+	payload, text := piPromptPayload(content, attachments, steer)
+	if steer {
+		if identifiedSteer && !a.isPiExtensionCommand(text) {
+			return a.prepareIdentifiedPiSteer(sessionID, *steerReq, payload, text)
+		}
+		return a.prepareLegacyPiSteer(payload, text)
+	}
+	if a.isPiExtensionCommand(text) {
+		return a.preparePiExtensionCommand(payload)
+	}
+	if sessionID != "" {
+		receipt, err := a.sendPiReplyPrompt(sessionID, payload)
+		dispatch.receipt = receipt
+		return dispatch, err
+	}
+
+	// Pi answers preflight with started, queued, or handled. It sends no second reply.
+	// The stdin write confirms delivery, so the response wait runs separately.
+	return dispatch, a.sendPiCommandDetached(CommandPrompt, payload, func(raw json.RawMessage, err error) {
+		if err != nil {
+			a.handlePiPromptFailure(err)
+		} else if piPromptDisposition(raw) == "handled" {
+			a.PublishTurnActive()
+		}
+	})
+}
+
+func (a *Agent) preparePiCompact(instructions string, attachments []*leapmuxv1.Attachment) (piInputDispatch, error) {
+	var dispatch piInputDispatch
+	if len(attachments) > 0 {
+		return dispatch, fmt.Errorf("pi compaction does not accept attachments")
+	}
+	payload := map[string]any{}
+	if instructions != "" {
+		payload["customInstructions"] = instructions
+	}
+	wait, err := a.beginPiCommand(CommandCompact, payload)
+	if err != nil {
+		return dispatch, err
+	}
+	dispatch.wait = func() error {
+		_, err := wait(0)
+		if err != nil {
+			a.endPiCompaction()
+		}
+		// Compaction ends without agent_end. Publish the idle turn after the
+		// native compact response so queued input can proceed.
+		a.PublishTurnActive()
+		return err
+	}
+	return dispatch, nil
+}
+
+func piPromptPayload(content string, attachments []*leapmuxv1.Attachment, steer bool) (map[string]any, string) {
 	classified := agent.ClassifyAttachments(attachments)
 
 	var messageBuilder strings.Builder
@@ -306,8 +354,9 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 		}
 	}
 
+	text := messageBuilder.String()
 	payload := map[string]any{
-		"message": messageBuilder.String(),
+		"message": text,
 	}
 	if len(images) > 0 {
 		payload["images"] = images
@@ -317,52 +366,49 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 	} else {
 		payload["streamingBehavior"] = StreamingBehaviorFollowUp
 	}
-	if steer {
-		ticket := a.steers.Add(messageBuilder.String())
-		wait, err := a.beginPiCommand(CommandPrompt, payload)
+	return payload, text
+}
+
+func (a *Agent) prepareLegacyPiSteer(payload map[string]any, text string) (piInputDispatch, error) {
+	var dispatch piInputDispatch
+	ticket := a.steers.Add(text)
+	wait, err := a.beginPiCommand(CommandPrompt, payload)
+	if err != nil {
+		a.forgetPiSteer(ticket)
+		return dispatch, err
+	}
+	dispatch.wait = func() error {
+		raw, err := wait(a.APITimeout())
 		if err != nil {
 			a.forgetPiSteer(ticket)
-			return nil, err
-		}
-		return func() error {
-			raw, err := wait(a.APITimeout())
-			if err != nil {
-				a.forgetPiSteer(ticket)
-				var refusal *piCommandRefusal
-				if errors.As(err, &refusal) {
-					return err
-				}
-				return fmt.Errorf("%w: Pi did not confirm steer delivery: %v", agent.ErrDeliveryUncertain, err)
+			var refusal *piCommandRefusal
+			if errors.As(err, &refusal) {
+				return err
 			}
-			if piPromptDisposition(raw) == "handled" {
-				a.steers.Echo(ticket)
-				a.steers.Settle(a.orderedSink())
-			}
-			return nil
-		}, nil
-	}
-	if a.isPiExtensionCommand(messageBuilder.String()) {
-		wait, err := a.beginPiCommand(CommandPrompt, payload)
-		if err != nil {
-			return nil, err
+			return fmt.Errorf("%w: Pi did not confirm steer delivery: %v", agent.ErrDeliveryUncertain, err)
 		}
-		return func() error {
-			_, err := wait(0)
-			// Commands can finish without agent_end. Settle this dispatch before returning.
-			a.PublishTurnActive()
-			return err
-		}, nil
+		if piPromptDisposition(raw) == "handled" {
+			a.steers.Echo(ticket)
+			a.steers.Settle(a.orderedSink())
+		}
+		return nil
 	}
+	return dispatch, nil
+}
 
-	// Pi answers preflight with started, queued, or handled. It sends no second reply.
-	// The stdin write confirms delivery, so the response wait runs separately.
-	return nil, a.sendPiCommandDetached(CommandPrompt, payload, func(raw json.RawMessage, err error) {
-		if err != nil {
-			a.handlePiPromptFailure(err)
-		} else if piPromptDisposition(raw) == "handled" {
-			a.PublishTurnActive()
-		}
-	})
+func (a *Agent) preparePiExtensionCommand(payload map[string]any) (piInputDispatch, error) {
+	var dispatch piInputDispatch
+	wait, err := a.beginPiCommand(CommandPrompt, payload)
+	if err != nil {
+		return dispatch, err
+	}
+	dispatch.wait = func() error {
+		_, err := wait(0)
+		// Commands can finish without agent_end. Settle this dispatch before returning.
+		a.PublishTurnActive()
+		return err
+	}
+	return dispatch, nil
 }
 
 func (a *Agent) forgetPiSteer(ticket providerkit.SteerTicket) {
@@ -410,6 +456,7 @@ func (a *Agent) ClearContext() (string, error) {
 	}
 	a.steers.DropAll()
 	a.steers.Settle(a.orderedSink())
+	a.dropIdentifiedPiSteers()
 	a.endPiCompaction()
 	stateRaw, err := a.sendPiCommand(CommandGetState, nil, a.APITimeout())
 	if err != nil {
@@ -460,6 +507,6 @@ func (a *Agent) ClearContext() (string, error) {
 	return handle, nil
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments, false)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputForSession(&sessionID, content, attachments, nil)
 }

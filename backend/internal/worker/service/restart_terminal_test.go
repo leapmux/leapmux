@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,9 +17,12 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 type closeBeforeTerminalWrite struct {
@@ -247,6 +251,103 @@ func TestRestartTerminal_StillRunning(t *testing.T) {
 	assert.Contains(t, w.errors[0].message, "still running")
 }
 
+func TestRestartTerminal_ReplacesOnlyTheObservedRunningShell(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, opened := setupTestService(t)
+	defer drainAllInFlight(svc)
+	terminalID := openTerminalViaRPC(t, svc, dispatcher, opened, t.TempDir())
+	svc.TerminalStartup.WaitForInFlight()
+	before := listOneTerminal(t, dispatcher, terminalID)
+	require.Len(t, before.GetShellInstanceId(), 48)
+
+	replace := func(command string) *testResponseWriter {
+		t.Helper()
+		w := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+			TerminalId: terminalID, ReplaceShellInstanceId: before.GetShellInstanceId(), InitialCommand: command,
+		}, w)
+		return w
+	}
+	invalid := replace("invalid\x00command")
+	require.Empty(t, invalid.responses)
+	require.Len(t, invalid.errors, 1)
+	assert.Equal(t, codeInvalidArgument, invalid.errors[0].code)
+	assert.Equal(t, before.GetShellInstanceId(), listOneTerminal(t, dispatcher, terminalID).GetShellInstanceId())
+
+	admit := make(chan struct{})
+	results := make(chan *testResponseWriter, 2)
+	for range 2 {
+		go func() {
+			<-admit
+			results <- replace("")
+		}()
+	}
+	close(admit)
+	accepted, rejected := <-results, <-results
+	if len(accepted.errors) != 0 {
+		accepted, rejected = rejected, accepted
+	}
+	require.Empty(t, accepted.errors)
+	require.Len(t, accepted.responses, 1)
+	require.Empty(t, rejected.responses)
+	require.Len(t, rejected.errors, 1)
+	assert.Equal(t, codeFailedPrecondition, rejected.errors[0].code)
+	svc.TerminalStartup.WaitForInFlight()
+	after := listOneTerminal(t, dispatcher, terminalID)
+	require.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, after.GetStatus())
+	require.Len(t, after.GetShellInstanceId(), 48)
+	assert.NotEqual(t, before.GetShellInstanceId(), after.GetShellInstanceId())
+	assert.Equal(t, before.GetTerminalId(), after.GetTerminalId())
+	assert.Equal(t, before.GetWorkingDir(), after.GetWorkingDir())
+	assert.Equal(t, before.GetCols(), after.GetCols())
+	assert.Equal(t, before.GetRows(), after.GetRows())
+
+	stale := replace("")
+	require.Empty(t, stale.responses)
+	require.Len(t, stale.errors, 1)
+	assert.Equal(t, codeFailedPrecondition, stale.errors[0].code)
+	assert.Contains(t, stale.errors[0].message, "observed running shell")
+	assert.Equal(t, after.GetShellInstanceId(), listOneTerminal(t, dispatcher, terminalID).GetShellInstanceId())
+}
+
+func TestRestartTerminal_ReplacementLaunchFailureKeepsTheTab(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, opened := setupTestService(t)
+	defer drainAllInFlight(svc)
+	terminalID := openTerminalViaRPC(t, svc, dispatcher, opened, t.TempDir())
+	svc.TerminalStartup.WaitForInFlight()
+	before := listOneTerminal(t, dispatcher, terminalID)
+	require.NotEmpty(t, before.GetShellInstanceId())
+	missing := filepath.Join(t.TempDir(), "missing-shell")
+	_, err := svc.DB.ExecContext(t.Context(), "UPDATE terminals SET shell = ? WHERE id = ?", missing, terminalID)
+	require.NoError(t, err)
+
+	replacement := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+		TerminalId: terminalID, ReplaceShellInstanceId: before.GetShellInstanceId(),
+	}, replacement)
+	require.Empty(t, replacement.errors)
+	require.Len(t, replacement.responses, 1)
+	svc.TerminalStartup.WaitForInFlight()
+	failed := listOneTerminal(t, dispatcher, terminalID)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, failed.GetStatus())
+	assert.Contains(t, failed.GetStartupError(), "missing-shell")
+	assert.Empty(t, failed.GetShellInstanceId())
+	assert.False(t, svc.Terminals.IsRunning(terminalID))
+
+	_, err = svc.DB.ExecContext(t.Context(), "UPDATE terminals SET shell = ? WHERE id = ?", testutil.TestShell(), terminalID)
+	require.NoError(t, err)
+	recovered := newTestWriter()
+	dispatchRestart(dispatcher, terminalID, recovered)
+	require.Empty(t, recovered.errors)
+	svc.TerminalStartup.WaitForInFlight()
+	after := listOneTerminal(t, dispatcher, terminalID)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, after.GetStatus())
+	assert.Equal(t, terminalID, after.GetTerminalId())
+	assert.NotEmpty(t, after.GetShellInstanceId())
+	assert.NotEqual(t, before.GetShellInstanceId(), after.GetShellInstanceId())
+}
+
 // TestRestartTerminal_AfterWorkerRestart exercises the path where the
 // in-memory *Terminal is gone (e.g. worker process restarted) but the
 // DB row is present. The restart RPC must recreate the entry with a
@@ -286,7 +387,7 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 	// Drive a small bit of output so the ScreenBuffer's counter advances
 	// past its seeded baseline.
 	enter := testutil.TestShellEnter()
-	require.NoError(t, svc.Terminals.SendInput(id, []byte("echo respawn"+enter)))
+	require.NoError(t, svc.Terminals.SendInput(id, terminput.Input{Data: []byte("echo respawn" + enter)}))
 
 	// Query the cumulative offset directly: it should be >= the persisted
 	// screen length, proving the seed worked. A regression here would
@@ -294,7 +395,7 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 	// wiping the existing xterm buffer).
 	persistedLen := int64(len(persistedScreen))
 	testutil.AssertEventually(t, func() bool {
-		_, endOffset, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		_, endOffset, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 		return endOffset >= persistedLen
 	}, "cumulative offset must start at >= persisted screen length")
 }
@@ -465,22 +566,69 @@ func TestRestartTerminal_StartupInProgress(t *testing.T) {
 	assert.Contains(t, w.errors[0].message, "startup in progress")
 }
 
-// TestRestartTerminal_PreservesTitle: after the user renames the tab
-// via RenameTerminal, the title must survive a restart. The
-// Manager replaces a defined subset of meta fields on restart; title
-// must stay in the preserved set.
+type terminalStartupTitleRead struct {
+	db.DBTX
+	spawned  <-chan struct{}
+	selected chan struct{}
+	once     sync.Once
+}
+
+func (d *terminalStartupTitleRead) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	row := d.DBTX.QueryRowContext(ctx, query, args...)
+	if strings.HasPrefix(query, "-- name: GetTerminalForReady") {
+		select {
+		case <-d.spawned:
+			d.once.Do(func() { close(d.selected) })
+		default:
+		}
+	}
+	return row
+}
+
+// The rename must survive a startup that already read the original title.
 func TestRestartTerminal_PreservesTitle(t *testing.T) {
 	t.Parallel()
 
 	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
+	ctx := testutil.DeadlineContext(t)
+	spawned, finishSpawn, titleSelected := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(finishSpawn) }) }
+	defer release()
+	svc.Queries = db.New(&terminalStartupTitleRead{DBTX: svc.DB, spawned: spawned, selected: titleSelected})
+	svc.startTerminalFn = func(ctx context.Context, opts terminal.Options, out terminal.OutputHandler, exit terminal.ExitHandler) error {
+		if err := svc.startTerminalProcess(ctx, opts, out, exit); err != nil {
+			return err
+		}
+		close(spawned)
+		select {
+		case <-finishSpawn:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 
 	const newTitle = "user-renamed: ~/dir"
-	w2 := newTestWriter()
-	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{TerminalId: terminalID, Title: newTitle}, w2)
-	require.Empty(t, w2.errors)
+	func() {
+		// The post-spawn read precedes the interruption check. Hold the
+		// startup lock so the rename lands before that check can finish.
+		svc.TerminalStartup.mu.Lock()
+		defer svc.TerminalStartup.mu.Unlock()
+		release()
+		select {
+		case <-titleSelected:
+		case <-ctx.Done():
+			t.Fatal("terminal startup did not read the title")
+		}
+		writer := newTestWriter()
+		dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{TerminalId: terminalID, Title: newTitle}, writer)
+		require.Empty(t, writer.errors)
+	}()
+	svc.TerminalStartup.WaitForInFlight()
 
 	exitTerminalAndWait(t, svc, d, terminalID, "")
 
@@ -494,7 +642,10 @@ func TestRestartTerminal_PreservesTitle(t *testing.T) {
 	// In-memory meta and DB row should both still carry the user title.
 	meta, ok := svc.Terminals.GetMeta(terminalID)
 	require.True(t, ok)
-	assert.Equal(t, newTitle, meta.Title, "title must survive Manager.RestartTerminal's meta overwrite")
+	assert.Equal(t, newTitle, meta.Title)
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, newTitle, row.Title)
 }
 
 // TestRestartTerminal_ShellResolution pins the single-tier resolution:
@@ -548,24 +699,33 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 	})
 }
 
-// TestRestartTerminal_CloseDuringRestart exercises the closed_at guard
-// in runTerminalRestart. We force the race deterministically by setting
-// closed_at on the DB row *before* dispatching RestartTerminal:
-// requireTerminalForRestart doesn't check closed_at, so the spawn
-// proceeds, and the post-spawn re-fetch inside runTerminalRestart sees
-// the closed row and tears the freshly-spawned PTY back down.
-//
-// (The Manager-level RestartTerminal doesn't go through the
-// startTerminalFn indirection that OpenTerminal uses, so we can't
-// inject a callback there. Pre-seeding closed_at is the simplest way
-// to drive the same code path the real CloseTab-during-restart
-// race produces.)
+type blockingTerminalRestartIPC struct {
+	fakeRemoteIPC
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (f *blockingTerminalRestartIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string, func(), error) {
+	close(f.entered)
+	<-f.release
+	return f.fakeRemoteIPC.TerminalSpawning(info)
+}
+
 func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	ctx := testutil.DeadlineContext(t)
+	continueStart := make(chan struct{})
+	release := sync.OnceFunc(func() { close(continueStart) })
+	ipc := &blockingTerminalRestartIPC{entered: make(chan struct{}), release: continueStart}
+	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
 	defer drainAllInFlight(svc)
+	defer release()
 
 	const id = "tm-close-race"
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -573,19 +733,47 @@ func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 		Shell: testutil.TestShell(),
 		Cols:  80, Rows: 25, Screen: []byte{},
 	}))
-	// Mimic a CloseTab that won the race: closed_at is already set
-	// when the RestartTerminal request lands.
-	require.NoError(t, closeErr(svc.Queries.CloseTerminal(ctx, id)))
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: id}
+	_, initial, err := journal.Open(ctx, tab, nil)
+	require.NoError(t, err)
 
 	dispatchRestart(d, id, w)
 	require.Empty(t, w.errors)
+	select {
+	case <-ipc.entered:
+	case <-ctx.Done():
+		t.Fatal("the admitted restart did not reach shell setup")
+	}
+	require.NoError(t, closeErr(svc.Queries.CloseTerminal(ctx, id)))
+	release()
 
-	// Wait for runTerminalRestart to finish its trailing work, then poll
-	// — the goroutine removes the manager entry asynchronously after
-	// startWithScreenBuffer returns.
 	svc.TerminalStartup.WaitForInFlight()
-	testutil.AssertEventually(t, func() bool { return !svc.Terminals.HasTerminal(id) },
-		"runTerminalRestart must remove the PTY when closed_at is set between spawn and post-spawn fetch")
+	assert.False(t, svc.Terminals.HasTerminal(id), "the restart must remove the PTY after the close")
+	require.NoError(t, svc.Terminals.WaitForTabPublishers(ctx, id))
+	reader, ready, err := journal.Open(ctx, tab, initial.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(ctx, ready.GetAfterSequence())
+	require.NoError(t, err)
+	require.NotEmpty(t, page)
+	assert.NotNil(t, page[len(page)-1].GetRecord().GetFact().GetTerminalExit(), "the admitted PTY reached its exit handler")
+}
+
+func TestRestartTerminal_RejectsAClosedRowBeforeTheShellStarts(t *testing.T) {
+	t.Parallel()
+	ipc := &fakeRemoteIPC{}
+	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
+	const id = "closed-terminal"
+	require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+		ID: id, WorkingDir: t.TempDir(), Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	require.NoError(t, closeErr(svc.Queries.CloseTerminal(t.Context(), id)))
+	dispatchRestart(d, id, w)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, codeNotFound, w.errors[0].code)
+	assert.Zero(t, ipc.count.Load())
+	assert.False(t, svc.Terminals.HasTerminal(id))
 }
 
 func (f *fakeRemoteIPC) HoldDelegation(userid.UserID) func() { return func() {} }

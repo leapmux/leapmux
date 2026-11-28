@@ -2,7 +2,6 @@ package mimo
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -15,7 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // mimoListenPattern matches the stdout line `mimo serve` prints once it
@@ -180,6 +178,7 @@ func (a *Agent) onStreamConnected(ctx context.Context) {
 	defer cancel()
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	a.reconcileInputReplies(restateCtx)
 	a.reconcileTurnLocked(restateCtx)
 	a.reconcileActorsAndWorkflowsLocked(restateCtx)
 	a.restatePendingControls(restateCtx)
@@ -193,7 +192,7 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 	sessionID := a.sessionID
 	var runningActorIDs []string
 	for actorID, actor := range a.actors {
-		if actor.running {
+		if a.actorNeedsToolReconcileLocked(actor, sessionID) {
 			runningActorIDs = append(runningActorIDs, actorID)
 		}
 	}
@@ -214,33 +213,11 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 				}
 			}
 			for _, actorID := range runningActorIDs {
-				a.Mu.Lock()
-				stillRunning := a.sessionID == sessionID && a.actors[actorID] != nil && a.actors[actorID].running
-				a.Mu.Unlock()
-				if !stillRunning {
-					continue
-				}
 				snap, present := byID[actorID]
 				if present && snap.isRunning() {
 					continue
 				}
-				a.retryForActor(actorID).Reset()
-				if present {
-					a.endActorTurn(mimoActorStatus{
-						SessionID:   sessionID,
-						ActorID:     actorID,
-						Status:      contracts.MiMoActorStatusIdle,
-						LastOutcome: snap.LastOutcome,
-						TurnCount:   snap.TurnCount,
-						Error:       cmp.Or(snap.Error, snap.LastError),
-					})
-				} else {
-					a.endActorTurnWithOutcome(mimoActorStatus{
-						SessionID: sessionID,
-						ActorID:   actorID,
-						Status:    contracts.MiMoActorStatusIdle,
-					}, bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished)
-				}
+				a.reconcileActorToolIdle(sessionID, actorID, snap, present)
 			}
 		}
 	}

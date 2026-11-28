@@ -23,6 +23,8 @@ Sessions stay attached across restarts.
 LeapMux encrypts Frontend↔Worker traffic from end to end.
 Use LeapMux in a browser or as a native desktop app.
 
+![LeapMux workspace showing Claude Code, Antigravity, Codex, a unified file diff viewer, and an integrated terminal across isolated git worktrees](site/static/images/docs/hero-workspace-light.png)
+
 ## Supported Agents
 
 <p>
@@ -102,20 +104,21 @@ The binary runs in several modes:
 
 | Command | Description |
 |---------|-------------|
-| `leapmux solo` | Hub + Worker, single-user; local IPC needs no credential and TCP starts with password setup |
-| `leapmux hub` | Central service only (auth, relay, database) |
-| `leapmux worker` | Connects to a remote Hub |
-| `leapmux dev` | Hub + Worker on all interfaces, login required |
-| `leapmux control admin` | Online, authenticated CLI for users, workers, OAuth, settings, and tokens |
+| `leapmux up` / `leapmux down` | Start or stop the local solo daemon (`daemon solo start` / `stop`) |
+| `leapmux daemon solo` | Hub + Worker, single-user; local IPC needs no credential and TCP starts with password setup |
+| `leapmux daemon hub` | Central service only (auth, relay, database) |
+| `leapmux daemon worker` | Connects to a remote Hub |
+| `leapmux daemon dev` | Hub + Worker on all interfaces, login required |
+| `leapmux <noun>` (`lmx`) | Top-level CLI for workspaces, agents, terminals, files, git, layouts, and `admin` |
 | `leapmux recover` | Offline break-glass CLI: first-admin bootstrap, password reset, encryption keys, database |
 
-Each mode requires a command. Start an instance with `start`, which runs it as a service of the operating system and waits until it is ready, and stop it with `stop`. `restart` and `status` act on a running instance. `enable` configures automatic startup without starting the instance, and `disable` removes that configuration from a stopped instance. `run` keeps an instance in the foreground; the container image uses it.
+Each daemon mode requires a command. Start an instance with `start`, which runs it as a service of the operating system and waits until it is ready, and stop it with `stop`. `restart`, `status`, and `logs` act on a running instance. `enable` configures automatic startup without starting the instance, and `disable` removes that configuration from a stopped instance. `run` keeps an instance in the foreground; the container image uses it.
 
 Register a standalone Worker before you start it:
 
 ```sh
-leapmux worker register --hub https://hub.example.com --registration-key YOUR_KEY
-leapmux worker start
+leapmux daemon worker register --hub https://hub.example.com --registration-key YOUR_KEY
+leapmux daemon worker start
 ```
 
 Solo and dev register their embedded Worker automatically. A fresh dev instance reports `ready_for_setup` until an administrator completes `/setup`.
@@ -137,7 +140,7 @@ It refuses to serve when another live Hub owns that lease.
 A replacement can take over after the owner releases the lease or the lease expires.
 Administrative CLI processes can access the database while the Hub runs.
 
-For the full architecture, deployment modes, and threat model, see the **[Concepts](https://leapmux.dev/docs/getting-started/concepts/)** and **[Security & Threat Model](https://leapmux.dev/docs/admin/security/)** chapters at [leapmux.dev](https://leapmux.dev).
+For the full architecture, deployment modes, and threat model, see the **[Concepts](https://leapmux.dev/docs/getting-started/concepts/)** and **[Security & Authentication](https://leapmux.dev/docs/admin/security-and-auth/)** chapters at [leapmux.dev](https://leapmux.dev).
 
 ## Prerequisites
 
@@ -261,8 +264,8 @@ It then runs `dekit mprocs` to start the processes concurrently:
 
 | Command | Processes | Description |
 |---------|-----------|-------------|
-| `task dev` | Go backend (`leapmux dev run`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
-| `task dev-solo` | Go backend (`leapmux solo run`) + Bun frontend dev server | Localhost-only, single-user; the browser sets the first `solo` password |
+| `task dev` | Go backend (`leapmux daemon dev run`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
+| `task dev-solo` | Go backend (`leapmux daemon solo run`) + Bun frontend dev server | Localhost-only, single-user; the browser sets the first `solo` password |
 | `task dev-desktop` | Bun frontend dev server + Tauri desktop app | Desktop app development (builds sidecar first) |
 
 ## Development

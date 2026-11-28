@@ -20,6 +20,7 @@ import type { ModelStream } from './modelStream'
 import { statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
+import { connect as connectTcp } from 'node:net'
 import { isAbsolute } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
 import { LOOPBACK_HOSTNAMES } from './agentEnvironmentInputs'
@@ -56,10 +57,11 @@ import {
 } from './mockModelScript'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput, createBufferedModelStream, createModelStream } from './modelStream'
-import { createQoderSurface } from './qoderSurface'
+import { createQoderSurface, QODER_BOOTSTRAP_HOSTS } from './qoderSurface'
 
 const MAX_HTTP_REQUEST_RECORDS = 10_000
 const MAX_UNMATCHED_RECORDS = 200
+const QODER_BOOTSTRAP_AUTHORITIES = new Set(QODER_BOOTSTRAP_HOSTS.map(host => `${host}:443`))
 
 /**
  * Limit the number of responses that one scenario's fallback supplies.
@@ -115,6 +117,8 @@ export interface MockModelServerOptions {
 export interface MockModelServer {
   url: string
   close: () => Promise<void>
+  /** Forward Qoder's startup API to this local TLS port. */
+  setQoderBootstrapPort: (port: number) => void
   /**
    * The proxy rejection count for each host.
    * Count CONNECT tunnels by host:port.
@@ -221,6 +225,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   let responseSequence = 0
   // Set the listening port before the server handles a request.
   let ownPort = 0
+  let qoderBootstrapPort: number | undefined
 
   // Record one request that the proxy refused, and count its host.
   const refuse = (host: string, record: MockModelHTTPRequestRecord): void => {
@@ -469,10 +474,29 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   // See ./dualVersionListener for the Node protocol limitation.
   const http1 = createServer(handle)
   // The suite configures this server as the HTTPS proxy for leapmux dev and its child processes.
-  // Reject every CONNECT tunnel and every absolute-form target for another host.
+  // Qoder can request its account profile and model catalog before endpoint election finishes.
+  // Route those two authorities to the mock TLS listener. Refuse all other tunnels.
   // Proxy-aware telemetry and update clients then fail without contacting their upstream hosts.
-  http1.on('connect', (request: IncomingMessage, socket: Duplex) => {
+  http1.on('connect', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const host = request.url ?? ''
+    if (QODER_BOOTSTRAP_AUTHORITIES.has(host) && qoderBootstrapPort !== undefined) {
+      const peer = connectTcp(qoderBootstrapPort, '127.0.0.1')
+      peer.once('connect', () => {
+        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+        if (head.length > 0)
+          peer.write(head)
+        peer.pipe(socket)
+        socket.pipe(peer)
+      })
+      peer.once('error', () => socket.destroy())
+      peer.once('close', () => {
+        if (!peer.readableEnded)
+          socket.destroy()
+      })
+      socket.once('error', () => peer.destroy())
+      socket.once('close', () => peer.destroy())
+      return
+    }
     refuse(host, { method: 'CONNECT', path: host, status: 403 })
     socket.on('error', () => socket.destroy())
     socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
@@ -497,6 +521,11 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   ownPort = port
   return {
     url: `http://127.0.0.1:${port}`,
+    setQoderBootstrapPort: (port) => {
+      if (!Number.isInteger(port) || port < 1 || port > 65535)
+        throw new Error('The Qoder mock TLS port must be between 1 and 65535.')
+      qoderBootstrapPort = port
+    },
     refusedHosts: () => new Map(refusedHosts),
     ancestorInstructionRequests: () => ancestorInstructionRequests,
     close: () => {

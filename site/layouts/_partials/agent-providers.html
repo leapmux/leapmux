@@ -1,0 +1,9 @@
+{{- /* Return a flat slice of every provider from feature_matrix/checklist.json. */ -}}
+{{- $checklist := index hugo.Data "feature_matrix" "checklist" -}}
+{{- $providers := slice -}}
+{{- range $group := $checklist.providerGroups -}}
+  {{- range $provider := $group -}}
+    {{- $providers = $providers | append $provider -}}
+  {{- end -}}
+{{- end -}}
+{{- return $providers -}}

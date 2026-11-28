@@ -96,13 +96,11 @@ func TestGetWorker_ReportsTimestampsAsInstants(t *testing.T) {
 	assert.True(t, listed.GetWorkers()[0].GetLastSeenAt().AsTime().Equal(seen.GetLastSeenAt().AsTime()))
 }
 
-// TestGetWorker_HidesADeregisteringWorker pins that GetWorker follows
-// ListWorkers. ListWorkers hides a worker once its owner deregisters it, and
-// the Worker message carries no deregistering state, so a GetWorker that
-// returned the row would present a worker on its way out as a normal one. The
-// CLI's worker preflight reads GetWorker, so it would also pass a worker that
-// the listing hides.
-func TestGetWorker_HidesADeregisteringWorker(t *testing.T) {
+// TestGetWorker_HidesADeregisteredWorker pins that GetWorker follows
+// ListWorkers. Deregistering soft-deletes the worker immediately, so both
+// GetWorker and ListWorkers omit it right away, and the CLI's worker preflight
+// (which reads GetWorker) refuses it as absent.
+func TestGetWorker_HidesADeregisteredWorker(t *testing.T) {
 	t.Parallel()
 
 	st := testutil.OpenTestStore(t)
@@ -119,7 +117,7 @@ func TestGetWorker_HidesADeregisteringWorker(t *testing.T) {
 
 	_, err = svc.GetWorker(ctx, &leapmuxv1.GetWorkerRequest{WorkerId: deregistered})
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "a deregistering worker reads as absent, as ListWorkers shows it")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "a deregistered worker reads as absent, as ListWorkers shows it")
 	assert.Contains(t, err.Error(), "worker not found")
 
 	got, err := svc.GetWorker(ctx, &leapmuxv1.GetWorkerRequest{WorkerId: active})
@@ -128,7 +126,7 @@ func TestGetWorker_HidesADeregisteringWorker(t *testing.T) {
 
 	listed, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 	require.NoError(t, err)
-	require.Len(t, listed.GetWorkers(), 1, "control: the listing hides the deregistering worker")
+	require.Len(t, listed.GetWorkers(), 1, "control: the listing hides the deregistered worker")
 	assert.Equal(t, active, listed.GetWorkers()[0].GetId())
 }
 

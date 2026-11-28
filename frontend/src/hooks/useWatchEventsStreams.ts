@@ -437,6 +437,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
               && receipt?.entry.mode === WatchMode.FULL
               && receipt.entry.replayId === event.replay.replayId) {
               receipt.completed = true
+              emitDevEvent('leapmux:watch-events-catch-up-complete', () => ({ agentId: event.agentId }))
             }
           }
           // Unrelated traffic must preserve the LOOKUP_FAILED retry cap.

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
@@ -39,6 +38,11 @@ type Agent struct {
 	// plan approval after streaming the proposal, so the observer saves this text
 	// for a possible fresh-context execution. Guarded by Base.Mu.
 	planDraft strings.Builder
+
+	storeQuery      agent.StoredSessionQuery
+	workingDir      string
+	steerDispatchMu sync.Mutex
+	steerReplies    reasonixSteerReplies
 }
 
 // Agent steers. Manager.SupportsSteering answers false, with no build error, for a
@@ -46,14 +50,6 @@ type Agent struct {
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
-
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	result, err := a.SteerAdvertisedResult(content, attachments)
-	if err != nil {
-		return err
-	}
-	return readReasonixSteerDisposition(result, "")
-}
 
 // readReasonixSteerDisposition reads the disposition of one steer reply. A
 // steer_accepted steer reached the active turn, and a queued_followup one

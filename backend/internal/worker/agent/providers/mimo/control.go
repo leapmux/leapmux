@@ -38,8 +38,9 @@ import (
 // The shared request header supplies the tool name and native part ID.
 // Plan approval also carries the text from the plan file.
 //
-// ResolveControlResponse checks the browser answer. SendRawInput sends it to MiMo.
-// The answer keeps the browser's shape because the persisted answer row uses that shape.
+// ResolveControlResponse checks the answer that AnswerControlRequest built.
+// SendRawInput sends it to MiMo. The answer keeps that shape because the
+// persisted answer row uses that shape.
 // parseElicitationAnswer converts the shared MCP action to MiMo's native answer.
 //
 // An interactive command is refused at once, and nothing about it is stored:
@@ -51,6 +52,30 @@ const (
 	permissionRequestPrefix = "mimo-permission:"
 	questionRequestPrefix   = "mimo-question:"
 )
+
+// ControlRequestKey reads the key that the agent publishes a MiMo request
+// under: the prefix of its event and MiMo's own id of the request
+// (handlePermissionAsked, handleQuestionAsked). The plan approval is a
+// question, so its key takes the question's prefix.
+func (mimoProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var stored struct {
+		Type       string `json:"type"`
+		Properties struct {
+			ID string `json:"id"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(payload, &stored) != nil || stored.Properties.ID == "" {
+		return "", false
+	}
+	switch stored.Type {
+	case contracts.MiMoEventPermissionAsked:
+		return permissionRequestPrefix + stored.Properties.ID, true
+	case contracts.OpenCodeEventQuestionAsked:
+		return questionRequestPrefix + stored.Properties.ID, true
+	default:
+		return "", false
+	}
+}
 
 // mimoControlKind is what one control request asks.
 type mimoControlKind int
@@ -71,6 +96,8 @@ type mimoControl struct {
 	// actorID is the actor whose tool call asked.
 	actorID         string
 	actorKnown      bool
+	childID         string
+	childSink       agent.ProviderServices
 	messageID       string
 	payload         []byte
 	ready           bool
@@ -79,13 +106,14 @@ type mimoControl struct {
 	answered        bool
 	automatic       bool
 	automaticFailed bool
+	boundInputIDs   []string
 	publicationDone chan struct{}
 	publicationOnce sync.Once
 }
 
 // mimoControlHeader is the shared request header of a stored payload. The
-// service reads the tool name to classify a plan approval, and the browser's
-// shared controls read the tool call.
+// service reads the tool name to classify a plan approval, and
+// ReadControlRequest reads it to tell the plan approval from a question.
 type mimoControlHeader struct {
 	ToolName  string          `json:"tool_name"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
@@ -120,7 +148,8 @@ type mimoQuestionAsked struct {
 
 // mimoQuestionKeyPlanExit is the `key` of the one question that the plan
 // agent's `plan_exit` tool asks. Only the worker reads it: it records the
-// request under the plan tool's name, and the browser dispatches on that name.
+// request under the plan tool's name, and ReadControlRequest dispatches on
+// that name.
 const mimoQuestionKeyPlanExit = "plan_exit"
 
 // planPath returns the path that a plan approval specifies.
@@ -293,6 +322,15 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 	if record := a.messages[control.messageID]; record != nil && record.sessionID == control.sessionID {
 		control.actorKnown = control.actorKnown || record.identityKnown && record.actorKnown
 	}
+	if child := a.actors[control.actorID]; control.actorKnown && child != nil && control.sessionID == a.sessionID {
+		control.childID = child.childAgentID
+	}
+	a.Mu.Unlock()
+	if control.childID != "" {
+		control.childSink = a.sink.ChildSink(control.childID)
+	}
+	a.Mu.Lock()
+	var replaced *mimoControl
 	if existing := a.controls[requestID]; existing != nil {
 		if existing.answering {
 			a.Mu.Unlock()
@@ -302,6 +340,9 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 			control = existing
 		} else {
 			existing.publicationOnce.Do(func() { close(existing.publicationDone) })
+			if existing.published {
+				replaced = existing
+			}
 		}
 	}
 	if control.publicationDone == nil {
@@ -315,6 +356,9 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 		control.publicationOnce.Do(func() { close(control.publicationDone) })
 	}
 	a.Mu.Unlock()
+	if replaced != nil {
+		a.controlSink(replaced).CancelControlRequestInstance(requestID, replaced.instanceID)
+	}
 	if bypass {
 		a.queuePermissionApprovals()
 		return
@@ -323,7 +367,8 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 }
 
 func (a *Agent) publishRegisteredControl(requestID string, control *mimoControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.sessionID, RequestID: requestID, InstanceID: control.instanceID, Payload: control.payload})
+	sink := a.controlSink(control)
+	err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.sessionID, RequestID: requestID, InstanceID: control.instanceID, Payload: control.payload})
 	a.Mu.Lock()
 	current := a.controls[requestID] == control
 	if err == nil && !control.answered {
@@ -339,7 +384,9 @@ func (a *Agent) publishRegisteredControl(requestID string, control *mimoControl)
 	bypass := current && err == nil && a.canBypassControlLocked(control)
 	a.Mu.Unlock()
 	if cancel {
-		a.sink.CancelControlRequestInstance(requestID, control.instanceID)
+		sink.CancelControlRequestInstance(requestID, control.instanceID)
+	} else if err == nil {
+		a.bindControlReplyInputs(requestID, control)
 	}
 	if bypass {
 		a.queuePermissionApprovals()
@@ -353,6 +400,13 @@ func (a *Agent) publishRegisteredControl(requestID string, control *mimoControl)
 	} else {
 		a.rejectQuestionLater(control.nativeID)
 	}
+}
+
+func (a *Agent) controlSink(control *mimoControl) agent.ProviderServices {
+	if control.childSink != nil {
+		return control.childSink
+	}
+	return a.sink
 }
 
 // forgetControl drops one native request and returns the instance that needs withdrawal.
@@ -388,7 +442,7 @@ func (a *Agent) retireSettled(event mimoEvent, prefix string) {
 	}
 	requestID := prefix + settled.RequestID
 	if control := a.forgetControl(requestID); control != nil {
-		a.sink.CancelControlRequestInstance(requestID, control.instanceID)
+		a.controlSink(control).CancelControlRequestInstance(requestID, control.instanceID)
 	}
 }
 
@@ -416,14 +470,14 @@ func (a *Agent) retireAllControls() {
 
 func (a *Agent) retireControls(match func(*mimoControl) bool) {
 	a.Mu.Lock()
-	cancel := make(map[string]string)
+	cancel := make(map[string]*mimoControl)
 	var reject []string
 	for id, control := range a.controls {
 		if !match(control) {
 			continue
 		}
 		if control.published && (!control.answering || control.automatic) {
-			cancel[id] = control.instanceID
+			cancel[id] = control
 		}
 		if control.kind != controlPermission && !control.answering {
 			reject = append(reject, control.nativeID)
@@ -432,8 +486,8 @@ func (a *Agent) retireControls(match func(*mimoControl) bool) {
 		delete(a.controls, id)
 	}
 	a.Mu.Unlock()
-	for id, instance := range cancel {
-		a.sink.CancelControlRequestInstance(id, instance)
+	for id, control := range cancel {
+		a.controlSink(control).CancelControlRequestInstance(id, control.instanceID)
 	}
 	for _, id := range reject {
 		a.rejectQuestionLater(id)
@@ -551,14 +605,15 @@ func (a *Agent) rejectQuestionLater(questionID string) {
 	}()
 }
 
-// mimoAnswer is one browser answer, read into what MiMo takes.
+// mimoAnswer is one answer that AnswerControlRequest built, read into what
+// MiMo takes. It holds no request id: the caller already holds the key that
+// the answer addresses (Provider.ControlResponseRequestID).
 type mimoAnswer struct {
-	requestID  string
 	permission mimoPermissionReplyBody
 	answers    [][]string
 	reject     bool
-	// elicitation marks answers that the browser's elicitation form wrote as an
-	// MCP action. Only a question that offers MiMo's word for that action can take
+	// elicitation marks answers that state an MCP action in the shared
+	// elicitation envelope (agent.AnswerElicitation). Only a question that offers MiMo's word for that action can take
 	// them (see answerFitsRequest).
 	elicitation bool
 }
@@ -579,8 +634,8 @@ const (
 	elicitationAnswerCancel  = "Cancel"
 )
 
-// mimoJSONRPCAnswer is the answer envelope a browser control writes for a
-// question or a chosen permission option. The two answer fields come from the
+// mimoJSONRPCAnswer is the answer envelope that AnswerControlRequest writes for
+// a question or a chosen permission option. The two answer fields come from the
 // OpenCode contract; TestMiMoAnswerTagsMatchTheContract pins the tags.
 type mimoJSONRPCAnswer struct {
 	Result struct {
@@ -593,7 +648,7 @@ type mimoJSONRPCAnswer struct {
 	} `json:"result"`
 }
 
-// readControlAnswer reads one browser answer to a stored request of kind, and
+// readControlAnswer reads one answer to a stored request of kind, and
 // checks it against that request. Both the answer check and the reply read here,
 // so the two cannot accept different answers. Its error is the reason the reader
 // sees for the refusal.
@@ -650,8 +705,7 @@ func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAn
 	if kind != controlQuestion {
 		return mimoAnswer{}, true, errors.New("an elicitation action answers only a question")
 	}
-	requestID := strings.TrimSpace(envelope.Response.RequestID)
-	if requestID == "" {
+	if strings.TrimSpace(envelope.Response.RequestID) == "" {
 		return mimoAnswer{}, true, errors.New("the answer states no request")
 	}
 	var word string
@@ -665,10 +719,10 @@ func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAn
 	default:
 		return mimoAnswer{}, true, fmt.Errorf("unknown elicitation action %q", action)
 	}
-	return mimoAnswer{requestID: requestID, answers: [][]string{{word}}, elicitation: true}, true, nil
+	return mimoAnswer{answers: [][]string{{word}}, elicitation: true}, true, nil
 }
 
-// parseControlAnswer reads one browser answer to a request of kind.
+// parseControlAnswer reads one answer to a request of kind.
 //
 // Three envelopes reach here. The shared allow/deny envelope answers a
 // permission and a plan approval, and a deny answers a question as a rejection.
@@ -677,19 +731,19 @@ func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAn
 // answers, and a permission with the option the user picked.
 func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error) {
 	if requestID, behavior, message, ok := agent.DecodeControlBehavior(content); ok && requestID != "" && behavior != "" {
-		answer := mimoAnswer{requestID: requestID}
+		var answer mimoAnswer
 		switch {
-		case behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny:
+		case behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny:
 			return mimoAnswer{}, errors.New(agent.RefusalNoDecision)
-		case kind == controlPermission && behavior == agent.ControlBehaviorAllow:
+		case kind == controlPermission && behavior == contracts.ControlAnswerBehaviorAllow:
 			answer.permission = mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyOnce}
 		case kind == controlPermission:
 			answer.permission = mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject, Message: message}
-		case kind == controlPlan && behavior == agent.ControlBehaviorAllow:
+		case kind == controlPlan && behavior == contracts.ControlAnswerBehaviorAllow:
 			answer.answers = [][]string{{planAnswerYes}}
 		case kind == controlPlan:
 			answer.answers = [][]string{{planFeedback(message)}}
-		case behavior == agent.ControlBehaviorDeny:
+		case behavior == contracts.ControlAnswerBehaviorDeny:
 			answer.reject = true
 		default:
 			return mimoAnswer{}, errors.New("an allow does not answer a question")
@@ -707,7 +761,7 @@ func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		return mimoAnswer{}, errors.New(agent.RefusalUnreadableAnswer)
 	}
-	answer := mimoAnswer{requestID: requestID}
+	var answer mimoAnswer
 	switch kind {
 	case controlPermission:
 		outcome := envelope.Result.Outcome
@@ -781,15 +835,24 @@ func controlKindOfPayload(payload []byte) (mimoControlKind, bool) {
 	}
 }
 
-// executeControlReply sends one answer to MiMo. The request must be one that
+// executeControlReply sends data, the answer to the control instance
+// instanceID, to the request that it addresses. The request must be one that
 // MiMo still waits on and LeapMux published.
-func (a *Agent) executeControlReply(data []byte) error {
+//
+// MiMo can announce a waiting request again with other content, which
+// replaces the request's instance (publishControl), and the server applies an
+// answer to the request ID. So the answer goes only to the instance that it
+// states (agent.RawInput.ControlInstanceID).
+func (a *Agent) executeControlReply(data []byte, instanceID string) error {
 	requestID := mimoProvider{}.ControlResponseRequestID(data)
 	a.Mu.Lock()
 	control := a.controls[requestID]
 	a.Mu.Unlock()
 	if control == nil {
 		return fmt.Errorf("MiMo holds no pending request %q", requestID)
+	}
+	if err := agent.ControlInstanceRefusal(control.instanceID, instanceID); err != nil {
+		return err
 	}
 	answer, err := readControlAnswer(control.kind, control.payload, data)
 	if err != nil {
@@ -801,7 +864,15 @@ func (a *Agent) executeControlReply(data []byte) error {
 		return a.Context().Err()
 	}
 	a.Mu.Lock()
-	if a.controls[requestID] != control || !control.published || control.answering || a.StoppedLocked() || a.sessionSwitching || !a.ownsSessionLocked(control.sessionID) {
+	current := a.controls[requestID]
+	if current != control {
+		a.Mu.Unlock()
+		if current != nil {
+			return agent.ControlInstanceRefusal(current.instanceID, instanceID)
+		}
+		return fmt.Errorf("MiMo holds no pending request %q", requestID)
+	}
+	if !control.published || control.answering || a.StoppedLocked() || a.sessionSwitching || !a.ownsSessionLocked(control.sessionID) {
 		a.Mu.Unlock()
 		return fmt.Errorf("MiMo holds no pending request %q", requestID)
 	}

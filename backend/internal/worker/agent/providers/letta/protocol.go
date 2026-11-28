@@ -1,7 +1,6 @@
 package letta
 
 import (
-	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -108,13 +107,10 @@ func newLettaCommand(typ string, requestID string) lettaCommand {
 	}
 }
 
-// Session and store layout. A local-backend agent record is a flat JSON file
-// under $LETTA_LOCAL_BACKEND_DIR/agents/, and a conversation is a directory
-// under conversations/. The reader opens them read-only.
+// Session and store layout. A conversation is a directory under
+// $LETTA_LOCAL_BACKEND_DIR/conversations/. The reader opens them read-only.
 const (
 	lettaBackendDirEnv    = "LETTA_LOCAL_BACKEND_DIR"
-	lettaHomeEnv          = "LETTA_HOME"
-	lettaAgentsDir        = "agents"
 	lettaConversationsDir = "conversations"
 )
 
@@ -167,28 +163,6 @@ func isLeapMuxClientMessageID(id string) bool {
 	}
 	parsed, err := uuid.Parse(suffix)
 	return err == nil && parsed.String() == suffix
-}
-
-// Approval payload shape. The `request_id` and `decision` sit FLAT on the
-// payload, never under a `response` key: the nested form produces
-// `loop_error: "Protocol violation: input.kind=approval_response requires
-// payload.request_id and either payload.decision or payload.error"`.
-type approvalResponsePayload struct {
-	Kind      string          `json:"kind"`
-	RequestID string          `json:"request_id"`
-	Decision  json.RawMessage `json:"decision,omitempty"`
-	Error     string          `json:"error,omitempty"`
-}
-
-// decisionBody is the allow/deny decision of an approval_response.
-//
-// `message` is NEVER omitted: Letta's `isValidApprovalResponseBody` requires
-// `typeof decision.message === "string"` for a deny. An `omitempty` that
-// dropped an empty message turned every deny into a protocol violation, the
-// tool call hung, and the turn never reached the model again.
-type decisionBody struct {
-	Behavior string `json:"behavior"`
-	Message  string `json:"message"`
 }
 
 // lettaSeq is the event_seq counter every command carries. The server requires

@@ -9,9 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/id"
-
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -60,7 +59,7 @@ func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestID, request
 	defer release()
 
 	msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":%s}`, requestID, requestBody)
-	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
+	if err := a.SendRawInput(agent.RawInput{Data: []byte(msg)}); err != nil {
 		release()
 		// A closed stdin can precede the process exit report.
 		// Wait briefly so the caller receives the exit status and captured stderr.

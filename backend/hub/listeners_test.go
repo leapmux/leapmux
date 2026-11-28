@@ -253,14 +253,14 @@ func TestListenerSet_RemovingAnExtraStopsItServing(t *testing.T) {
 
 	require.NoError(t, set.Apply(nil))
 	requireStopsAnswering(t, extra.String())
-	// The -listen address is never dropped: Apply merges it back in every
+	// The --listen address is never dropped: Apply merges it back in every
 	// time, so an empty settings row cannot take the hub off the air.
 	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(basePort))
 	assert.Equal(t, []string{"127.0.0.1:" + strconv.Itoa(basePort)}, boundStrings(set))
 }
 
 // The requirement's own example: an operator asks for every interface on the
-// port -listen already holds, so the specific socket must be released before
+// port --listen already holds, so the specific socket must be released before
 // the wildcard can take it. A second base on its own port keeps its socket,
 // and the base report keeps both in bind order with their ports through the
 // merge.
@@ -274,7 +274,7 @@ func TestListenerSet_AWildcardMergesTheBaseAddress(t *testing.T) {
 	require.NoError(t, set.Apply([]listenset.Addr{listenset.MustParse("*:" + strconv.Itoa(port))}))
 
 	// ONE socket on the merged port now, and it still answers on the address
-	// -listen gave. The other base keeps its own socket.
+	// --listen gave. The other base keeps its own socket.
 	assert.ElementsMatch(t, []string{
 		"*:" + strconv.Itoa(port),
 		"127.0.0.1:" + strconv.Itoa(otherPort),
@@ -287,7 +287,7 @@ func TestListenerSet_AWildcardMergesTheBaseAddress(t *testing.T) {
 		sources[b.Addr.String()] = b.Source
 	}
 	assert.Equal(t, SourceMerged, sources["*:"+strconv.Itoa(port)],
-		"the panel must be able to say the -listen address is served by this one, not that it is gone")
+		"the panel must be able to say the --listen address is served by this one, not that it is gone")
 	assert.Equal(t, SourceListen, sources["127.0.0.1:"+strconv.Itoa(otherPort)],
 		"the untouched base keeps its own report")
 
@@ -385,7 +385,7 @@ func TestListenerSet_ApplyBestEffortStillRemovesADroppedAddress(t *testing.T) {
 	set.ApplyBestEffort([]listenset.Addr{listenset.MustParse("127.0.0.1:" + strconv.Itoa(occupiedPort))})
 
 	requireStopsAnswering(t, dropped.String())
-	// The -listen address survives, as it must survive every reconfiguration.
+	// The --listen address survives, as it must survive every reconfiguration.
 	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(basePort))
 	assert.Equal(t, []string{"127.0.0.1:" + strconv.Itoa(basePort)}, boundStrings(set))
 }
@@ -522,7 +522,7 @@ func TestListenerSet_BoundReportsWhetherAnyAddressIsReachable(t *testing.T) {
 	ports := freePorts(t, 2)
 	basePort, wildcardPort := ports[0], ports[1]
 	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(basePort))
-	assert.False(t, listenset.AnyNonLoopback(set.Bound()), "a loopback -listen exposes nothing")
+	assert.False(t, listenset.AnyNonLoopback(set.Bound()), "a loopback --listen exposes nothing")
 
 	require.NoError(t, set.Apply([]listenset.Addr{
 		listenset.MustParse("*:" + strconv.Itoa(wildcardPort)),
@@ -559,7 +559,7 @@ func TestListenerSet_UnservedAsksCoverageNotIdentity(t *testing.T) {
 	assert.Equal(t, []listenset.Addr{missing}, set.unserved([]listenset.Addr{missing}))
 }
 
-// -listen may ask for port 0 (a harness picking a free port). Every surface
+// --listen may ask for port 0 (a harness picking a free port). Every surface
 // must then report the port a client can actually connect to, not ":0". Two
 // identical requests bind two sockets and keep their own assigned ports, in
 // bind order.
@@ -750,7 +750,7 @@ func TestListenerSet_ApplyBestEffortIgnoresAnUnchangedList(t *testing.T) {
 // A rollback records the address it could not restore, and a later successful
 // apply must not erase that record.
 //
-// The -listen socket is what this protects. ApplyBestEffort ends on a clean
+// The --listen socket is what this protects. ApplyBestEffort ends on a clean
 // apply in the ordinary case, and clearing the whole failure map there
 // reported a hub with no problems at the one address whose loss the operator
 // most needs to see.

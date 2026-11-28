@@ -126,8 +126,8 @@ function commandWords(command: string): CommandWord[] {
   return words
 }
 
-/** The spellings of the data-directory flag of the Worker. The flag package of Go accepts one or two hyphens. */
-const DATA_DIRECTORY_FLAGS = ['--data-dir', '-data-dir'] as const
+/** The data-directory flag of the Worker. The command line of `leapmux` takes a long flag with two hyphens only. */
+const DATA_DIRECTORY_FLAG = '--data-dir'
 
 /**
  * Read the data directory from the command line of a Worker, or of the `dev` and `hub` processes that hold one.
@@ -144,8 +144,8 @@ export function workerDataDirectory(command: string): string {
   const values: string[] = []
   for (let index = 0; index < words.length; index++) {
     const word = words[index]!
-    const flag = DATA_DIRECTORY_FLAGS.find(spelling => word.text === spelling || word.text.startsWith(`${spelling}=`))
-    if (!flag)
+    const flag = DATA_DIRECTORY_FLAG
+    if (word.text !== flag && !word.text.startsWith(`${flag}=`))
       continue
     let first: CommandWord
     let inline: string | undefined

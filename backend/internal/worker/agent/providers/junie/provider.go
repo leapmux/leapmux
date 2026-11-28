@@ -15,6 +15,9 @@ type junieProvider struct {
 	acp.Provider
 }
 
+// SupportsFork reports that Junie advertises ACP sessionCapabilities.fork.
+func (junieProvider) SupportsFork() bool { return true }
+
 // ListStoredSessions reads Junie's own session index; see sessions.go.
 func (junieProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return junieStoredSessions(ctx, q)

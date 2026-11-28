@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -143,6 +144,7 @@ func newClaudeContentAgent(t *testing.T, turnActive bool) (*Agent, *agenttest.St
 		}),
 		sink:       agent.NewProviderServices(&agenttest.Sink{}),
 		turnActive: turnActive,
+		sessionID:  "s-1",
 	}
 	t.Cleanup(a.Process.Stop)
 	return a, stdin
@@ -164,9 +166,11 @@ func TestClaudeSendInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, false)
-			require.NoError(t, a.SendInput(tc.content, tc.attachments))
+			receipt, err := a.SendInput(tc.content, tc.attachments)
+			require.NoError(t, err)
+			require.NotEmpty(t, receipt.InputID)
 			assertOneClaudeFrame(t, stdin.String(),
-				`{"type":"user","message":{"role":"user","content":`+tc.wantContent+`}}`)
+				`{"type":"user","uuid":"`+receipt.InputID+`","message":{"role":"user","content":`+tc.wantContent+`}}`)
 		})
 	}
 }
@@ -177,7 +181,7 @@ func TestClaudeSteerInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, true)
-			err := a.SteerInput(tc.content, tc.attachments)
+			receipt, err := a.SteerInput(claudeTestSteerRequest(tc.content, tc.attachments))
 			if tc.steerRefused {
 				require.ErrorIs(t, err, agent.ErrSteeringUnsupported,
 					"the worker keeps the input, document and all, for the next turn")
@@ -185,8 +189,12 @@ func TestClaudeSteerInputPutsThePromptTextLast(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+			assert.Zero(t, receipt, "RowAtEcho steer must return an empty receipt so inputqueue holds it for echo")
+			var sent UserInputMessage
+			require.NoError(t, json.Unmarshal([]byte(stdin.String()), &sent))
+			require.NotEmpty(t, sent.UUID)
 			assertOneClaudeFrame(t, stdin.String(),
-				`{"type":"user","message":{"role":"user","content":`+tc.wantContent+`},"priority":"next"}`)
+				`{"type":"user","uuid":"`+sent.UUID+`","message":{"role":"user","content":`+tc.wantContent+`},"priority":"next"}`)
 		})
 	}
 }
@@ -212,7 +220,7 @@ func TestClaudeSteerInputRefusesWhatTheFoldDrops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, true)
-			require.ErrorIs(t, a.SteerInput(tc.content, tc.attachments), agent.ErrSteeringUnsupported)
+			require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: tc.content, Attachments: tc.attachments}), agent.ErrSteeringUnsupported)
 			assert.Empty(t, stdin.String(), "a refused steer writes nothing")
 		})
 	}
@@ -225,7 +233,7 @@ func TestClaudeSteerInputRefusesWhatTheFoldDrops(t *testing.T) {
 func TestClaudeSteerInputChecksTheFilesBeforeTheTurn(t *testing.T) {
 	t.Parallel()
 	a, stdin := newClaudeContentAgent(t, false)
-	assert.ErrorIs(t, a.SteerInput(claudeOrderPrompt, []*leapmuxv1.Attachment{claudeOrderPDF()}), agent.ErrSteeringUnsupported)
-	assert.ErrorIs(t, a.SteerInput(claudeOrderPrompt, []*leapmuxv1.Attachment{claudeOrderPNG()}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPDF()}}), agent.ErrSteeringUnsupported)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPNG()}}), agent.ErrNoActiveTurn)
 	assert.Empty(t, stdin.String())
 }

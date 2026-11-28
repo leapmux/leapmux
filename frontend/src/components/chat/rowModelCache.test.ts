@@ -1,10 +1,15 @@
 import type { ResolvedMessage } from './messageContextResolver'
+import type { ChatRowExtraction } from './rowExtraction'
 import type { RowExtractionContext } from './rowModelCache'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { create } from '@bufbuild/protobuf'
+import { createMemo, createRoot } from 'solid-js'
+import { afterEach, describe, expect, it } from 'vitest'
+import { ControlDecisionSchema, ControlPromptSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
+import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { makeControlResponseMessage, makeMessage, makeTranscriptMessage, rawContent } from '~/test-support/messageFactory'
 import { createMessageRenderCacheStore } from './messageRenderCache'
 import { resolveMessageForRendering } from './providers/registry'
 import { extractedRow } from './rowExtraction'
@@ -125,6 +130,88 @@ describe('rowModelCache', () => {
       : undefined).toBe(true)
     expect(second).not.toBe(first)
   })
+
+  // A tab draws its saved rows before the agent's settings reach the browser, so a
+  // label that a row reads can arrive after the cache keeps the row.
+  describe('a row that reads a settings label', () => {
+    afterEach(() => clearSettingsLabelCache())
+
+    /** A saved approval of a Droid plan that switched the permission mode to `auto-medium`. */
+    function droidPlanApproval() {
+      return prepareMessage(makeControlResponseMessage(AgentProvider.DROID, { approved: true }, undefined, {
+        prompt: create(ControlPromptSchema, {
+          kind: { case: 'plan', value: {} },
+        }),
+        decision: create(ControlDecisionSchema, {
+          kind: {
+            case: 'plan',
+            value: { approve: true, permissionMode: 'auto-medium' },
+          },
+        }),
+      }))
+    }
+
+    function droidModeLabels(): void {
+      updateSettingsLabelCache(AgentProvider.DROID, [
+        create(AvailableOptionGroupSchema, {
+          id: 'permissionMode',
+          options: [
+            { id: 'auto-medium', name: 'Auto (Medium)' },
+          ],
+        }),
+      ])
+    }
+
+    function answerText(extraction: ChatRowExtraction): string | undefined {
+      const row = extractedRow(extraction)
+      return row?.kind === 'control-response' && row.display.kind === 'label'
+        ? row.display.text
+        : undefined
+    }
+
+    function cachedApproval() {
+      const prepared = droidPlanApproval()
+      const context = {
+        renderCache: createMessageRenderCacheStore().forRow('approval-revision'),
+      }
+      return () => cachedChatRow(context, AgentProvider.DROID, prepared.resolved, prepared.category, undefined)
+    }
+
+    it('extracts the row again when the label that it read arrives', () => {
+      const read = cachedApproval()
+      expect(answerText(read())).toBe('Approve (auto-medium)')
+      droidModeLabels()
+      expect(answerText(read())).toBe('Approve (Auto (Medium))')
+    })
+
+    it('keeps the row object while the labels that it read are unchanged', () => {
+      const read = cachedApproval()
+      const first = read()
+      expect(read()).toBe(first)
+      updateSettingsLabelCache(AgentProvider.DROID, [
+        create(AvailableOptionGroupSchema, {
+          id: 'model',
+          options: [
+            { id: 'droid-model', name: 'Droid Model' },
+          ],
+        }),
+      ])
+      expect(read()).toBe(first)
+    })
+
+    // MessageBubble reads its row in a memo, which must run again by itself when the
+    // label arrives: nothing else about the row changes.
+    it('runs a computation that read the row again when the label arrives', () => {
+      createRoot((dispose) => {
+        const read = cachedApproval()
+        const text = createMemo(() => answerText(read()))
+        expect(text()).toBe('Approve (auto-medium)')
+        droidModeLabels()
+        expect(text()).toBe('Approve (Auto (Medium))')
+        dispose()
+      })
+    })
+  })
 })
 
 describe('cachedSpanHeaderCall', () => {
@@ -224,5 +311,105 @@ describe('cachedSpanHeaderCall', () => {
   it('reads no header from a message that draws no result row', () => {
     const { request } = bashSpan()
     expect(cachedSpanHeaderCall(request, request.resolved)).toBeUndefined()
+  })
+
+  describe('a header that reads a settings label', () => {
+    afterEach(() => clearSettingsLabelCache())
+
+    /** A Codex spawn on the `gpt-x` model: its running request, and its finished result. */
+    function codexSpawnSpan(): { request: ResolvedMessage, result: ResolvedMessage } {
+      const frame = (id: string, seq: bigint, status: string) => resolvedOf(makeTranscriptMessage({
+        id,
+        provider: AgentProvider.CODEX,
+        spanId: 'spawn-call',
+        spanType: 'collabAgentToolCall',
+        agentSessionId: 'codex-session',
+        content: {
+          item: {
+            id: 'spawn-call',
+            type: 'collabAgentToolCall',
+            tool: 'spawnAgent',
+            prompt: 'Inspect the code.',
+            model: 'gpt-x',
+            status,
+            receiverThreadIds: ['child-1'],
+          },
+        },
+      }, seq))
+      return {
+        request: frame('spawn-request', 1n, 'inProgress'),
+        result: frame('spawn-result', 2n, 'completed'),
+      }
+    }
+
+    function modelOf(result: ResolvedMessage, request: ResolvedMessage): string | undefined {
+      const call = cachedSpanHeaderCall(result, request.resolved)
+      return call?.kind === 'agent'
+        ? call.request.metadata?.find(entry => entry.label === 'Model')?.value
+        : undefined
+    }
+
+    it('extracts the header again when the label that it read arrives', () => {
+      const { request, result } = codexSpawnSpan()
+      expect(modelOf(result, request)).toBe('gpt-x')
+      updateSettingsLabelCache(AgentProvider.CODEX, [
+        create(AvailableOptionGroupSchema, {
+          id: 'model',
+          options: [
+            { id: 'gpt-x', name: 'GPT X' },
+          ],
+        }),
+      ])
+      expect(modelOf(result, request)).toBe('GPT X')
+    })
+
+    // The result row reuses the extraction that the header made first. Its own cache entry
+    // must still learn the label that the shared extraction read, or it keeps the old words.
+    it('follows the labels of an extraction that the result row shares with the header', () => {
+      const { request, result } = codexSpawnSpan()
+      expect(modelOf(result, request)).toBe('gpt-x')
+      const context = {
+        renderCache: createMessageRenderCacheStore().forRow('spawn-result-revision'),
+        spanId: result.message.spanId,
+        spanType: result.message.spanType,
+        sources: {
+          request: () => request.resolved,
+          role: () => 'result' as const,
+          visibleRows: () => ({ request: true }),
+        },
+      }
+      const category = prepareMessage(result.message).category
+      const bodyModel = (): string | undefined => {
+        const body = extractedRow(cachedChatRow(context, AgentProvider.CODEX, result.resolved, category, result.message.completion))
+        return body?.kind === 'tool' && body.call.kind === 'agent'
+          ? body.call.request.metadata?.find(entry => entry.label === 'Model')?.value
+          : undefined
+      }
+      expect(bodyModel()).toBe('gpt-x')
+
+      updateSettingsLabelCache(AgentProvider.CODEX, [
+        create(AvailableOptionGroupSchema, {
+          id: 'model',
+          options: [
+            { id: 'gpt-x', name: 'GPT X' },
+          ],
+        }),
+      ])
+      expect(bodyModel()).toBe('GPT X')
+    })
+
+    it('keeps the header call while the labels that it read are unchanged', () => {
+      const { request, result } = codexSpawnSpan()
+      const first = cachedSpanHeaderCall(result, request.resolved)
+      updateSettingsLabelCache(AgentProvider.CODEX, [
+        create(AvailableOptionGroupSchema, {
+          id: 'collaboration_mode',
+          options: [
+            { id: 'plan', name: 'Plan' },
+          ],
+        }),
+      ])
+      expect(cachedSpanHeaderCall(result, request.resolved)).toBe(first)
+    })
   })
 })

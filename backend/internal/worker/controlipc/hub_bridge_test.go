@@ -2,8 +2,11 @@ package controlipc_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,10 +96,15 @@ func recordRequestProto(next http.Handler) http.Handler {
 type userEventsHandler struct {
 	gotAuth  chan string
 	gotProto chan string
+	gotQuery chan url.Values
 }
 
 func newUserEventsHandler() *userEventsHandler {
-	return &userEventsHandler{gotAuth: make(chan string, 1), gotProto: make(chan string, 1)}
+	return &userEventsHandler{
+		gotAuth:  make(chan string, 1),
+		gotProto: make(chan string, 1),
+		gotQuery: make(chan url.Values, 1),
+	}
 }
 
 func (h *userEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +114,10 @@ func (h *userEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case h.gotProto <- r.Proto:
+	default:
+	}
+	select {
+	case h.gotQuery <- r.URL.Query():
 	default:
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -257,4 +269,234 @@ func TestHubBridgesDoNotShareOneClient(t *testing.T) {
 	assert.Zero(t, streamer.HTTPClient.Timeout, "a subscription must not be bounded by a client timeout")
 	assert.Equal(t, endpoint.BaseURL(), bridge.ConnectURL)
 	assert.Equal(t, endpoint.BaseURL(), streamer.ConnectURL)
+}
+
+func TestHubEventStreamer_ForwardsTopicsAndLayoutCursor(t *testing.T) {
+	hubURL, _, events := startHub(t, hubtransporttest.NewHTTP1Server)
+	streamer := controlipc.NewHubEventStreamer(mustEndpoint(t, hubURL), stubDelegation{})
+
+	wantCursor := []byte{0x01, 0x02, 0xfe, 0xff}
+	payload, err := proto.Marshal(&leapmuxv1.WatchUserRequest{
+		WorkspaceIds: []string{"ws-a", "ws-b"},
+		Topics: []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+		},
+		LayoutWorkspaceId: "ws-layout",
+		LayoutAfterCursor: wantCursor,
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func([]byte) error {
+		return nil
+	})
+	require.NoError(t, err)
+
+	q := <-events.gotQuery
+	topics, err := channelwire.ParseUserEventsTopicsFromQuery(q)
+	require.NoError(t, err)
+	assert.Equal(t, []leapmuxv1.UserEventTopic{
+		leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+		leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+	}, topics)
+	assert.Equal(t, "ws-layout", channelwire.ParseLayoutWorkspaceIDFromQuery(q))
+	gotCursor, err := channelwire.ParseLayoutCursorFromQuery(q)
+	require.NoError(t, err)
+	assert.Equal(t, wantCursor, gotCursor)
+	assert.Equal(t, "ws-a,ws-b", q.Get(contracts.WSParamWorkspaceIDs))
+}
+
+func TestHubEventStreamer_PropagatesConnectCodesForCloseAndHandshakeErrors(t *testing.T) {
+	t.Run("WebSocket close errors map to Connect codes", func(t *testing.T) {
+		cases := []struct {
+			name        string
+			closeStatus websocket.StatusCode
+			closeReason string
+			wantCode    connect.Code
+			wantMsgPart string
+		}{
+			{
+				name:        "too_many_connections",
+				closeStatus: websocket.StatusPolicyViolation,
+				closeReason: contracts.CloseReasonTooManyConnections,
+				wantCode:    connect.CodeUnavailable,
+				wantMsgPart: "too many open connections",
+			},
+			{
+				name:        "not_found policy close",
+				closeStatus: websocket.StatusPolicyViolation,
+				closeReason: channelwire.FormatUserEventsPolicyCloseReason("not_found", "workspace ws-missing not found"),
+				wantCode:    connect.CodeNotFound,
+				wantMsgPart: "workspace ws-missing not found",
+			},
+			{
+				name:        "failed_precondition policy close",
+				closeStatus: websocket.StatusPolicyViolation,
+				closeReason: channelwire.FormatUserEventsPolicyCloseReason("failed_precondition", "layout cursor out of range"),
+				wantCode:    connect.CodeFailedPrecondition,
+				wantMsgPart: "layout cursor out of range",
+			},
+			{
+				name:        "invalid_argument policy close",
+				closeStatus: websocket.StatusPolicyViolation,
+				closeReason: channelwire.FormatUserEventsPolicyCloseReason("invalid_argument", "bad cursor"),
+				wantCode:    connect.CodeInvalidArgument,
+				wantMsgPart: "bad cursor",
+			},
+			{
+				name:        "permission_denied policy close",
+				closeStatus: websocket.StatusPolicyViolation,
+				closeReason: channelwire.FormatUserEventsPolicyCloseReason("permission_denied", "forbidden scope"),
+				wantCode:    connect.CodePermissionDenied,
+				wantMsgPart: "forbidden scope",
+			},
+			{
+				name:        "forbidden close token",
+				closeStatus: websocket.StatusPolicyViolation,
+				closeReason: contracts.CloseReasonForbidden,
+				wantCode:    connect.CodePermissionDenied,
+				wantMsgPart: "permission denied",
+			},
+			{
+				name:        "StatusTryAgainLater",
+				closeStatus: websocket.StatusTryAgainLater,
+				closeReason: "temporarily unavailable, retry",
+				wantCode:    connect.CodeUnavailable,
+				wantMsgPart: "temporarily unavailable",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+						Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+					})
+					if err != nil {
+						return
+					}
+					_ = conn.Close(tc.closeStatus, tc.closeReason)
+				}))
+				streamer := controlipc.NewHubEventStreamer(mustEndpoint(t, srv.URL), stubDelegation{})
+				payload, err := proto.Marshal(&leapmuxv1.WatchUserRequest{})
+				require.NoError(t, err)
+
+				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+				defer cancel()
+				err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func([]byte) error {
+					return nil
+				})
+				require.Error(t, err)
+				assert.Equal(t, tc.wantCode, connect.CodeOf(err))
+				assert.Contains(t, err.Error(), tc.wantMsgPart)
+			})
+		}
+	})
+
+	t.Run("HTTP handshake refusals map to Connect codes", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			status   int
+			body     string
+			wantCode connect.Code
+		}{
+			{name: "HTTP 400", status: http.StatusBadRequest, body: "unknown topic", wantCode: connect.CodeInvalidArgument},
+			{name: "HTTP 401", status: http.StatusUnauthorized, body: "invalid bearer", wantCode: connect.CodeUnauthenticated},
+			{name: "HTTP 403", status: http.StatusForbidden, body: "missing scope", wantCode: connect.CodePermissionDenied},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					http.Error(w, tc.body, tc.status)
+				}))
+				streamer := controlipc.NewHubEventStreamer(mustEndpoint(t, srv.URL), stubDelegation{})
+				payload, err := proto.Marshal(&leapmuxv1.WatchUserRequest{})
+				require.NoError(t, err)
+
+				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+				defer cancel()
+				err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func([]byte) error {
+					return nil
+				})
+				require.Error(t, err)
+				assert.Equal(t, tc.wantCode, connect.CodeOf(err))
+				assert.Contains(t, err.Error(), tc.body)
+			})
+		}
+	})
+
+	t.Run("invalid topic fails with CodeInvalidArgument without hitting upstream Hub", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			http.Error(w, "should not be dialed", http.StatusBadRequest)
+		}))
+		streamer := controlipc.NewHubEventStreamer(mustEndpoint(t, srv.URL), stubDelegation{})
+		payload, err := proto.Marshal(&leapmuxv1.WatchUserRequest{
+			Topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED},
+		})
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func([]byte) error {
+			return nil
+		})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		assert.Zero(t, hits.Load(), "invalid topic must be rejected before dialing the upstream Hub")
+	})
+}
+
+func TestHubEventStreamer_PropagatesUnclassifiedCloseAndCallbackErrors(t *testing.T) {
+	t.Run("StatusInternalError close returns the close error without mapping to nil or Connect", func(t *testing.T) {
+		srv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+				Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+			})
+			if err != nil {
+				return
+			}
+			_ = conn.Close(websocket.StatusInternalError, "hub internal failure")
+		}))
+		streamer := controlipc.NewHubEventStreamer(mustEndpoint(t, srv.URL), stubDelegation{})
+		payload, err := proto.Marshal(&leapmuxv1.WatchUserRequest{})
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func([]byte) error {
+			return nil
+		})
+		require.Error(t, err)
+
+		var closeErr websocket.CloseError
+		require.ErrorAs(t, err, &closeErr)
+		assert.Equal(t, websocket.StatusInternalError, closeErr.Code)
+		assert.Equal(t, "hub internal failure", closeErr.Reason)
+
+		var connectErr *connect.Error
+		assert.False(t, errors.As(err, &connectErr), "unclassified WebSocket close must not be wrapped as a Connect error")
+	})
+
+	t.Run("onPayload sentinel error returns unchanged without mapping to nil or Connect", func(t *testing.T) {
+		hubURL, _, _ := startHub(t, hubtransporttest.NewHTTP1Server)
+		streamer := controlipc.NewHubEventStreamer(mustEndpoint(t, hubURL), stubDelegation{})
+		payload, err := proto.Marshal(&leapmuxv1.WatchUserRequest{})
+		require.NoError(t, err)
+
+		sentinelErr := errors.New("consumer stopped reading")
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func([]byte) error {
+			return sentinelErr
+		})
+		require.ErrorIs(t, err, sentinelErr)
+
+		var connectErr *connect.Error
+		assert.False(t, errors.As(err, &connectErr), "onPayload error must not be mapped to a Connect error")
+	})
 }

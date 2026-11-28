@@ -152,8 +152,7 @@ func TestForegroundShutdownWithBlockedConsolePreservesAttemptLog(t *testing.T) {
 	completed := false
 	os.Stdout = console
 	go func() {
-		done <- runModeRunWithInvocation("worker", runInvocation{Context: ctx, OnReady: func() { close(ready) }})(
-			cmdCtx{}, []string{"--config", configuration, "--data-dir", cfg.DataDir})
+		done <- runForeground("worker", runInvocation{Context: ctx, OnReady: func() { close(ready) }}, []string{"--config", configuration, "--data-dir", cfg.DataDir}...)
 	}()
 	t.Cleanup(func() {
 		cancel()

@@ -15,7 +15,6 @@ import (
 const (
 	cascadeStatusIdle        = "CASCADE_RUN_STATUS_IDLE"
 	cascadeStatusRunning     = "CASCADE_RUN_STATUS_RUNNING"
-	cascadeStatusCanceling   = "CASCADE_RUN_STATUS_CANCELING"
 	cascadeStatusBusy        = "CASCADE_RUN_STATUS_BUSY"
 	antigravityQueueInputTag = "leapmux:queue-input"
 	pastEveryStep            = 1 << 30
@@ -187,11 +186,14 @@ type antigravityStep struct {
 		ModelUsage  antigravityModelUsage `json:"modelUsage"`
 		ExecutionID string                `json:"executionId"`
 	} `json:"metadata"`
-	RequestedInteraction json.RawMessage            `json:"requestedInteraction"`
-	PlannerResponse      antigravityPlannerResponse `json:"plannerResponse"`
-	UserInput            struct {
-		Tags  []string               `json:"tags"`
-		Items []antigravityInputItem `json:"items"`
+	RequestedInteraction json.RawMessage `json:"requestedInteraction"`
+	// The count distinguishes repeated requests of the same step.
+	CompletedInteractions []json.RawMessage          `json:"completedInteractions"`
+	PlannerResponse       antigravityPlannerResponse `json:"plannerResponse"`
+	UserInput             struct {
+		Tags            []string               `json:"tags"`
+		Items           []antigravityInputItem `json:"items"`
+		ClientMessageID string                 `json:"clientMessageId"`
 	} `json:"userInput"`
 	SystemMessage struct {
 		AgentMessage *struct {
@@ -222,35 +224,13 @@ type antigravityStep struct {
 	} `json:"errorMessage"`
 }
 
-type requestedInteraction struct {
-	Permission  *permissionInteraction  `json:"permission"`
-	AskQuestion *askQuestionInteraction `json:"askQuestion"`
-}
-
+// permissionInteraction is the permission that a step requests, as the
+// automatic approval policy reads it: the resource that the step acts on.
 type permissionInteraction struct {
 	Resource struct {
 		Action string `json:"action"`
 		Target string `json:"target"`
 	} `json:"resource"`
-	ActionDescription       string `json:"actionDescription"`
-	SuggestedPersistPattern string `json:"suggestedPersistPattern"`
-}
-
-type askQuestionInteraction struct {
-	Questions []question `json:"questions"`
-}
-
-type question struct {
-	Question      string           `json:"question"`
-	Options       []questionOption `json:"options"`
-	IsMultiSelect bool             `json:"isMultiSelect"`
-	ID            string           `json:"id,omitempty"`
-	Header        string           `json:"header,omitempty"`
-}
-
-type questionOption struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
 }
 
 func isOpenStepStatus(status string) bool {
@@ -274,26 +254,28 @@ func decodeStep(raw json.RawMessage) (antigravityStep, error) {
 	return step, nil
 }
 
-func interactionKind(raw json.RawMessage) (string, error) {
+func interactionKind(raw json.RawMessage) (antigravityControlKind, error) {
 	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
-		return "", fmt.Errorf("waiting step has no requested interaction")
+		return 0, fmt.Errorf("waiting step has no requested interaction")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return "", err
+		return 0, err
 	}
 	var kinds []string
 	for key := range fields {
 		kinds = append(kinds, key)
 	}
 	if len(kinds) != 1 {
-		return "", fmt.Errorf("requested interaction holds %d kinds", len(kinds))
+		return 0, fmt.Errorf("requested interaction holds %d kinds", len(kinds))
 	}
 	switch kinds[0] {
-	case "permission", "askQuestion":
-		return kinds[0], nil
+	case "permission":
+		return antigravityControlPermission, nil
+	case "askQuestion":
+		return antigravityControlQuestion, nil
 	default:
-		return kinds[0], fmt.Errorf("unknown Antigravity interaction %q", kinds[0])
+		return 0, fmt.Errorf("unknown Antigravity interaction %q", kinds[0])
 	}
 }
 

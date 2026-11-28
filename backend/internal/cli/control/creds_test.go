@@ -1,8 +1,11 @@
 package control
 
 import (
+	"context"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -36,7 +39,7 @@ func TestDeleteCredentials_SweepsWhatAnInterruptedWriteLeft(t *testing.T) {
 
 	require.NoError(t, DeleteCredentials(hubURL))
 
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(filepath.Dir(path))
 	require.NoError(t, err)
 	assert.Empty(t, entries, "no copy of the credential may survive a logout")
 
@@ -61,12 +64,32 @@ func TestDeleteCredentials_LeavesAnotherHubsFilesAlone(t *testing.T) {
 	require.NoError(t, DeleteCredentials("https://one.example"))
 
 	var names []string
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(filepath.Dir(other))
 	require.NoError(t, err)
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
 	assert.ElementsMatch(t, []string{filepath.Base(other), filepath.Base(other) + ".tmp99"}, names)
+}
+
+func TestCredentialsPath_LivesUnderCredentialsSubdirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+	hubURL := "https://sub.example"
+	require.NoError(t, SaveCredentials(hubURL, CredentialFile{
+		HubURL: hubURL, AccessToken: "lmx_a_sub", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	// Unrelated JSON files in ConfigDir root must never appear in ListCredentialFiles.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.json"), []byte(`{"hub_url":"https://rogue.example"}`), 0o600))
+
+	path, err := CredentialsPath(hubURL)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "credentials"), filepath.Dir(path))
+
+	files, err := ListCredentialFiles()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, hubURL, files[0].HubURL)
 }
 
 // TestListCredentialFiles_IgnoresAnInterruptedWrite pins why the sweep has
@@ -121,4 +144,261 @@ func TestSaveCredentials_WritesUTC(t *testing.T) {
 	assert.True(t, loaded.ExpiresAt.Equal(creds.ExpiresAt),
 		"normalizing the zone keeps the instant")
 	assert.True(t, loaded.RefreshExpiresAt.Equal(creds.RefreshExpiresAt))
+}
+
+func TestListCredentialFiles_MissingDirCorruptJSONSubdirAndEmptyHubURL(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+
+	// Missing credentials/ directory returns nil slice and no error.
+	files, err := ListCredentialFiles()
+	require.NoError(t, err)
+	assert.Nil(t, files)
+
+	// LoadCredentials on missing file returns ErrNotLoggedIn.
+	_, err = LoadCredentials("https://missing.example")
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	// Save one valid credential and place invalid/non-credential entries beside it.
+	hubURL := "https://valid.example"
+	require.NoError(t, SaveCredentials(hubURL, CredentialFile{
+		HubURL:      hubURL,
+		AccessToken: "lmx_valid",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
+	credsDir := filepath.Join(dir, credentialsDirName)
+	require.NoError(t, os.Mkdir(filepath.Join(credsDir, "nested.json"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(credsDir, "notes.txt"), []byte("ignore"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(credsDir, "corrupt.json"), []byte("{not json"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(credsDir, "empty-hub.json"), []byte(`{"access_token":"tok"}`), 0o600))
+
+	files, err = ListCredentialFiles()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, hubURL, files[0].HubURL)
+	assert.Equal(t, "lmx_valid", files[0].AccessToken)
+
+	// LoadCredentials on a corrupt credential file reports the path under credentials/.
+	path, err := CredentialsPath(hubURL)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("{broken"), 0o600))
+	_, err = LoadCredentials(hubURL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse credentials")
+	assert.Contains(t, err.Error(), path)
+}
+
+func TestIsLocalIPCLive_InvalidAddrAndCanceledContext(t *testing.T) {
+	assert.False(t, isLocalIPCLive(t.Context(), "https://not-a-local-socket.example"))
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	dir, err := os.MkdirTemp("", "lmxlive-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	sockPath := filepath.Join(dir, "hub.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	assert.True(t, isLocalIPCLive(t.Context(), "unix:"+sockPath))
+
+	canceledCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.False(t, isLocalIPCLive(canceledCtx, "unix:"+sockPath),
+		"an already-canceled context must fail the liveness probe")
+}
+
+func TestResolveDefaultHub_ReturnsSourceProvenance(t *testing.T) {
+	t.Run("env takes precedence", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "https://env.example")
+		hub, source, creds, err := resolveDefaultHub(true)
+		require.NoError(t, err)
+		assert.Equal(t, "https://env.example", hub)
+		assert.Equal(t, HubSourceEnv, source)
+		assert.Nil(t, creds)
+	})
+
+	t.Run("context hub reports HubSourceContext", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "")
+		require.NoError(t, SaveContext(ContextConfig{Hub: "https://ctx.example"}))
+		hub, source, creds, err := resolveDefaultHub(true)
+		require.NoError(t, err)
+		assert.Equal(t, "https://ctx.example", hub)
+		assert.Equal(t, HubSourceContext, source)
+		assert.Nil(t, creds)
+	})
+
+	t.Run("sole credential file reports HubSourceSingleCredential", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "")
+		require.NoError(t, SaveCredentials("https://sole.example", CredentialFile{
+			HubURL:      "https://sole.example",
+			AccessToken: "lmx_sole",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}))
+		hub, source, creds, err := resolveDefaultHub(true)
+		require.NoError(t, err)
+		assert.Equal(t, "https://sole.example", hub)
+		assert.Equal(t, HubSourceSingleCredential, source)
+		require.NotNil(t, creds)
+		assert.Equal(t, "lmx_sole", creds.AccessToken)
+	})
+
+	t.Run("discovered local socket reports HubSourceDiscovered", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix socket discovery applies only to non-Windows hosts")
+		}
+		root, err := os.MkdirTemp("", "lmxsrc-*")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+		cfgDir := filepath.Join(root, "control")
+		soloDir := filepath.Join(root, "solo", "hub")
+		require.NoError(t, os.MkdirAll(cfgDir, 0o700))
+		require.NoError(t, os.MkdirAll(soloDir, 0o700))
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		t.Setenv("LEAPMUX_HUB", "")
+
+		sockPath := filepath.Join(soloDir, "hub.sock")
+		ln, err := net.Listen("unix", sockPath)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			for {
+				c, acceptErr := ln.Accept()
+				if acceptErr != nil {
+					return
+				}
+				_ = c.Close()
+			}
+		}()
+
+		hub, source, err := DefaultHubWithSource()
+		require.NoError(t, err)
+		assert.Equal(t, "unix:"+sockPath, hub)
+		assert.Equal(t, HubSourceDiscovered, source)
+
+		// ConfiguredDefaultHub disables local discovery.
+		_, _, _, cfgErr := resolveDefaultHub(false)
+		require.Error(t, cfgErr)
+		var noHub *NoHubError
+		require.ErrorAs(t, cfgErr, &noHub)
+	})
+
+	t.Run("no hub returns HubSourceUnspecified", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "")
+		_, source, _, err := resolveDefaultHub(false)
+		require.Error(t, err)
+		assert.Equal(t, HubSourceUnspecified, source)
+	})
+}
+
+func TestCredentialFile_ExpiryState(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("nil receiver returns zero state", func(t *testing.T) {
+		var c *CredentialFile
+		assert.Equal(t, CredentialExpiryState{}, c.ExpiryState(now))
+	})
+
+	t.Run("zero times are not expired and respect refresh token presence", func(t *testing.T) {
+		noRefresh := (&CredentialFile{}).ExpiryState(now)
+		assert.False(t, noRefresh.HasAccessExpiry)
+		assert.False(t, noRefresh.AccessExpired)
+		assert.Zero(t, noRefresh.AccessRemaining)
+		assert.False(t, noRefresh.HasRefreshExpiry)
+		assert.False(t, noRefresh.RefreshExpired)
+		assert.Zero(t, noRefresh.RefreshRemaining)
+		assert.False(t, noRefresh.CanRefresh)
+
+		whitespaceRefresh := (&CredentialFile{RefreshToken: "  \t "}).ExpiryState(now)
+		assert.False(t, whitespaceRefresh.CanRefresh)
+
+		withRefresh := (&CredentialFile{RefreshToken: "rt-1"}).ExpiryState(now)
+		assert.False(t, withRefresh.AccessExpired)
+		assert.False(t, withRefresh.RefreshExpired)
+		assert.True(t, withRefresh.CanRefresh)
+	})
+
+	t.Run("valid access and refresh tokens report remaining durations", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now.Add(45 * time.Minute),
+			RefreshExpiresAt: now.Add(48 * time.Hour),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.HasAccessExpiry)
+		assert.False(t, st.AccessExpired)
+		assert.Equal(t, 45*time.Minute, st.AccessRemaining)
+		assert.True(t, st.HasRefreshExpiry)
+		assert.False(t, st.RefreshExpired)
+		assert.Equal(t, 48*time.Hour, st.RefreshRemaining)
+		assert.True(t, st.CanRefresh)
+	})
+
+	t.Run("exact expiry boundary counts as expired", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now,
+			RefreshExpiresAt: now,
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.Zero(t, st.AccessRemaining)
+		assert.True(t, st.RefreshExpired)
+		assert.Zero(t, st.RefreshRemaining)
+		assert.False(t, st.CanRefresh)
+	})
+
+	t.Run("expired access token with valid refresh token can refresh", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now.Add(-10 * time.Minute),
+			RefreshExpiresAt: now.Add(12 * time.Hour),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.Equal(t, -10*time.Minute, st.AccessRemaining)
+		assert.False(t, st.RefreshExpired)
+		assert.Equal(t, 12*time.Hour, st.RefreshRemaining)
+		assert.True(t, st.CanRefresh)
+	})
+
+	t.Run("expired access token without refresh token cannot refresh", func(t *testing.T) {
+		c := &CredentialFile{
+			ExpiresAt: now.Add(-10 * time.Minute),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.False(t, st.RefreshExpired)
+		assert.False(t, st.CanRefresh)
+	})
+
+	t.Run("expired refresh token cannot refresh even when RefreshToken is non-empty", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now.Add(-2 * time.Hour),
+			RefreshExpiresAt: now.Add(-time.Hour),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.True(t, st.RefreshExpired)
+		assert.Equal(t, -time.Hour, st.RefreshRemaining)
+		assert.False(t, st.CanRefresh)
+	})
 }

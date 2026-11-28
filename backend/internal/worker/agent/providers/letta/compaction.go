@@ -59,14 +59,13 @@ func lettaCompactionKind(delta *lettaCompactionDelta) (help, valid bool) {
 	return lettaCompactHelp(args), compact
 }
 
-func (a *Agent) prepareManualCompaction(scope runtimeScope, args string) lettaCommand {
+// prepareManualCompactionLocked records the submitted compaction command under Agent.Mu.
+func (a *Agent) prepareManualCompactionLocked(scope runtimeScope, args string) lettaCommand {
 	command := newLettaCommand(lettaExecuteCommand, a.nextRequestID())
 	command.Runtime = &scope
 	command.CommandID = contracts.LettaCompactionCommandID
 	command.Args = args
-	a.Mu.Lock()
 	a.manualCompaction = &lettaManualCompaction{command: command}
-	a.Mu.Unlock()
 	return command
 }
 

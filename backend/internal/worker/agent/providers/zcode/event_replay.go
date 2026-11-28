@@ -390,6 +390,7 @@ func (a *Agent) markZCodeCanonicalRecoveryLocked() {
 	for _, owner := range a.turns {
 		if !owner.finalized {
 			owner.canonicalRequired = true
+			owner.steerReplyUnproved = true
 		}
 	}
 	a.Mu.Unlock()

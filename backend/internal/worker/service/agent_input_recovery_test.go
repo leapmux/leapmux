@@ -97,21 +97,21 @@ func (a *recoveryAgent) PublishTurnActive() agent.TurnState {
 	return state
 }
 
-func (a *recoveryAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *recoveryAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	a.sentTexts = append(a.sentTexts, content)
 	a.sentAttachments = append(a.sentAttachments, attachments)
 	a.mu.Unlock()
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
-func (a *recoveryAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *recoveryAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	a.sentTexts = append(a.sentTexts, content)
 	a.sentAttachments = append(a.sentAttachments, attachments)
 	a.sentSessions = append(a.sentSessions, sessionID)
 	a.mu.Unlock()
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
 func (a *recoveryAgent) Stop() {
@@ -164,7 +164,7 @@ type recoveryStarts struct {
 func (s *recoveryStarts) start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	s.mu.Lock()
 	launch := len(s.agents) + 1
-	resume := opts.ResumeSessionID
+	resume := opts.Session.ResumeID()
 	script := s.prepareFor(launch)
 	s.mu.Unlock()
 	fake := &recoveryAgent{agentID: opts.AgentID, stopped: make(chan struct{}), prepareScript: script, turnSink: sink}
@@ -220,7 +220,15 @@ func staleFirstInputPreparation(launch int) func(call int) error {
 // makes, including the replacements that input recovery launches.
 func newInputRecoveryService(t *testing.T, prepareFor func(launch int) func(call int) error) (*Service, *recoveryStarts) {
 	t.Helper()
-	svc, _, _ := setupTestService(t)
+	svc, _, starts := newInputRecoveryFixture(t, prepareFor)
+	return svc, starts
+}
+
+// newInputRecoveryFixture is newInputRecoveryService that also returns the
+// dispatcher, for a test that drives the service through its RPCs.
+func newInputRecoveryFixture(t *testing.T, prepareFor func(launch int) func(call int) error) (*Service, *testServiceDispatcher, *recoveryStarts) {
+	t.Helper()
+	svc, dispatcher, _ := setupTestService(t)
 	// Recovery tests exercise the production exit cleanup as well as launch.
 	svc.Agents.SetOnExit(svc.HandleAgentProcessExit)
 	t.Cleanup(func() {
@@ -239,7 +247,7 @@ func newInputRecoveryService(t *testing.T, prepareFor func(launch int) func(call
 	}
 	svc.startAgentFn = wrap
 	svc.startBackgroundAgentFn = wrap
-	return svc, starts
+	return svc, dispatcher, starts
 }
 
 // seedRecoveryAgent creates an open root agent row with a stored native

@@ -107,11 +107,7 @@ func TestResolveControlResponseAnswersAPermissionRequest(t *testing.T) {
 			},
 		},
 	})
-	resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "droid-perm-1",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswer(droidProvider{}, request, "droid-perm-1", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
@@ -124,8 +120,8 @@ func TestResolveControlResponseAnswersAPermissionRequest(t *testing.T) {
 
 func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 	t.Parallel()
-	// The request states the question with Droid's own number, and the browser
-	// answers it by that number.
+	// The request states the question with Droid's own number, and the answer
+	// identifies it by that number.
 	request, _ := json.Marshal(map[string]any{
 		"type":       "ask_user_request",
 		"requestId":  "droid-ask-1",
@@ -141,11 +137,7 @@ func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 			},
 		},
 	})
-	resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "droid-ask-1",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswer(droidProvider{}, request, "droid-ask-1", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
@@ -254,7 +246,7 @@ func TestBusyRefusalRepublishesTheTurn(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	a.startTurn()
-	err := a.SendInput("hello", nil)
+	err := agenttest.SendInput(a, "hello", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }
 

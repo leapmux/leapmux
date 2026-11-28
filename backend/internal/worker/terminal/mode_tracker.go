@@ -28,6 +28,11 @@ import (
 //     last-write-wins).
 //   - Window title — OSC 0/2 last-write-wins string, capped at oscBufCap.
 //
+// A full reset (RIS, `ESC c`) and a soft reset (DECSTR, `CSI ! p`) clear the
+// modes that xterm.js clears for each (fullReset, softReset), so a program
+// that resets the terminal leaves no stale mode behind in the snapshot
+// prefix or in the encoding of a key.
+//
 // All methods must be called under the enclosing ScreenBuffer's mutex.
 type modeTracker struct {
 	altScreen      bool
@@ -220,6 +225,9 @@ func (t *modeTracker) handleEscIntro(b byte) {
 		// Back-to-back ESC: stay in stateEsc so the next byte is read
 		// as a fresh intro.
 		t.parseState = stateEsc
+	case 'c':
+		t.fullReset()
+		t.parseState = stateGround
 	default:
 		// Charset designators (`(`, `)`), save/restore cursor (`7`/`8`),
 		// single-byte escapes — all out of scope.
@@ -228,13 +236,18 @@ func (t *modeTracker) handleEscIntro(b byte) {
 }
 
 // dispatchCSI handles a complete CSI sequence whose final byte is `final`.
-// The parameter buffer is `t.paramBuf[:t.paramLen]`. We only act on `h`
-// (set) and `l` (reset) of DEC private modes (params start with `?`).
+// The parameter buffer is `t.paramBuf[:t.paramLen]`. It acts on a soft reset
+// (`CSI ! p`), and on `h` (set) and `l` (reset) of DEC private modes, whose
+// parameters start with `?`.
 func (t *modeTracker) dispatchCSI(final byte) {
+	params := t.paramBuf[:t.paramLen]
+	if final == 'p' && string(params) == "!" {
+		t.softReset()
+		return
+	}
 	if final != 'h' && final != 'l' {
 		return
 	}
-	params := t.paramBuf[:t.paramLen]
 	if len(params) == 0 || params[0] != '?' {
 		return
 	}
@@ -292,6 +305,26 @@ func (t *modeTracker) applyMode(code int, set bool) {
 	case 1015:
 		setOrClearSlot(&t.mouseEncoding, mouseEncURXVT, mouseEncOff, set)
 	}
+}
+
+// fullReset applies a full reset (RIS), as xterm.js's reset does: every
+// tracked mode returns to its default, the screen and the mouse modes
+// included. The title stays, because a reset does not change it in xterm.js.
+func (t *modeTracker) fullReset() {
+	t.softReset()
+	t.altScreen = false
+	t.mouseTrack = mouseTrackOff
+	t.mouseEncoding = mouseEncOff
+}
+
+// softReset applies a soft reset (DECSTR), as xterm.js's softReset does: the
+// cursor shows, autowrap is on, and the cursor keys and paste return to
+// normal. The screen, the mouse modes and the title stay.
+func (t *modeTracker) softReset() {
+	t.cursorHidden = false
+	t.autoWrapOff = false
+	t.appCursorKeys = false
+	t.bracketedPaste = false
 }
 
 // setOrClearSlot updates a single-slot mode (where multiple DEC codes

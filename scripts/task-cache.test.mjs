@@ -129,6 +129,11 @@ function fixture(platform = hostPlatform) {
   delete config.dotenv
   const outputs = {
     'install-frontend-deps': ['frontend/node_modules/package/index.js'],
+    'install-site-deps': [
+      'site/node_modules/.bin/pagefind',
+      'site/node_modules/.bin/wrangler',
+      'site/node_modules/asciinema-player/dist/bundle/asciinema-player.min.js',
+    ],
     'generate-proto': ['backend/generated/proto/agent.pb.go', 'frontend/src/generated/proto/agent_pb.ts'],
     'generate-contracts': ['backend/generated/contracts/wire.go', 'frontend/src/generated/contracts/wire.ts', 'desktop/rust/src/generated/contracts.rs'],
     'fetch-spinners': ['spinner-cache/spinners/default.json'],
@@ -145,6 +150,7 @@ function fixture(platform = hostPlatform) {
     'generate-sqlc-hub': ['backend/internal/hub/store/sqlite/generated/db/querier.go', 'backend/internal/hub/store/postgres/generated/db/querier.go', 'backend/internal/hub/store/mysql/generated/db/querier.go'],
     'generate-sqlc-worker': ['backend/internal/worker/generated/db/querier.go'],
     'embed-frontend': ['backend/internal/hub/generated/frontend/embed.go', 'backend/internal/hub/generated/frontend/public/index.html', 'backend/internal/hub/generated/frontend/public/app.js'],
+    'embed-skills': ['backend/internal/skills/generated/catalog/embed.go', 'backend/internal/skills/generated/catalog/files/leapmux/SKILL.md'],
     'build-backend': [
       platform.os === 'windows'
         ? 'leapmux.exe'
@@ -223,6 +229,8 @@ for (const path of outputs[task] ?? []) {
     'frontend/src/app.ts',
     'frontend/package.json',
     'frontend/bun.lock',
+    'site/package.json',
+    'site/bun.lock',
     'frontend/scripts/generate-icons.mjs',
     'icons/leapmux-icon.svg',
     'icons/leapmux-icon-square.svg',
@@ -231,6 +239,8 @@ for (const path of outputs[task] ?? []) {
     'backend/go.sum',
     'go.work',
     'backend/internal/hub/frontend.embed',
+    'backend/internal/skills/catalog.embed',
+    'skills/leapmux/SKILL.md',
     'backend/internal/hub/store/sqlite/db/migrations/001.sql',
     'backend/internal/worker/db/migrations/001.sql',
   ])
@@ -630,7 +640,12 @@ describe('task build cache', () => {
     const before = process.env.HUGO_BASEURL
     try {
       process.env.HUGO_BASEURL = 'https://first.example/'
-      expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+      expect(run(dir, 'site')).toEqual([
+        'install-frontend-deps',
+        'validate-json',
+        'install-site-deps',
+        'site',
+      ])
       expect(run(dir, 'site')).toEqual([])
       process.env.HUGO_BASEURL = 'https://second.example/'
       expect(run(dir, 'site')).toEqual(['site'])
@@ -646,7 +661,12 @@ describe('task build cache', () => {
 
   it('rebuilds the site and validates a changed provider matrix', () => {
     const dir = fixture()
-    expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([
+      'install-frontend-deps',
+      'validate-json',
+      'install-site-deps',
+      'site',
+    ])
     expect(run(dir, 'site')).toEqual([])
     write(dir, 'frontend/tests/e2e/feature-matrix/checklist.json', '{"changed":true}')
     expect(run(dir, 'site')).toEqual(['validate-json', 'site'])
@@ -655,7 +675,12 @@ describe('task build cache', () => {
 
   it('rebuilds the site when the provider roster contract changes', () => {
     const dir = fixture()
-    expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([
+      'install-frontend-deps',
+      'validate-json',
+      'install-site-deps',
+      'site',
+    ])
     expect(run(dir, 'site')).toEqual([])
     write(dir, 'contracts/providers.json', '{"changed":true}')
     expect(run(dir, 'site')).toEqual(['validate-json', 'site'])
@@ -712,6 +737,52 @@ describe('task build cache', () => {
     expect(run(dir, 'build-backend')).toEqual(hostPlatform.os === 'windows'
       ? []
       : ['build-backend'])
+  })
+
+  it.each(['build-backend', 'build-backend-docker', 'lint-backend'])('invalidates %s when a CLI embed changes', (target) => {
+    const dir = fixture()
+    const guide = 'backend/internal/cli/control/cmd/guide/agent-guide.md'
+    const completion = 'backend/cmd/leapmux/completion_elvish.elv'
+    const nushellCompletion = 'backend/cmd/leapmux/completion_nushell.nu'
+    write(dir, guide, 'original guide')
+    write(dir, completion, '# original completion')
+    write(dir, nushellCompletion, '# original Nushell completion')
+    expect(run(dir, target)).toContain(target)
+    expect(run(dir, target)).toEqual([])
+    write(dir, guide, 'revised guide')
+    expect(run(dir, target)).toEqual([target])
+    write(dir, completion, '# revised completion')
+    expect(run(dir, target)).toEqual([target])
+    write(dir, nushellCompletion, '# revised Nushell completion')
+    expect(run(dir, target)).toEqual([target])
+  })
+
+  it.each([
+    'build-backend',
+    'build-backend-docker',
+    'lint-backend',
+    'build-desktop-sidecar',
+  ])('re-embeds skills and invalidates %s when a skill source changes', (target) => {
+    const dir = fixture()
+    cpSync(join(root, 'scripts/sync-generated.mjs'), join(dir, 'scripts/sync-generated.mjs'))
+    const file = join(dir, 'Taskfile.yaml')
+    const config = Bun.YAML.parse(readFileSync(file, 'utf8'))
+    const production = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    config.tasks['embed-skills'].cmds = production.tasks['embed-skills'].cmds
+    writeFileSync(file, Bun.YAML.stringify(config))
+    write(dir, 'versions.env', '')
+    write(dir, 'backend/internal/skills/catalog.embed', 'package catalog\n\nimport "embed"\n\n//go:embed files\nvar FS embed.FS\n')
+    write(dir, 'skills/leapmux/SKILL.md', '# original skill\n')
+    expect(run(dir, target)).toContain(target)
+    expect(readFileSync(join(dir, 'backend/internal/skills/generated/catalog/files/leapmux/SKILL.md'), 'utf8')).toBe('# original skill\n')
+    expect(run(dir, target)).toEqual([])
+    write(dir, 'skills/leapmux/SKILL.md', '# revised skill\n')
+    expect(run(dir, target)).toEqual([target])
+    expect(readFileSync(join(dir, 'backend/internal/skills/generated/catalog/files/leapmux/SKILL.md'), 'utf8')).toBe('# revised skill\n')
+    expect(run(dir, target)).toEqual([])
+    write(dir, 'backend/internal/skills/catalog.embed', 'package catalog\n\nimport "embed"\n\n// Revised comment\n//go:embed files\nvar FS embed.FS\n')
+    expect(run(dir, target)).toEqual([target])
+    expect(run(dir, target)).toEqual([])
   })
 
   it('exports the Docker target and CGO options to the Go compiler', () => {

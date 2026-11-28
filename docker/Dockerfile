@@ -170,8 +170,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Copy binary
+# Copy binary and short alias
 COPY --from=builder /src/leapmux /usr/local/bin/leapmux
+RUN ln -s /usr/local/bin/leapmux /usr/local/bin/lmx
 
 # Copy the startup script. s6 runs it as CMD and preserves its exit status.
 COPY --chmod=0755 docker/rootfs/usr/local/bin/leapmux-start /usr/local/bin/leapmux-start

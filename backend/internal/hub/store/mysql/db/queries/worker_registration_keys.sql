@@ -80,3 +80,23 @@ LIMIT ?;
 UPDATE worker_registration_keys
 SET expires_at = sqlc.arg(expires_at)
 WHERE id = sqlc.arg(id) AND expires_at > sqlc.arg(now);
+
+-- name: ListRegistrationKeysAdminByExactID :many
+SELECT k.id, k.created_by, k.created_at, k.expires_at,
+       COALESCE(u.username, '') AS creator_username, (u.id IS NULL) AS creator_deleted
+FROM worker_registration_keys k
+LEFT JOIN users u ON k.created_by = u.id AND u.deleted_at IS NULL
+WHERE k.id = sqlc.arg(id)
+  AND (CAST(sqlc.arg(include_expired) AS SIGNED) != 0 OR k.expires_at > sqlc.arg(now));
+
+-- name: ListRegistrationKeysAdminByIDPrefix :many
+SELECT k.id, k.created_by, k.created_at, k.expires_at,
+       COALESCE(u.username, '') AS creator_username, (u.id IS NULL) AS creator_deleted
+FROM worker_registration_keys k
+LEFT JOIN users u ON k.created_by = u.id AND u.deleted_at IS NULL
+WHERE k.id >= sqlc.arg(id_lo)
+  AND k.id < sqlc.arg(id_hi)
+  AND k.id > sqlc.arg(id_gt)
+  AND (CAST(sqlc.arg(include_expired) AS SIGNED) != 0 OR k.expires_at > sqlc.arg(now))
+ORDER BY k.id ASC
+LIMIT ?;

@@ -25,7 +25,10 @@ func TestCodexInterruptAnswersAnOutstandingElicitation(t *testing.T) {
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "agent", Stdin: agenttest.NopStdin(stdin)})},
 		sink:           agent.NewProviderServices(sink),
 	}
-	a.PublishControlRequest(a.sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"`+contracts.MCPElicitationMethodCodex+`"}`), providerkit.MCPElicitationCancelAnswer())
+	a.PublishControlRequest(a.sink, providerkit.ControlRequestPublication{
+		Content:      []byte(`{"jsonrpc":"2.0","id":7,"method":"` + contracts.MCPElicitationMethodCodex + `"}`),
+		CancelAnswer: providerkit.MCPElicitationCancelAnswer(),
+	})
 
 	// No thread or turn, so Interrupt has nothing to cancel and returns early --
 	// the drain must still run, because a request the runtime waits on outlives
@@ -42,4 +45,5 @@ func TestCodexControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T
 	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, func(content []byte) { handleCodexOutput(a, providerkit.ParseLine(content)) },
 		"item/commandExecution/requestApproval")
+	agenttest.AssertPublishedControlKeys(t, codexProvider{}, sink)
 }

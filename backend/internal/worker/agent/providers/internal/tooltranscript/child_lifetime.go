@@ -71,7 +71,7 @@ func (s *Transcript) finishChildAdmission() {
 	}
 }
 
-func (s *Transcript) childWrapper(childID string) *Transcript {
+func (s *Transcript) childWrapper(childID string, acquire func(string) agent.ChildSinkLease) *Transcript {
 	s.mu.Lock()
 	if s.cleanupCommitted || s.retiredComplete {
 		s.mu.Unlock()
@@ -94,7 +94,7 @@ func (s *Transcript) childWrapper(childID string) *Transcript {
 	if child != nil {
 		return child
 	}
-	lease := s.ProviderServices.AcquireChildSink(childID)
+	lease := acquire(childID)
 	if lease.Sink == nil {
 		return nil
 	}
@@ -115,7 +115,7 @@ func (s *Transcript) childWrapper(childID string) *Transcript {
 }
 
 func (s *Transcript) ChildSink(childID string) agent.ProviderServices {
-	child := s.childWrapper(childID)
+	child := s.childWrapper(childID, s.ProviderServices.AcquireChildSink)
 	if child == nil {
 		return nil
 	}
@@ -123,13 +123,26 @@ func (s *Transcript) ChildSink(childID string) agent.ProviderServices {
 	return child
 }
 
-func (s *Transcript) AcquireChildSink(childID string) agent.ChildSinkLease {
-	child := s.childWrapper(childID)
+func (s *Transcript) childSinkLease(childID string, acquire func(string) agent.ChildSinkLease) agent.ChildSinkLease {
+	child := s.childWrapper(childID, acquire)
 	if child == nil {
 		return agent.ChildSinkLease{}
 	}
-	return agent.ChildSinkLease{Sink: child, CaptureMessage: child.CaptureMessage, Activate: child.activateChildLease,
-		Cleanup: func() bool { return s.cleanupChildWrapper(childID, child) }}
+	return agent.ChildSinkLease{
+		Sink:                  child,
+		CaptureMessage:        child.CaptureMessage,
+		RetainTranscriptSpans: child.childLease.RetainTranscriptSpans,
+		Activate:              child.activateChildLease,
+		Cleanup:               func() bool { return s.cleanupChildWrapper(childID, child) },
+	}
+}
+
+func (s *Transcript) AcquireChildSink(childID string) agent.ChildSinkLease {
+	return s.childSinkLease(childID, s.ProviderServices.AcquireChildSink)
+}
+
+func (s *Transcript) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	return s.childSinkLease(childID, s.ProviderServices.AcquireChildStateSink)
 }
 
 func (s *Transcript) cleanupChildWrapper(childID string, expected *Transcript) bool {

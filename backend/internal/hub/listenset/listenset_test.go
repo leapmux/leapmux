@@ -45,7 +45,7 @@ func TestParse_Accepts(t *testing.T) {
 		{"[::FFFF:127.0.0.1]:4327", listenset.KindIP, "[::ffff:127.0.0.1]:4327", "[::ffff:127.0.0.1]:4327", 4327},
 		{"1.2.3.4:1", listenset.KindIP, "1.2.3.4:1", "1.2.3.4:1", 1},
 		{"1.2.3.4:65535", listenset.KindIP, "1.2.3.4:65535", "1.2.3.4:65535", 65535},
-		// Port 0 asks the operating system to choose. -listen may do that, so
+		// Port 0 asks the operating system to choose. --listen may do that, so
 		// Parse must accept it; the settings validator refuses it separately,
 		// because a STORED address of port 0 specifies a port nobody can be told.
 		{"127.0.0.1:0", listenset.KindIP, "127.0.0.1:0", "127.0.0.1:0", 0},

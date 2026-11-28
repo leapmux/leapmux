@@ -4,6 +4,7 @@ package channelwire
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -261,24 +262,96 @@ func HTTPToWS(rawURL string) string {
 	return rawURL
 }
 
+// Go-only query parameters for /ws/userevents topic selection and layout
+// journal streaming. Browser clients consume the default CRDT+workers feed
+// without these parameters, so they stay Go-owned here rather than in a
+// cross-language contract.
+const (
+	wsParamTopics            = "topics"
+	wsParamLayoutWorkspaceID = "layout_workspace_id"
+	wsParamLayoutAfterCursor = "layout_after_cursor"
+)
+
+// UserEventsOptions configures a /ws/userevents WebSocket subscription.
+type UserEventsOptions struct {
+	WorkspaceIDs      []string
+	Topics            []leapmuxv1.UserEventTopic
+	LayoutWorkspaceID string
+	LayoutAfterCursor []byte
+	ResumeCursor      *leapmuxv1.HLC
+	ResumeEpoch       int64
+}
+
+type userEventTopicWire struct {
+	topic leapmuxv1.UserEventTopic
+	name  string
+}
+
+var userEventTopicTable = []userEventTopicWire{
+	{topic: leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT, name: "crdt"},
+	{topic: leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS, name: "workers"},
+	{topic: leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL, name: "layout_journal"},
+}
+
+// ErrInvalidUserEventTopic reports an unspecified or unrecognized UserEventTopic
+// passed to UserEventsURL or OpenUserEventsWS.
+var ErrInvalidUserEventTopic = errors.New("invalid user event topic")
+
+func encodeUserEventTopic(topic leapmuxv1.UserEventTopic) (string, error) {
+	for _, entry := range userEventTopicTable {
+		if entry.topic == topic {
+			return entry.name, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %v", ErrInvalidUserEventTopic, topic)
+}
+
+func parseUserEventTopic(name string) (leapmuxv1.UserEventTopic, bool) {
+	for _, entry := range userEventTopicTable {
+		if entry.name == name {
+			return entry.topic, true
+		}
+	}
+	return leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED, false
+}
+
 // UserEventsURL builds the per-user WebSocket URL the hub serves at
-// /ws/userevents. baseURL is an http(s) URL; it is rewritten to ws(s)
-// via HTTPToWS. workspaceIDs is optional — when non-empty it scopes the
-// subscription to those workspaces. The authenticated session implies the
-// user; no user_id query parameter is required. Used by every
-// client that opens the user-events feed (desktop relay, remote CLI,
-// worker-side relay) so the query-string shape stays consistent.
+// /ws/userevents with optional workspace filters, topic selection, layout
+// journal cursor, and CRDT resume cursor. baseURL is an http(s) URL; it is
+// rewritten to ws(s) via HTTPToWS. The authenticated session implies the user;
+// no user_id query parameter is required.
 //
-// cursor is the client's last-applied canonical HLC (nil on a first connect,
-// which makes the hub send a full snapshot); epoch is the current_epoch it saw
-// it under (0 when there is no cursor). The hub falls back to a full snapshot
-// when the cursor is nil/zero or at/below the op-retention watermark (the
-// lagging floor decideResume actually gates on -- NOT compaction_watermark,
-// which always equals max_hlc and would reject every cursor).
-func UserEventsURL(baseURL string, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) string {
+// opts.ResumeCursor is the client's last-applied canonical HLC (nil on a first
+// connect, which makes the hub send a full snapshot); opts.ResumeEpoch is the
+// current_epoch it saw it under (0 when there is no cursor). The hub falls back
+// to a full snapshot when the cursor is nil/zero or at/below the op-retention
+// watermark. Returns ErrInvalidUserEventTopic when opts.Topics contains an
+// unspecified or unknown topic.
+func UserEventsURL(baseURL string, opts UserEventsOptions) (string, error) {
 	q := url.Values{}
-	if len(workspaceIDs) > 0 {
-		q.Set(contracts.WSParamWorkspaceIDs, strings.Join(workspaceIDs, ","))
+	if len(opts.WorkspaceIDs) > 0 {
+		q.Set(contracts.WSParamWorkspaceIDs, strings.Join(opts.WorkspaceIDs, ","))
+	}
+	if len(opts.Topics) > 0 {
+		names := make([]string, 0, len(opts.Topics))
+		seen := make(map[string]bool, len(opts.Topics))
+		for _, topic := range opts.Topics {
+			name, err := encodeUserEventTopic(topic)
+			if err != nil {
+				return "", err
+			}
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+		q.Set(wsParamTopics, strings.Join(names, ","))
+	}
+	if opts.LayoutWorkspaceID != "" {
+		q.Set(wsParamLayoutWorkspaceID, opts.LayoutWorkspaceID)
+	}
+	if len(opts.LayoutAfterCursor) > 0 {
+		q.Set(wsParamLayoutAfterCursor, base64.RawURLEncoding.EncodeToString(opts.LayoutAfterCursor))
 	}
 	// Gate on the DECODER's own accept rule, not the weaker all-zero test.
 	// hlcIsZero only rejects {0,0,""}, but DecodeResumeHLC rejects any
@@ -287,15 +360,62 @@ func UserEventsURL(baseURL string, workspaceIDs []string, cursor *leapmuxv1.HLC,
 	// onto the URL and then 400'd by the hub -- an error where the intent was to
 	// omit the cursor and degrade to a full snapshot. Asking the decoder keeps
 	// the encode and decode sides one rule instead of two that must agree.
-	if resumeCursorEncodable(cursor) {
-		q.Set(contracts.WSParamResumeAfterHLC, EncodeResumeHLC(cursor))
-		q.Set(contracts.WSParamResumeEpoch, strconv.FormatInt(epoch, 10))
+	if resumeCursorEncodable(opts.ResumeCursor) {
+		q.Set(contracts.WSParamResumeAfterHLC, EncodeResumeHLC(opts.ResumeCursor))
+		q.Set(contracts.WSParamResumeEpoch, strconv.FormatInt(opts.ResumeEpoch, 10))
 	}
 	qs := q.Encode()
 	if qs == "" {
-		return HTTPToWS(baseURL) + contracts.WSRouteUserEvents
+		return HTTPToWS(baseURL) + contracts.WSRouteUserEvents, nil
 	}
-	return HTTPToWS(baseURL) + contracts.WSRouteUserEvents + "?" + qs
+	return HTTPToWS(baseURL) + contracts.WSRouteUserEvents + "?" + qs, nil
+}
+
+// ParseUserEventsTopicsFromQuery parses the optional comma-separated `topics`
+// query parameter. Absent or empty returns (nil, nil), signalling the default
+// subscription set. Unknown or blank topic tokens return an error.
+func ParseUserEventsTopicsFromQuery(q url.Values) ([]leapmuxv1.UserEventTopic, error) {
+	raw := strings.TrimSpace(q.Get(wsParamTopics))
+	if raw == "" {
+		return nil, nil
+	}
+	var topics []leapmuxv1.UserEventTopic
+	seen := make(map[leapmuxv1.UserEventTopic]bool)
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			return nil, fmt.Errorf("empty topic in %s", wsParamTopics)
+		}
+		topic, ok := parseUserEventTopic(name)
+		if !ok {
+			return nil, fmt.Errorf("unknown user event topic %q", name)
+		}
+		if !seen[topic] {
+			seen[topic] = true
+			topics = append(topics, topic)
+		}
+	}
+	return topics, nil
+}
+
+// ParseLayoutWorkspaceIDFromQuery returns the optional layout journal workspace
+// scope parameter from a /ws/userevents URL query.
+func ParseLayoutWorkspaceIDFromQuery(q url.Values) string {
+	return strings.TrimSpace(q.Get(wsParamLayoutWorkspaceID))
+}
+
+// ParseLayoutCursorFromQuery decodes the optional base64 RawURLEncoding
+// `layout_after_cursor` query parameter. Absent or empty returns (nil, nil).
+func ParseLayoutCursorFromQuery(q url.Values) ([]byte, error) {
+	raw := q.Get(wsParamLayoutAfterCursor)
+	if raw == "" {
+		return nil, nil
+	}
+	cursor, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("malformed %s: %w", wsParamLayoutAfterCursor, err)
+	}
+	return cursor, nil
 }
 
 // EncodeResumeHLC renders an HLC as the "<physical>.<logical>.<client_id>"
@@ -586,36 +706,119 @@ const UserEventsReadLimit = 16 * 1024 * 1024
 // enforces that on the send side, so a descriptive sentence would fail to
 // send at all.
 
-// OpenUserEventsWS dials /ws/userevents on `hubURL` with the supplied
-// bearer + workspace scope and returns the resulting WebSocket. Used
-// by the worker's WatchUser relay, the CLI's hub-bound client, and the desktop
-// sidecar so the dial + subprotocol + read-limit
-// triple lives in one place. Caller owns the returned WS and must
-// Close it.
-//
-// `bearer` is added as "Authorization: Bearer <bearer>". `httpClient`
-// may be nil; pass one when the caller's transport requires
-// unix/npipe dialers or shared HTTP/2 settings.
-func OpenUserEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bearer string, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
-	header := http.Header{}
-	if bearer != "" {
-		header.Set("Authorization", "Bearer "+bearer)
+// maxCloseReasonBytes is the RFC 6455 byte limit for a WebSocket close reason
+// (125-byte control frame payload minus the 2-byte status code).
+const maxCloseReasonBytes = 123
+
+// TruncateCloseReason truncates reason to at most 123 UTF-8 bytes without
+// splitting a multi-byte rune (RFC 6455 control frame limit is 125 bytes
+// minus the 2-byte status code).
+func TruncateCloseReason(reason string) string {
+	if len(reason) <= maxCloseReasonBytes {
+		return reason
 	}
-	return OpenUserEventsWSWithHeader(ctx, httpClient, hubURL, header, workspaceIDs, cursor, epoch)
+	cut := 0
+	for i := range reason {
+		if i > maxCloseReasonBytes {
+			break
+		}
+		cut = i
+	}
+	return reason[:cut]
 }
 
-// OpenUserEventsWSWithHeader is OpenUserEventsWS for callers whose authentication
-// is already represented by HTTP headers, such as the desktop cookie jar.
-func OpenUserEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
-	opts := &websocket.DialOptions{
+// FormatUserEventsPolicyCloseReason formats a structured "<code>: <message>"
+// policy-violation close reason truncated to valid UTF-8 <= 123 bytes.
+func FormatUserEventsPolicyCloseReason(code, message string) string {
+	code = strings.TrimSpace(code)
+	message = strings.TrimSpace(message)
+	if code == "" {
+		return TruncateCloseReason(message)
+	}
+	if message == "" {
+		return TruncateCloseReason(code)
+	}
+	return TruncateCloseReason(code + ": " + message)
+}
+
+var userEventsPolicyCloseCodes = map[string]connect.Code{
+	"not_found":           connect.CodeNotFound,
+	"failed_precondition": connect.CodeFailedPrecondition,
+	"invalid_argument":    connect.CodeInvalidArgument,
+	"permission_denied":   connect.CodePermissionDenied,
+}
+
+// ParseUserEventsPolicyCloseReason splits a structured "<code>: <message>"
+// close reason written by FormatUserEventsPolicyCloseReason. Recognizes
+// "not_found", "failed_precondition", "invalid_argument", "permission_denied".
+func ParseUserEventsPolicyCloseReason(reason string) (code, message string, ok bool) {
+	candidate, rest, hasColon := strings.Cut(reason, ":")
+	if _, recognized := userEventsPolicyCloseCodes[candidate]; !recognized {
+		return "", "", false
+	}
+	if !hasColon {
+		return candidate, "", true
+	}
+	return candidate, strings.TrimSpace(rest), true
+}
+
+// HandshakeError reports an HTTP handshake refusal from a WebSocket dial,
+// preserving the HTTP status code and response text alongside the dial error.
+type HandshakeError struct {
+	StatusCode int
+	Body       string
+	Err        error
+}
+
+func (e *HandshakeError) Error() string {
+	if e.Body != "" {
+		return fmt.Sprintf("dial /ws/userevents: HTTP %d: %s", e.StatusCode, e.Body)
+	}
+	return fmt.Sprintf("dial /ws/userevents: HTTP %d: %v", e.StatusCode, e.Err)
+}
+
+func (e *HandshakeError) Unwrap() error { return e.Err }
+
+// OpenUserEventsWS dials /ws/userevents on `hubURL` with the supplied bearer
+// token and subscription options. Used by the worker's WatchUser relay, the
+// CLI's hub-bound client, and the desktop relay so the URL validation, dial,
+// subprotocol, and read-limit configuration live in one place. Caller owns the
+// returned WebSocket and must close it.
+//
+// `bearerToken`, when non-empty, is sent as "Authorization: Bearer <token>".
+// Callers whose authentication lives in a cookie jar (such as the desktop
+// relay) pass an empty bearerToken and an `httpClient` carrying that jar.
+// `httpClient` may be nil; pass one when the caller's transport requires
+// unix/npipe dialers or dedicated HTTP/1.1 settings.
+func OpenUserEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bearerToken string, opts UserEventsOptions) (*websocket.Conn, error) {
+	wsURL, err := UserEventsURL(hubURL, opts)
+	if err != nil {
+		return nil, err
+	}
+	dialOpts := &websocket.DialOptions{
 		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
-		HTTPHeader:   header.Clone(),
+	}
+	if bearerToken != "" {
+		dialOpts.HTTPHeader = http.Header{"Authorization": {"Bearer " + bearerToken}}
 	}
 	if httpClient != nil {
-		opts.HTTPClient = httpClient
+		dialOpts.HTTPClient = httpClient
 	}
-	ws, _, err := websocket.Dial(ctx, UserEventsURL(hubURL, workspaceIDs, cursor, epoch), opts)
+	ws, resp, err := websocket.Dial(ctx, wsURL, dialOpts)
 	if err != nil {
+		if resp != nil && resp.StatusCode != 0 {
+			var body string
+			if resp.Body != nil {
+				b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+				_ = resp.Body.Close()
+				body = strings.TrimSpace(string(b))
+			}
+			return nil, &HandshakeError{
+				StatusCode: resp.StatusCode,
+				Body:       body,
+				Err:        err,
+			}
+		}
 		return nil, fmt.Errorf("dial /ws/userevents: %w", err)
 	}
 	ws.SetReadLimit(UserEventsReadLimit)
@@ -639,6 +842,79 @@ func IsUserEventsCloseError(err error) bool {
 		return false
 	}
 	return isRecoverableCloseCode(closeErr.Code)
+}
+
+// IsTooManyConnectionsError reports whether err wraps a WebSocket close frame
+// whose reason is contracts.CloseReasonTooManyConnections.
+func IsTooManyConnectionsError(err error) bool {
+	var closeErr websocket.CloseError
+	return errors.As(err, &closeErr) && closeErr.Reason == contracts.CloseReasonTooManyConnections
+}
+
+// ConnectErrorFromWebSocket maps a classified /ws/userevents dial, validation,
+// or close error to a typed *connect.Error that preserves err as its cause.
+// Returns (nil, false) for nil or unclassified errors.
+func ConnectErrorFromWebSocket(err error) (*connect.Error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	if errors.Is(err, ErrInvalidUserEventTopic) {
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err), true
+	}
+	var closeErr websocket.CloseError
+	if errors.As(err, &closeErr) {
+		if IsTooManyConnectionsError(err) {
+			return connect.NewError(connect.CodeUnavailable, "the Hub rejected the connection: too many open connections").WithCause(err), true
+		}
+		if closeErr.Code == websocket.StatusTryAgainLater {
+			msg := closeErr.Reason
+			if msg == "" {
+				msg = "the Hub is temporarily unavailable"
+			}
+			return connect.NewError(connect.CodeUnavailable, msg).WithCause(err), true
+		}
+		if closeErr.Reason == contracts.CloseReasonForbidden {
+			return connect.NewError(connect.CodePermissionDenied, "the Hub rejected the connection: permission denied").WithCause(err), true
+		}
+		if closeErr.Code == websocket.StatusPolicyViolation {
+			if code, msg, ok := ParseUserEventsPolicyCloseReason(closeErr.Reason); ok {
+				if connectCode, mapped := userEventsPolicyCloseCodes[code]; mapped {
+					if msg == "" {
+						msg = code
+					}
+					return connect.NewError(connectCode, msg).WithCause(err), true
+				}
+			}
+		}
+	}
+	var hsErr *HandshakeError
+	if errors.As(err, &hsErr) {
+		if code, ok := httpStatusToConnectCode(hsErr.StatusCode); ok {
+			msg := hsErr.Body
+			if msg == "" {
+				msg = hsErr.Error()
+			}
+			return connect.NewError(code, msg).WithCause(err), true
+		}
+	}
+	return nil, false
+}
+
+func httpStatusToConnectCode(status int) (connect.Code, bool) {
+	switch status {
+	case http.StatusBadRequest:
+		return connect.CodeInvalidArgument, true
+	case http.StatusUnauthorized:
+		return connect.CodeUnauthenticated, true
+	case http.StatusForbidden:
+		return connect.CodePermissionDenied, true
+	case http.StatusNotFound:
+		return connect.CodeNotFound, true
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return connect.CodeUnavailable, true
+	default:
+		return 0, false
+	}
 }
 
 // isRecoverableCloseCode is the single source of truth for the "should the

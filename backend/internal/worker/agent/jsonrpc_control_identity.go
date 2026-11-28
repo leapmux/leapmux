@@ -126,15 +126,6 @@ func jsonNumberWithinIDLimit(text string) bool {
 	return len(mantissa) <= canonicalJSONNumberDigitLimit
 }
 
-// StoredControlRequestID uses the persisted identity when the service supplies it.
-// Direct provider calls can use the native identity without a stored request.
-func StoredControlRequestID(ctx ControlResponseContext, nativeID string) string {
-	if ctx.RequestID != "" {
-		return ctx.RequestID
-	}
-	return nativeID
-}
-
 // ExtractJSONRPCID extracts the JSON-RPC "id" field from a raw JSON payload,
 // returning the raw bytes, its string representation, and whether extraction succeeded.
 func ExtractJSONRPCID(content []byte) (json.RawMessage, string, bool) {

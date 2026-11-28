@@ -1,13 +1,12 @@
 import type { Component } from 'solid-js'
-import type { ControlSurface } from './controls/controlSurface'
 import type { BannerActionsProps, BannerContentProps } from './controls/types'
+import type { ControlPrompt } from './model/controlPrompt'
 import type { ControlRequest } from '~/stores/control.store'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import Square from 'lucide-solid/icons/square'
 import { Match, onCleanup, Show, Switch } from 'solid-js'
-import { Dynamic } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
@@ -16,42 +15,34 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import * as styles from './ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from './controls/AskUserQuestionControl'
 import { actionButtonClass, ControlActionRow } from './controls/ControlActionRow'
+import { cancelQuestionDecision, questionDecision } from './controls/controlDecision'
 import { invokeControlAction } from './controls/controlResponseError'
 import { canAnswerControlRequest, controlPayloadFaultNotice, controlResponseStateNotice } from './controls/controlResponseState'
 import { DialogRequestActions, DialogRequestContent } from './controls/DialogRequestControl'
 import { ElicitationActions, ElicitationContent } from './controls/ElicitationControl'
 import { ExitPlanModeActions } from './controls/ExitPlanModeControl'
-import { GenericToolActions } from './controls/GenericToolControl'
 import { PermissionDecisionActions } from './controls/PermissionDecisionActions'
 import { PermissionRequestContent } from './controls/PermissionRequestContent'
 import { PlanApprovalContent } from './controls/PlanApprovalContent'
-import { pluginFor } from './providers/registry'
 import { MarkdownPlanLayout } from './widgets/MarkdownPlanLayout'
 
-// The banner classifies nothing. It reads the surface that its caller derived,
-// which keeps ONE graph for a request that mounts a content half and an actions
-// half in two different slots. That derivation must stay OUTSIDE the
-// `<Show when={props.request}>` of each half. `createControlSurface` states
-// why, and the composer holds it beside the active request.
+// The banner classifies nothing. It draws the prompt that the Worker read from the
+// request, which its caller hands to the content half and to the actions half.
 /**
- * The surface, when it is of ONE kind.
+ * The prompt, when it is of ONE kind.
  *
- * It returns the surface itself rather than its payload, because a `<Match>` treats
- * a falsy accessor value as no match -- and `plan` carries two OPTIONAL fields, so
+ * It returns the prompt itself rather than its payload, because a `<Match>` treats
+ * a falsy accessor value as no match -- and `plan` carries OPTIONAL fields only, so
  * its payload can legitimately be empty. Returning the variant keeps a plan with no
  * permissions and no details a match.
  */
-function surfaceOf<K extends ControlSurface['kind']>(
-  surface: ControlSurface | undefined,
+function surfaceOf<K extends ControlPrompt['kind']>(
+  surface: ControlPrompt | undefined,
   kind: K,
-): Extract<ControlSurface, { kind: K }> | undefined {
+): Extract<ControlPrompt, { kind: K }> | undefined {
   return surface?.kind === kind
-    ? surface as Extract<ControlSurface, { kind: K }>
+    ? surface as Extract<ControlPrompt, { kind: K }>
     : undefined
-}
-
-function questionOf(surface: ControlSurface | undefined) {
-  return surfaceOf(surface, 'question')?.question
 }
 
 /** Renders control request content only (title + details), for the banner slot. */
@@ -129,9 +120,8 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
             <p role="alert">{props.answerState.responseError()}</p>
           </Show>
           {/*
-            A payload LeapMux could not read reaches the reader as the fault itself, never
-            as a plugin's rendering of an empty object -- every one of those draws a
-            confident "Permission Required" for a question nobody knows.
+            A payload LeapMux could not read reaches the reader as the fault itself: the
+            Worker read no prompt from it, so nobody knows what the agent asked.
           */}
           <Show
             when={!controlPayloadFaultNotice(request().payloadFault)}
@@ -148,10 +138,11 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
               <Match when={surfaceOf(props.controlSurface, 'question')}>
                 {question => (
                   <AskUserQuestionContent
-                    {...props}
+                    answerState={props.answerState}
                     optionsDisabled={optionsDisabledFor(request())}
                     request={request()}
-                    questions={question().question.questions}
+                    questions={question().questions}
+                    preservesSelectionNotes={question().preservesSelectionNotes ?? false}
                   />
                 )}
               </Match>
@@ -220,28 +211,6 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
 
 /** Renders control request action buttons only, for the footer slot. */
 export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
-  const question = () => questionOf(props.controlSurface)
-  const elicitation = () => surfaceOf(props.controlSurface, 'elicitation')?.elicitation
-  // The actions a provider answers THIS request with, or undefined when the shared
-  // switch below answers it from the model.
-  const pluginActions = () => props.request
-    ? pluginFor(props.agentProvider)?.controls?.controlActionsFor?.(props.request.payload)
-    : undefined
-  // How this provider sends ONE chosen option. Every provider whose `extractControl`
-  // states options states a sender beside them, so the rejection is unreachable -- it
-  // is here so a provider that adds options without one fails where the mistake is,
-  // rather than drawing buttons that answer nothing.
-  const sendPermissionOption = () => pluginFor(props.agentProvider)?.controls?.sendPermissionOption
-    ?? (() => Promise.reject(new Error('This provider offers permission options but no way to send one.')))
-  // A dialog, and how this provider answers one. A provider that sends a dialog and
-  // states no responder reaches the fallback pair below.
-  const dialogAnswer = () => {
-    const dialog = surfaceOf(props.controlSurface, 'dialog')?.dialog
-    const responder = pluginFor(props.agentProvider)?.controls?.dialogResponder
-    return dialog && responder
-      ? { dialog, responder }
-      : undefined
-  }
   return (
     <Show when={props.request}>
       {request => (
@@ -294,77 +263,49 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
               )}
             >
               {/*
-                ONE switch over the shared control model, beside the content half's,
-                and the order is what decides who answers. The question and the
-                elicitation are cross-provider surfaces and come first. Then a
-                provider answers its OWN request wherever `controlActionsFor`
-                claims it -- Codex's decision words, Pi's plan menu, Cursor's
-                create-plan verdict. Everything left is answered from the model:
-                a dialog through the provider's `dialogResponder`, a plan, and a
-                permission.
-
-                The FALLBACK is the shared Allow/Deny pair, and it is what keeps the
-                invariant this banner exists for: the agent's turn blocks until an
-                answer reaches it, so a surface with no buttons blocks it forever. The
-                content half switches over all five kinds of the closed model and this
-                one answers each of them. A `dialog` of a provider that states no
-                `dialogResponder` reaches the fallback, because a dialog nobody could
-                dismiss would block the turn. The pair is a way OUT of such a request,
-                not the right words for it.
+                ONE switch over the prompt, beside the content half's. Every kind
+                draws its own actions, and every one of them sends a decision: the
+                Worker's provider builds the runtime's own answer from it. A
+                permission prompt always states its options -- the runtime's own,
+                LeapMux's allow and deny, or LeapMux's Cancel -- so the agent's turn,
+                which blocks until an answer reaches it, always has one.
               */}
-              <Switch fallback={<GenericToolActions {...props} request={request()} />}>
-                <Match when={question()}>
+              <Switch>
+                <Match when={surfaceOf(props.controlSurface, 'question')}>
                   {question => (
                     <AskUserQuestionActions
                       {...props}
                       request={request()}
                       questions={question().questions}
-                      onSubmitAnswers={() => question().capability.sendAnswer(
-                        request(),
-                        props.onRespond,
-                        question().questions,
-                        props.answerState,
-                      )}
-                      onReject={message => question().capability.sendReject(request(), props.onRespond, message)}
+                      preservesSelectionNotes={question().preservesSelectionNotes ?? false}
+                      onSubmitAnswers={() => props.onDecide(questionDecision(props.answerState, question()))}
+                      onReject={message => props.onDecide(cancelQuestionDecision(message))}
                     />
                   )}
                 </Match>
-                <Match when={elicitation()}>
+                <Match when={surfaceOf(props.controlSurface, 'elicitation')}>
                   {elicitation => (
                     <ElicitationActions
                       {...props}
                       request={request()}
-                      elicitation={elicitation()}
+                      elicitation={elicitation().elicitation}
                     />
                   )}
                 </Match>
-                <Match when={pluginActions()}>
-                  {ownActions => <Dynamic component={ownActions()} {...props} request={request()} />}
-                </Match>
-                <Match when={dialogAnswer()}>
-                  {answer => <DialogRequestActions {...props} request={request()} dialog={answer().dialog} responder={answer().responder} />}
+                <Match when={surfaceOf(props.controlSurface, 'dialog')}>
+                  {dialog => <DialogRequestActions {...props} request={request()} dialog={dialog().dialog} />}
                 </Match>
                 <Match when={surfaceOf(props.controlSurface, 'plan')}>
                   {plan => <ExitPlanModeActions {...props} request={request()} choices={plan().choices} />}
                 </Match>
                 <Match when={surfaceOf(props.controlSurface, 'permission')}>
                   {permission => (
-                    <Show
-                      when={permission().permission.independentOptions || permission().permission.options.length > 0}
-                      fallback={<GenericToolActions {...props} request={request()} />}
-                    >
-                      {/*
-                        The runtime supplies these answers. The model states whether they are independent choices or permission scopes.
-                        The provider owns each option ID.
-                      */}
-                      <PermissionDecisionActions
-                        {...props}
-                        request={request()}
-                        options={() => permission().permission.options}
-                        independentOptions={permission().permission.independentOptions ?? false}
-                        send={sendPermissionOption()}
-                      />
-                    </Show>
+                    <PermissionDecisionActions
+                      {...props}
+                      request={request()}
+                      options={() => permission().permission.options}
+                      independentOptions={permission().permission.independentOptions ?? false}
+                    />
                   )}
                 </Match>
               </Switch>

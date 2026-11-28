@@ -31,7 +31,7 @@ func TestClaudeTurnActive_SendInputOpensAndResultCloses(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 	assert.Equal(t, []bool{true}, sink.TurnActives(), "the turn opens once the message is on stdin")
 
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
@@ -52,7 +52,7 @@ func TestClaudeTurnActive_ErroredAndInterruptedTurnsAlsoClose(t *testing.T) {
 	} {
 		sink := &agenttest.Sink{}
 		a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-		require.NoError(t, a.SendInput("hello", nil))
+		require.NoError(t, agenttest.SendInput(a, "hello", nil))
 
 		a.HandleOutput([]byte(envelope))
 
@@ -73,7 +73,7 @@ func TestClaudeTurnActive_FailedStdinWriteStartsNoTurn(t *testing.T) {
 		sink:    agent.NewProviderServices(sink),
 	}
 
-	require.Error(t, a.SendInput("hello", nil))
+	require.Error(t, agenttest.SendInput(a, "hello", nil))
 
 	assert.Equal(t, []bool{false}, sink.TurnActives(),
 		"the publish re-reads the flag, so a failed send republishes idle rather than opening a turn")
@@ -87,7 +87,7 @@ func TestClaudeTurnActive_SubagentResultLeavesTheRootTurnOpen(t *testing.T) {
 	// must not clear the root's turn.
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 
 	a.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"parent-1","subtype":"success"}`))
 
@@ -105,7 +105,7 @@ func TestTurnEndPrecedesTheClear_Claude(t *testing.T) {
 		t.Parallel()
 		sink := &agenttest.Sink{}
 		a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-		require.NoError(t, a.SendInput("hello", nil))
+		require.NoError(t, agenttest.SendInput(a, "hello", nil))
 
 		a.HandleOutput([]byte(`{"type":"result","subtype":"success","num_tool_uses":2}`))
 
@@ -116,7 +116,7 @@ func TestTurnEndPrecedesTheClear_Claude(t *testing.T) {
 		t.Parallel()
 		sink := &agenttest.Sink{}
 		a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-		require.NoError(t, a.SendInput("hello", nil))
+		require.NoError(t, agenttest.SendInput(a, "hello", nil))
 		a.noteInterruptRequested()
 
 		a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
@@ -139,7 +139,7 @@ func TestClaudeTurnActive_RootAssistantOutputArmsATurnTheWorkerDidNotStart(t *te
 	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"still working"}]}}`))
 
 	assert.Equal(t, []bool{true}, sink.TurnActives(), "root assistant output means a turn is in flight")
-	assert.ErrorIs(t, a.SendInput("second", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "second", nil), agent.ErrAgentBusy)
 
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	// The refused send republishes the unchanged flag, which is what reconciles
@@ -199,7 +199,7 @@ func TestClaudeTurnActive_EveryRootFrameOfALiveTurnArmsIt(t *testing.T) {
 
 			assert.Equal(t, []bool{true}, sink.TurnActives(),
 				"a root frame only a live turn produces arms the turn")
-			assert.ErrorIs(t, a.SendInput("second", nil), agent.ErrAgentBusy)
+			assert.ErrorIs(t, agenttest.SendInput(a, "second", nil), agent.ErrAgentBusy)
 		})
 	}
 }
@@ -306,7 +306,7 @@ func TestClaudeTurnActive_ASystemFrameOutsideATurnArmsNothing(t *testing.T) {
 			a.HandleOutput([]byte(tc.line))
 
 			assert.NotContains(t, sink.TurnActives(), true, "this frame runs no turn")
-			assert.NoError(t, a.SendInput("first", nil), "the next message must reach the CLI")
+			assert.NoError(t, agenttest.SendInput(a, "first", nil), "the next message must reach the CLI")
 		})
 	}
 }
@@ -364,13 +364,13 @@ func TestClaudeTurnActive_SessionStateIdleEndsATurnWithNoResult(t *testing.T) {
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
-	require.ErrorIs(t, a.SendInput("second", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "second", nil), agent.ErrAgentBusy)
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
 
 	assert.Equal(t, []bool{true, true, false}, sink.TurnActives(),
 		"the refused send republishes the flag; idle then clears it")
-	assert.NoError(t, a.SendInput("second", nil), "the queue dispatches again")
+	assert.NoError(t, agenttest.SendInput(a, "second", nil), "the queue dispatches again")
 }
 
 func TestClaudeLaunchEnv_CarriesTheTurnSignalOptIn(t *testing.T) {
@@ -452,10 +452,10 @@ func TestClaudeTurnActive_ResultKeepsTheTurnUntilTheCLIReportsIdle(t *testing.T)
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 
 	assert.Equal(t, []bool{true}, sink.TurnActives())
-	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "next", nil), agent.ErrAgentBusy)
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
 	assert.False(t, sink.TurnActives()[len(sink.TurnActives())-1])
-	assert.NoError(t, a.SendInput("next", nil))
+	assert.NoError(t, agenttest.SendInput(a, "next", nil))
 }
 
 func TestClaudeTurnActive_ASteerThatWaitedAtTheResultRunsInTheSameTurn(t *testing.T) {
@@ -465,18 +465,18 @@ func TestClaudeTurnActive_ASteerThatWaitedAtTheResultRunsInTheSameTurn(t *testin
 	// The steer_end probe has two results before the one idle frame.
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
-	require.NoError(t, a.SteerInput("steer", nil))
+	require.NoError(t, agenttest.SteerInput(a, claudeTestSteerRequest("steer", nil)))
 	for range 2 {
 		a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
 		a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`))
 		a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
-		assert.ErrorIs(t, a.SendInput("queued clear", nil), agent.ErrAgentBusy)
+		assert.ErrorIs(t, agenttest.SendInput(a, "queued clear", nil), agent.ErrAgentBusy)
 	}
 	for _, active := range sink.TurnActives() {
 		assert.True(t, active)
 	}
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
-	assert.NoError(t, a.SendInput("next", nil))
+	assert.NoError(t, agenttest.SendInput(a, "next", nil))
 }
 
 func TestClaudeTurnActive_ATurnTheCLIStartsAfterABackgroundTaskStaysActive(t *testing.T) {
@@ -489,10 +489,10 @@ func TestClaudeTurnActive_ATurnTheCLIStartsAfterABackgroundTaskStaysActive(t *te
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","summary":"done"}`))
 	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"background result"}]}}`))
-	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "next", nil), agent.ErrAgentBusy)
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
-	assert.NoError(t, a.SendInput("next", nil))
+	assert.NoError(t, agenttest.SendInput(a, "next", nil))
 }
 
 func TestClaudeTurnActive_TheIdleDropsAStopNoteThatNoResultSpent(t *testing.T) {
@@ -539,7 +539,7 @@ func TestClaudeTurnActive_AForwardedChildStateDecidesNothing(t *testing.T) {
 		a.HandleOutput([]byte(`{"type":"system","parent_tool_use_id":"p1","subtype":"session_state_changed","state":"idle"}`))
 
 		assert.Equal(t, []bool{true}, sink.TurnActives(), "only the root's own state moves the flag")
-		assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+		assert.ErrorIs(t, agenttest.SendInput(a, "next", nil), agent.ErrAgentBusy)
 	})
 
 	t.Run("a child state does not retire the heuristic", func(t *testing.T) {
@@ -572,17 +572,17 @@ func TestClaudeTurnActive_AStaleSessionIdleDoesNotOpenTheNextTurn(t *testing.T) 
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 
-	require.NoError(t, a.SendInput("first", nil))
+	require.NoError(t, agenttest.SendInput(a, "first", nil))
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	// The queue drains on that turn end and hands the CLI the next message.
-	require.NoError(t, a.SendInput("second", nil))
+	require.NoError(t, agenttest.SendInput(a, "second", nil))
 
 	// The previous turn's idle arrives now.
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
 
 	assert.Equal(t, []bool{true, false, true}, sink.TurnActives(),
 		"the stale idle publishes nothing")
-	assert.ErrorIs(t, a.SendInput("third", nil), agent.ErrAgentBusy,
+	assert.ErrorIs(t, agenttest.SendInput(a, "third", nil), agent.ErrAgentBusy,
 		"the second turn is still in flight")
 
 	// The first idle established that this CLI reports session state.
@@ -613,7 +613,7 @@ func TestClaudeTurnActive_TheHeuristicRetiresOnceTheCLIStatesItsOwnTurn(t *testi
 	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`))
 
 	assert.Equal(t, []bool{false}, sink.TurnActives(), "the CLI's own state is the only source now")
-	assert.NoError(t, a.SendInput("next", nil), "the queue still dispatches")
+	assert.NoError(t, agenttest.SendInput(a, "next", nil), "the queue still dispatches")
 }
 
 func TestClaudeTurnActive_IssuesRisingOrderingTokens(t *testing.T) {
@@ -629,7 +629,7 @@ func TestClaudeQueuedNativeIdleWaitsForTheResultEdge(t *testing.T) {
 	queue := sink.OutputQueue()
 	services := agent.NewOrderedProviderServices(queue, agent.NewProviderServices(sink))
 	a, _ := newClaudeAgentWithStdin(services)
-	require.NoError(t, a.SendInput("first", nil))
+	require.NoError(t, agenttest.SendInput(a, "first", nil))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"first-tool","message":{"content":[{"type":"tool_use","id":"old-tool","name":"Read"}]}}`))
 	require.Equal(t, []agenttest.SpanOpen{{SpanID: "old-tool"}}, sink.OpenSpans())
@@ -648,7 +648,7 @@ func TestClaudeQueuedNativeIdleWaitsForTheResultEdge(t *testing.T) {
 	blocked = false
 	require.NoError(t, agent.FlushPendingOutput(services))
 	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
-	require.NoError(t, a.SendInput("next", nil))
+	require.NoError(t, agenttest.SendInput(a, "next", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"next-tool","message":{"content":[{"type":"tool_use","id":"next-tool","name":"Read"}]}}`))
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	rows := sink.Messages()

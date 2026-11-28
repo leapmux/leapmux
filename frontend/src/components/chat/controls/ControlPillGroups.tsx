@@ -7,7 +7,7 @@ import * as styles from '../ControlRequestBanner.css'
 
 /**
  * Display the permission preset choices in the request's decision row.
- * The shared footer and provider control surfaces use this group.
+ * The shared decision footer (`ControlDecisionFooter`) draws this group.
  * Its accessible Permissions name identifies the Unchanged, Smart, and Bypass choices.
  */
 export const ControlPermissionPillGroup: Component<{ pill: ControlPermissionPill }> = props => (

@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // GetOwnedWorker implements the common GetOwned logic shared across all backends.
 // It fetches the worker by ID, rejects soft-deleted rows, and requires the caller
@@ -32,4 +35,30 @@ func GetOwnedWorker(
 		return nil, ErrNotFound
 	}
 	return w, nil
+}
+
+// AssembleWorkerInventorySnapshot builds a WorkerInventorySnapshot from the
+// rows of a GetWorkerInventorySnapshot query. Every row carries the same
+// enrollment revision; non-empty worker IDs are collected and sorted.
+func AssembleWorkerInventorySnapshot[R any](
+	rows []R,
+	fields func(R) (revision int64, workerID string),
+) WorkerInventorySnapshot {
+	if len(rows) == 0 {
+		return WorkerInventorySnapshot{}
+	}
+	rev, firstWorkerID := fields(rows[0])
+	snap := WorkerInventorySnapshot{Revision: rev}
+	if firstWorkerID != "" {
+		snap.WorkerIDs = make([]string, 0, len(rows))
+		snap.WorkerIDs = append(snap.WorkerIDs, firstWorkerID)
+	}
+	for _, row := range rows[1:] {
+		_, workerID := fields(row)
+		if workerID != "" {
+			snap.WorkerIDs = append(snap.WorkerIDs, workerID)
+		}
+	}
+	slices.Sort(snap.WorkerIDs)
+	return snap
 }

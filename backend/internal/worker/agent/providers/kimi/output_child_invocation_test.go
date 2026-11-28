@@ -27,12 +27,13 @@ func invocationOutcomeOf(t *testing.T, sink *agenttest.ControlSink, identity kim
 func TestKimiChildInputReservationSettlesItsReceipt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name                  string
-		uncertain, nativeUser bool
+		name                             string
+		uncertain, nativeUser, ownPrompt bool
 	}{
 		{name: "definite refusal"},
 		{name: "lost receipt", uncertain: true},
-		{name: "new native user survives refusal", nativeUser: true},
+		{name: "new native user survives refusal", nativeUser: true, ownPrompt: true},
+		{name: "unrelated native user survives refusal", nativeUser: true, ownPrompt: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -54,9 +55,12 @@ func TestKimiChildInputReservationSettlesItsReceipt(t *testing.T) {
 			require.ErrorIs(t, agenttest.SendChildInput(rig.agent, "session_1/agent-0", agent.ChildInput{Content: "Concurrent input."}), agent.ErrInputPending)
 			assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath("session_1", "/prompts")), 1)
 			if tc.nativeUser {
-				requests := rig.fake.requestsTo("POST " + kimiSessionPath("session_1", "/prompts"))
-				require.Len(t, requests, 1)
-				promptID := decodePrompt(t, requests[0]).PromptID
+				promptID := "external-prompt"
+				if tc.ownPrompt {
+					requests := rig.fake.requestsTo("POST " + kimiSessionPath("session_1", "/prompts"))
+					require.Len(t, requests, 1)
+					promptID = decodePrompt(t, requests[0]).PromptID
+				}
 				native.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", `{"type":"turn.started","turn":{"turn_id":"user","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
 				item, err := json.Marshal(map[string]any{"type": "item.ended", "turn_id": "user", "item": map[string]any{
 					"type": "user_message", "item_id": promptID, "status": "ended", "outcome": "completed", "created_at": "2026-11-18T00:00:00Z", "text": "Again.", "prompt_ids": []string{promptID}, "placement": "opener", "origin": map[string]any{"kind": "user"}, "attachments": []any{}, "skills": []any{},
@@ -68,8 +72,12 @@ func TestKimiChildInputReservationSettlesItsReceipt(t *testing.T) {
 			release()
 			select {
 			case err := <-done:
-				require.Error(t, err)
-				assert.Equal(t, tc.uncertain, errors.Is(err, agent.ErrDeliveryUncertain))
+				if tc.ownPrompt {
+					require.NoError(t, err, "observed execution of our own prompt ID recovers a late HTTP refusal")
+				} else {
+					require.Error(t, err)
+					assert.Equal(t, tc.uncertain, errors.Is(err, agent.ErrDeliveryUncertain))
+				}
 			case <-ctx.Done():
 				t.Fatal("the native child receipt did not settle")
 			}
@@ -160,7 +168,7 @@ func TestKimiNewParentInvocationRetainsItsOwnOutcome(t *testing.T) {
 				deliverKimiChildPromptTurn(t, native, kimiTestChildPromptTurn{id: "user", ordinal: 0, promptID: "independent", outcome: "completed"})
 			}
 			native.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
-			require.NoError(t, native.agent.SendInput("Resume the child.", nil))
+			require.NoError(t, agenttest.SendInput(native.agent, "Resume the child.", nil))
 			requests := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 			require.Len(t, requests, 1)
 			promptID := decodePrompt(t, requests[0]).PromptID

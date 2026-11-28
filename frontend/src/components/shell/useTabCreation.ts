@@ -560,6 +560,8 @@ export function useTabCreation(options: UseTabCreationOptions) {
   function prepareAttempt({ operation, origin, frame, presentation, placement, prepare }: AttemptPreparation): PreparedTabCreation {
     if (operation.stage.kind === 'tab_pending')
       return operation.stage.prepared
+    // Browser and Worker creation use the same tab ID format.
+    // https://github.com/leapmux/leapmux/issues/663
     const tabId = generateId()
     try {
       const context: CreationContext = {

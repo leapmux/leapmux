@@ -17,7 +17,7 @@ import (
 // test could pin down.
 var dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
 	// Fail closed on a missing WS client (see HubProxy.requireWSClient): a nil
-	// wsClient makes OpenUserEventsWSWithHeader fall back to http.DefaultClient,
+	// wsClient makes OpenUserEventsWS fall back to http.DefaultClient,
 	// which carries neither the cookie jar nor pinRedirectsToOrigin and would
 	// reopen the hub-side off-origin 3xx redirect-escape the pin closes.
 	if err := proxy.requireWSClient("userevents relay"); err != nil {
@@ -27,8 +27,12 @@ var dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []s
 	if proxy.jar != nil {
 		client.Jar = proxy.jar.requestJar(proxy.base)
 	}
-	return channelwire.OpenUserEventsWSWithHeader(
-		ctx, &client, proxy.baseURL, nil, workspaceIDs, cursor, epoch,
+	return channelwire.OpenUserEventsWS(
+		ctx, &client, proxy.baseURL, "", channelwire.UserEventsOptions{
+			WorkspaceIDs: workspaceIDs,
+			ResumeCursor: cursor,
+			ResumeEpoch:  epoch,
+		},
 	)
 }
 

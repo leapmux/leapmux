@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -31,9 +32,9 @@ type wsAuthenticator struct {
 	// per handler rather than read from a package variable so parallel tests
 	// cannot race each other's pace; see wskeepalive.Pace.
 	keepalive wskeepalive.Pace
-	// requiredScope is the one scope a credential must hold to open this
-	// endpoint at all. See newWSAuthenticator.
-	requiredScope leapmuxv1.Scope
+	// anyRequiredScopes lists the door scopes for this endpoint. A credential
+	// must hold at least one of them to open the endpoint. See newWSAuthenticator.
+	anyRequiredScopes []leapmuxv1.Scope
 }
 
 // newWSAuthenticator builds that option set, so a handler constructor states
@@ -44,39 +45,73 @@ type wsAuthenticator struct {
 // the keepalive field needed the identical hunk in both. A constructor makes
 // the next field an edit neither endpoint can miss.
 //
-// requiredScope is a PARAMETER rather than a field a handler may fill later:
-// a value nobody stated is the proto zero, and a new WebSocket endpoint must
-// not be CONSTRUCTIBLE without stating what its caller has to hold. These two
-// sockets carry the account's whole event feed and its channels to every
-// machine it owns, and the Connect interceptor's scope rung does not see
-// either of them -- neither is a Connect procedure.
+// anyRequiredScopes is a PARAMETER rather than a field a handler may fill
+// later: omitting it or passing the proto zero panics, so a new WebSocket
+// endpoint cannot be constructed without declaring at least one grantable
+// scope. These two sockets carry the account's whole event feed and its
+// channels to every machine it owns, and the Connect interceptor's scope rung
+// does not see either of them -- neither is a Connect procedure.
 //
-// A non-grantable value PANICS at construction, matching that registrar: a bad
-// entry is a boot failure rather than a refusal in production nobody notices.
+// An empty list or any non-grantable value PANICS at construction, matching
+// that registrar: a bad entry is a boot failure rather than a refusal in
+// production nobody notices.
 func newWSAuthenticator(
 	st store.Store,
 	sessionHasher auth.SecretHasher,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
 	secureCookie func(context.Context) bool,
-	requiredScope leapmuxv1.Scope,
+	anyRequiredScopes ...leapmuxv1.Scope,
 ) wsAuthenticator {
-	if !authscope.IsGrantable(requiredScope) {
-		panic("service: WebSocket endpoint states no grantable scope: " + requiredScope.String())
+	if len(anyRequiredScopes) == 0 {
+		panic("service: WebSocket endpoint states no grantable scope")
+	}
+	for _, scope := range anyRequiredScopes {
+		if !authscope.IsGrantable(scope) {
+			panic("service: WebSocket endpoint states no grantable scope: " + scope.String())
+		}
 	}
 	lease := newWebSocketAuthLease(authContexts)
 	if sessionHasher.IsZero() {
 		panic("service: WebSocket handler requires a session secret hasher")
 	}
 	return wsAuthenticator{
-		sessionHasher: sessionHasher,
-		store:         st,
-		authLease:     lease,
-		soloUser:      soloUser,
-		secureCookie:  secureCookie,
-		keepalive:     wskeepalive.Production(),
-		requiredScope: requiredScope,
+		sessionHasher:     sessionHasher,
+		store:             st,
+		authLease:         lease,
+		soloUser:          soloUser,
+		secureCookie:      secureCookie,
+		keepalive:         wskeepalive.Production(),
+		anyRequiredScopes: slices.Clone(anyRequiredScopes),
 	}
+}
+
+func requireScopes(user *auth.UserInfo, scopes ...leapmuxv1.Scope) error {
+	if len(scopes) == 0 {
+		return fmt.Errorf("%w: no required scopes declared", auth.ErrHTTPForbidden)
+	}
+	for _, scope := range scopes {
+		if !user.Scopes.Allows(scope) {
+			token, _ := authscope.Token(scope)
+			return fmt.Errorf("%w: this credential was not granted %s", auth.ErrHTTPForbidden, token)
+		}
+	}
+	return nil
+}
+
+func requireAnyScope(user *auth.UserInfo, scopes []leapmuxv1.Scope) error {
+	if len(scopes) == 0 {
+		return fmt.Errorf("%w: no required scopes declared", auth.ErrHTTPForbidden)
+	}
+	if len(scopes) == 1 {
+		return requireScopes(user, scopes[0])
+	}
+	for _, scope := range scopes {
+		if user.Scopes.Allows(scope) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: this credential lacks required scopes", auth.ErrHTTPForbidden)
 }
 
 // authenticate resolves the caller via the shared HTTP auth ladder so both
@@ -84,10 +119,10 @@ func newWSAuthenticator(
 // is optional (nil accepts cookie auth only), and the caller wires it after
 // construction, so this reads it at call time.
 //
-// It also checks the endpoint's required scope. Browser sessions and Solo's
-// synthetic user carry an unscoped grant and pass this check. API credentials,
-// including the control CLI's credentials, must hold the endpoint's required
-// scope.
+// It also enforces the endpoint's door scopes via requireAnyScope. Browser
+// sessions and Solo's synthetic user carry an unscoped grant and pass this
+// check. API credentials, including the control CLI's credentials, must hold
+// at least one of the endpoint's required scopes.
 func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 	// PER REQUEST, because the answer is: a trusted proxy that verified HTTPS
 	// for this connection turns the secure cookie name on whatever the setting
@@ -105,16 +140,15 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 		ReadCookie:    true,
 		SecureCookies: secureCookie,
 		Contexts:      a.authLease.registry,
-		// The hub's shared gate, so a WebSocket handshake and a Connect
+		// The hub's shared solo check, so a WebSocket handshake and a Connect
 		// procedure admit exactly the same solo callers.
 		SoloGate: a.authLease.registry.SoloGate(),
 	})
 	if err != nil {
 		return nil, err
 	}
-	if !user.Scopes.Allows(a.requiredScope) {
-		token, _ := authscope.Token(a.requiredScope)
-		return nil, fmt.Errorf("%w: this credential was not granted %s", auth.ErrHTTPForbidden, token)
+	if err := requireAnyScope(user, a.anyRequiredScopes); err != nil {
+		return nil, err
 	}
 	return user, nil
 }

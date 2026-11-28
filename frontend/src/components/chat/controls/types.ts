@@ -1,57 +1,37 @@
 import type { Accessor, Setter } from 'solid-js'
-import type { MessageContextResolver } from '../messageContextResolver'
-import type { ControlQuestion, QuestionOption } from '../model/question'
+import type { ControlPrompt } from '../model/controlPrompt'
+import type { QuestionOption } from '../model/question'
 import type { PermissionPresetController } from '../providerSettings'
-import type { ControlSurface } from './controlSurface'
-import type { AgentProvider, PlanApprovalSettings } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ControlDecision } from '~/generated/proto/leapmux/v1/agent_control_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/models/agentSession'
 import type { ControlRequest } from '~/stores/control.store'
 import { createSignal } from 'solid-js'
-import { ACP_PERMISSION_OUTCOME } from '~/generated/contracts/acp-protocol'
 
-export interface ControlResponseOptions {
-  recordOnly?: boolean
-  planApproval?: Pick<PlanApprovalSettings, 'permissionMode' | 'clearContext'>
-}
+/**
+ * ONE answer that the composer delivers for a request instance:
+ *
+ *   - `decision`: what the reader chose. The Worker's provider builds the runtime's own
+ *     answer from it (AnswerControl).
+ *   - `record`: save a response that the Worker already holds, or check its state,
+ *     for a request whose answer is still in flight.
+ */
+export type ControlAnswer
+  = | { kind: 'decision', decision: ControlDecision }
+    | { kind: 'record' }
 
-export type ControlResponseHandler = (request: ControlRequest, content: Uint8Array, options?: ControlResponseOptions) => Promise<boolean | void>
+/**
+ * Delivers ONE answer for a request instance, and resolves true when the Worker
+ * completed it. Anything else leaves the request open, so the composer keeps the
+ * reader's drafts.
+ */
+export type ControlAnswerHandler = (request: ControlRequest, answer: ControlAnswer) => Promise<boolean | void>
 
-export type ControlResponseSender = (content: Uint8Array, options?: ControlResponseOptions) => Promise<void>
+/** Sends ONE decision for the request that the caller holds. */
+export type ControlDecisionSender = (decision: ControlDecision) => Promise<void>
 
 export function questionOptionValue(option: QuestionOption): string {
   return option.value ?? option.label
-}
-
-/**
- * Read an untyped wire array into questions, dropping what the dialog cannot draw.
- *
- * A cast is not a check. Two plugins tested the OUTER array with `Array.isArray` and
- * asserted the ELEMENTS, so a `null` element reached `q().question` and threw the
- * whole banner away, and a bare string reached it as `undefined` -- a blank dialog
- * the reader can see and cannot answer. `AskUserQuestionControl` then hands
- * `q().options` to a `<For>`, which needs a real array on every element.
- *
- * Each element keeps whatever it stated and takes the empty list for an `options`
- * that is not an array. It does NOT drop a question that states no option: a
- * free-text question is a real one, and `allowEmpty` is what says so.
- */
-export function questionsFromWire(raw: unknown): ControlQuestion[] {
-  if (!Array.isArray(raw))
-    return []
-  return raw.flatMap((item) => {
-    if (typeof item !== 'object' || item === null)
-      return []
-    const source = item as Partial<ControlQuestion>
-    return [
-      {
-        ...source,
-        question: source.question ?? '',
-        options: Array.isArray(source.options)
-          ? source.options
-          : [],
-      },
-    ]
-  })
 }
 
 /**
@@ -186,23 +166,20 @@ export interface ContentProps {
   request: ControlRequest
   answerState: ControlAnswerState
   optionsDisabled?: boolean
-  agentProvider?: AgentProvider
-  messageContext?: MessageContextResolver
 }
 
 export interface ActionsProps {
   request: ControlRequest
-  messageContext?: MessageContextResolver
   answerState: ControlAnswerState
   /**
-   * Sends ONE answer for {@link request}.
+   * Sends ONE decision for {@link request}.
    *
    * It takes no agent id: the composer builds this from the request instance the
    * user is answering, and that request already carries the agent, the request
    * id and the per-instance claim token. An id passed alongside could name a
    * different instance, so the parameter is not offered.
    */
-  onRespond: ControlResponseSender
+  onDecide: ControlDecisionSender
   hasEditorContent: boolean
   onTriggerSend: () => void
   /**
@@ -218,7 +195,13 @@ export interface ActionsProps {
    * which makes the mistake unrepresentable instead of merely fixed once.
    */
   editorContentRef?: () => EditorContentRef | undefined
-  agentProvider?: AgentProvider
+  /**
+   * The provider of the request, resolved against the agent's (`controlRequestProvider`).
+   * A plan approval reads it for the share of the context window that its Clear Context
+   * switch states. `undefined` while the provider is not known yet, because a caller
+   * passes it as a reactive getter.
+   */
+  agentProvider?: AgentProvider | undefined
   /**
    * The provider's usable permission presets and the ONE handler that applies a
    * settings change. A control request's permission pill group is drawn from this;
@@ -227,54 +210,35 @@ export interface ActionsProps {
   presets?: PermissionPresetController
   contextUsage?: ContextUsageInfo
   modelContextWindow?: number
-  /**
-   * Optional pre-extracted question list. Providers whose payload shape
-   * isn't compatible with `getToolInput(...).questions` (e.g. Pi's
-   * extension_ui_request) pass this directly so AskUserQuestionActions
-   * can drive the same selection / multi-page flow without a wrapper
-   * adapter.
-   */
-  questions?: ControlQuestion[]
 }
 
 /**
- * What both halves of the banner take, beyond the props a plugin's control
- * takes.
+ * What both halves of the banner take, beyond the props of a control.
  *
- * The banner CLASSIFIES nothing. Its caller derives the surface and the
- * provider once, with `createControlSurface`, and hands the same two values to
- * the content and to the actions. Both mount for the SAME request in two
- * different slots, so a banner that classified its own request built that graph
- * twice and the composer built it a third time.
+ * The banner classifies nothing: the Worker states the prompt, and the composer
+ * hands the same prompt to the content and to the actions.
  */
 interface BannerProps {
   /**
-   * Which surface answers the request: the question form, the elicitation form,
-   * or the provider's own plugin.
+   * What the request asks: the prompt that the Worker read from it.
    *
-   * `undefined` for an absent request. The caller must pass the surface of the
+   * `undefined` for an absent request. The caller must pass the prompt of the
    * request in {@link BannerContentProps.request}, and the composer does: both
    * come from the one active request.
    */
-  controlSurface: ControlSurface | undefined
-  /**
-   * The provider whose plugin renders the request, ALREADY resolved against the
-   * request's own provider. It is not the agent's provider, which the caller
-   * resolves beside the surface so that both answers come from one place.
-   */
-  agentProvider?: AgentProvider
+  controlSurface: ControlPrompt | undefined
 }
 
 /**
  * The banner's own prop types, which admit an ABSENT request.
  *
- * A provider's `ControlContent` / `ControlActions` takes `ContentProps` /
- * `ActionsProps` and dereferences `request.payload` without a guard, which is
- * correct: the banner renders a plugin only inside a `<Show>` that already
- * proved the request. The two exported banner components sit one level above
- * that, and a caller CAN pass a request that a store removal turns null -- a
- * reactive prop does exactly that. These types state it, so the compiler
- * requires the guard instead of a reader trusting that one is present.
+ * A control under the banner takes `ContentProps` / `ActionsProps` and reads
+ * `request` without a guard, which is correct: the banner renders a control only
+ * inside a `<Show>` that already proved the request. The two exported banner
+ * components sit one level above that, and a caller CAN pass a request that a
+ * store removal turns null -- a reactive prop does exactly that. These types state
+ * it, so the compiler requires the guard instead of a reader trusting that one is
+ * present.
  */
 export interface BannerContentProps extends Omit<ContentProps, 'request'>, BannerProps {
   request: ControlRequest | null
@@ -296,44 +260,4 @@ export interface BannerContentProps extends Omit<ContentProps, 'request'>, Banne
 export interface BannerActionsProps extends Omit<ActionsProps, 'request'>, BannerProps {
   onRecordResponse?: () => Promise<void>
   request: ControlRequest | null
-}
-
-export function sendResponse(
-  onRespond: ControlResponseSender,
-  response: unknown,
-  options?: ControlResponseOptions,
-): Promise<void> {
-  const bytes = new TextEncoder().encode(JSON.stringify(response))
-  return options
-    ? onRespond(bytes, options)
-    : onRespond(bytes)
-}
-
-/** Keep the worker request ID intact. The worker restores the native ID from the persisted request. */
-export function buildJsonRpcResult(requestId: string, result: unknown): Record<string, unknown> {
-  return { jsonrpc: '2.0', id: requestId, result }
-}
-
-/** Send the result with the unchanged worker request ID. */
-export function sendJsonRpcResult(
-  onRespond: ControlResponseSender,
-  requestId: string,
-  result: unknown,
-): Promise<void> {
-  return sendResponse(onRespond, buildJsonRpcResult(requestId, result))
-}
-
-/**
- * Sends the ACP-family `session/request_permission` reply that selects one
- * option. The ACP and OpenCode protocols share this envelope, so both providers'
- * senders delegate here instead of building it twice.
- */
-export function sendSelectedOptionResponse(
-  onRespond: ControlResponseSender,
-  requestId: string,
-  optionId: string,
-): Promise<void> {
-  return sendJsonRpcResult(onRespond, requestId, {
-    outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId },
-  })
 }

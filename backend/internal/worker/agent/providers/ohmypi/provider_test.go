@@ -167,10 +167,8 @@ func TestResolveControlResponse(t *testing.T) {
 
 	t.Run("preserves a dialog answer", func(t *testing.T) {
 		response := []byte(`{"type":"extension_ui_response","id":"dlg-1","value":"Approve"}`)
-		res := ompProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-			RequestPayload:  []byte(`{"type":"extension_ui_request","id":"dlg-1","method":"select","title":"Allow tool: bash","options":["Approve","Deny"]}`),
-			ResponseContent: response,
-		})
+		res := agenttest.ResolveAnswer(ompProvider{}, []byte(`{"type":"extension_ui_request","id":"dlg-1","method":"select","title":"Allow tool: bash","options":["Approve","Deny"]}`), "dlg-1",
+			agent.ControlAnswer{Content: response})
 		assert.Equal(t, response, res.Content)
 		assert.False(t, res.Withhold)
 		assert.Equal(t, "dlg-1", ompProvider{}.ControlResponseRequestID(response), "the dialog id finds the stored request")

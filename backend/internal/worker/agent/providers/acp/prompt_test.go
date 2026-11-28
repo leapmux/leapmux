@@ -20,7 +20,7 @@ func TestACPPromptCanStartAfterTheSessionChanges(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
 	a, _ := newACPTurnBase(t, agenttest.NopStdin(&output))
-	require.NoError(t, a.SendInput("Old session input", nil))
+	require.NoError(t, agenttest.SendInput(a, "Old session input", nil))
 	cleared := make(chan error, 1)
 	go func() {
 		_, err := a.ClearContext()
@@ -31,19 +31,19 @@ func TestACPPromptCanStartAfterTheSessionChanges(t *testing.T) {
 	})
 	a.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"new-session"}}`)))
 	require.NoError(t, <-cleared)
-	require.NoError(t, a.SendInput("New session input", nil))
+	require.NoError(t, agenttest.SendInput(a, "New session input", nil))
 }
 
 func TestACPPromptIgnoresAResponseFromThePreviousSession(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
 	a, sink := newACPTurnBase(t, agenttest.NopStdin(&output))
-	require.NoError(t, a.SendInput("Current session input", nil))
+	require.NoError(t, agenttest.SendInput(a, "Current session input", nil))
 	a.finishPromptRequest("previous-session", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 	assert.Empty(t, sink.Messages())
 	active, _ := sink.LastTurnActive()
 	assert.True(t, active)
-	require.ErrorIs(t, a.SendInput("Later input", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "Later input", nil), agent.ErrAgentBusy)
 }
 
 func TestPromptPreparedRunsAfterAdmissionBeforeRequestPreparation(t *testing.T) {
@@ -65,8 +65,8 @@ func TestPromptPreparedRunsAfterAdmissionBeforeRequestPreparation(t *testing.T) 
 		return nil
 	}))
 	assert.Equal(t, []string{"shared", "request"}, events)
-	require.ErrorIs(t, b.SendInput("busy", nil), agent.ErrAgentBusy)
-	require.Error(t, b.SendInputForSession("other-session", "stale", nil))
+	require.ErrorIs(t, agenttest.SendInput(b, "busy", nil), agent.ErrAgentBusy)
+	require.Error(t, agenttest.SendInputForSession(b, "other-session", "stale", nil))
 	assert.Equal(t, []string{"shared", "request"}, events)
 }
 
@@ -205,7 +205,7 @@ func TestACPFinishOwnedPromptRequestSerializesPromptEndedWithStoppedAndOwnership
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+			b.finishOwnedPromptRequest("session-1", nil, nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 		}()
 
 		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.
@@ -255,7 +255,7 @@ func TestACPFinishOwnedPromptRequestSerializesPromptEndedWithStoppedAndOwnership
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+			b.finishOwnedPromptRequest("session-1", nil, nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 		}()
 
 		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.
@@ -297,7 +297,7 @@ func TestResumeReplayBeforeTheLoadReplyIsDropped(t *testing.T) {
 		MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
 	}}
 	b, sink, session := runHandshakeForTest(t, peer, Hooks{},
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionLoad},
 		func(method string) json.RawMessage {
 			switch method {
@@ -315,7 +315,7 @@ func TestResumeReplayBeforeTheLoadReplyIsDropped(t *testing.T) {
 	b.finishSessionUpdates()
 	assert.Empty(t, sink.Messages(), "the replay a load reply covers persists no row")
 
-	require.NoError(t, b.SendInput("NEXT", nil))
+	require.NoError(t, agenttest.SendInput(b, "NEXT", nil))
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 
 	messages := sink.Messages()
@@ -337,7 +337,7 @@ func TestLiveTextAfterTheLoadReplyIsKept(t *testing.T) {
 		MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
 	}}
 	b, sink, session := runHandshakeForTest(t, peer, Hooks{},
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionLoad},
 		func(method string) json.RawMessage {
 			switch method {
@@ -353,7 +353,7 @@ func TestLiveTextAfterTheLoadReplyIsKept(t *testing.T) {
 	// The load reply arrived, so what follows it is conversation of this session.
 	b.HandleOutput(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "LATE"))
 	b.finishSessionUpdates()
-	require.NoError(t, b.SendInput("NEXT", nil))
+	require.NoError(t, agenttest.SendInput(b, "NEXT", nil))
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 
 	// The turn start stored the live chunk as a segment of its own, the reply
@@ -413,7 +413,7 @@ func TestLiveTextRightAfterTheLoadReplyIsKept(t *testing.T) {
 			handshook := make(chan handshakeResult, 1)
 			go func() {
 				session, err := rig.handshake(
-					agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+					agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 					SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionLoad})
 				handshook <- handshakeResult{session, err}
 			}()
@@ -434,7 +434,7 @@ func TestLiveTextRightAfterTheLoadReplyIsKept(t *testing.T) {
 
 			b := rig.base
 			b.finishSessionUpdates()
-			require.NoError(t, b.SendInput("NEXT", nil))
+			require.NoError(t, agenttest.SendInput(b, "NEXT", nil))
 			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 
 			assert.Equal(t, []string{"text:LIVE", "text:NEW"}, assembledTexts(t, rig.sink.Messages()),
@@ -456,7 +456,7 @@ func TestUpdatesBeforeTheResumeReplyAreLiveOutput(t *testing.T) {
 		MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
 	}}
 	b, sink, session := runHandshakeForTest(t, peer, Hooks{},
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionResume},
 		func(method string) json.RawMessage {
 			switch method {
@@ -470,7 +470,7 @@ func TestUpdatesBeforeTheResumeReplyAreLiveOutput(t *testing.T) {
 		})
 	require.Equal(t, "stored-1", session.SessionID)
 	b.finishSessionUpdates()
-	require.NoError(t, b.SendInput("NEXT", nil))
+	require.NoError(t, agenttest.SendInput(b, "NEXT", nil))
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 
 	assert.Equal(t, []string{"text:OTHERCLIENT", "text:NEW"}, assembledTexts(t, sink.Messages()),
@@ -489,13 +489,13 @@ func TestPromptDoesNotInheritATrailingSegment(t *testing.T) {
 			t.Parallel()
 			out := &agenttest.Stdin{}
 			b, sink := newACPTurnBase(t, out)
-			require.NoError(t, b.SendInput("first", nil))
+			require.NoError(t, agenttest.SendInput(b, "first", nil))
 			b.HandleOutput(acptest.Chunk("session-1", updateType, "FIRST"))
 			b.HandleJSONRPCResponseForTest(promptResponse(1))
 			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 
 			b.HandleOutput(acptest.Chunk("session-1", updateType, "TRAIL"))
-			require.NoError(t, b.SendInput("second", nil))
+			require.NoError(t, agenttest.SendInput(b, "second", nil))
 			b.HandleOutput(acptest.Chunk("session-1", updateType, "SECOND"))
 			b.HandleJSONRPCResponseForTest(promptResponse(2))
 			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
@@ -515,7 +515,7 @@ func TestPromptDoesNotCountAToolThatCompletedBeforeItStarted(t *testing.T) {
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"idle-tool","title":"Read","kind":"read","status":"completed"}`))
 	require.Len(t, closingRows(sink, "idle-tool"), 1, "the idle tool call keeps its row")
 
-	require.NoError(t, b.SendInput("next", nil))
+	require.NoError(t, agenttest.SendInput(b, "next", nil))
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"turn-tool","title":"Read","kind":"read","status":"completed"}`))
 	b.HandleJSONRPCResponseForTest(promptResponse(1))
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
@@ -536,15 +536,16 @@ func TestPromptWithNothingBufferedStoresNothingAtItsStart(t *testing.T) {
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
 
-	require.NoError(t, b.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(b, "hello", nil))
 
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.ProgressUpdates())
 }
 
-// The reader can hand a chunk to the base while a prompt starts. The chunk goes
-// either to the segment before the prompt or to the prompt, and never to both
-// or to neither.
+// The reader can hand a chunk to the base while a prompt starts. Each chunk
+// lands in at most three segments (before claiming the prompt, between claim
+// and stdin dispatch in startInputReply, or in the prompt itself) and never in
+// more than one or in none.
 func TestPromptStartKeepsEachConcurrentChunkOnce(t *testing.T) {
 	t.Parallel()
 	const chunks = 200
@@ -557,14 +558,14 @@ func TestPromptStartKeepsEachConcurrentChunkOnce(t *testing.T) {
 			b.HandleOutput(acptest.Chunk("session-1", contracts.ACPUpdateAgentMessageChunk, "a"))
 		}
 	}()
-	require.NoError(t, b.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(b, "hello", nil))
 	<-streamed
 	b.HandleJSONRPCResponseForTest(promptResponse(1))
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 
 	texts := assembledTexts(t, sink.Messages())
 	require.NotEmpty(t, texts)
-	assert.LessOrEqual(t, len(texts), 2, "one segment before the prompt at most, and the prompt's own")
+	assert.LessOrEqual(t, len(texts), 3, "at most pre-claim, pre-dispatch, and prompt segments")
 	stored := ""
 	for _, text := range texts {
 		segment, isText := strings.CutPrefix(text, "text:")

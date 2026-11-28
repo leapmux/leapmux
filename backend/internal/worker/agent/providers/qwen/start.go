@@ -102,7 +102,7 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 			return qwenAgentRowKey(a.CurrentSessionID(), childUpdateRoute(updateType, metadata))
 		},
 		SessionMetadataHandler:     a.handleSessionMetadata,
-		ChunkMessageID:             a.chunkMessageID,
+		UpdateMessageID:            a.chunkMessageID,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		ControlRequestObserver:     a.observeControlRequest,
@@ -130,11 +130,13 @@ func (a *Agent) clearProviderState() {
 	a.clearPromptSuggestion()
 	providerkit.EndCompaction(a.Sink())
 	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
+	undrained := a.steer.takeTracked()
 	a.children = childState{}
 	a.tools = toolInputs{}
 	a.steer = steerQueue{}
 	a.compressPending = nil
+	a.stateMu.Unlock()
+	a.resolveQwenTrackedSteers(undrained, agent.SteerOutcomeUncertain)
 }
 
 // Stop stops file readers, stops the process, then joins workflow readers.

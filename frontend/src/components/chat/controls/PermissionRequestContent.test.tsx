@@ -2,6 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { prettifyJson } from '~/lib/jsonFormat'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { PermissionRequestContent } from './PermissionRequestContent'
 
@@ -9,7 +10,7 @@ const PERMISSION_REQUIRED_RE = /Permission Required/
 const BASH_RE = /Bash/
 const KEY_19_RE = /key_19/
 
-const REQUEST: ControlRequest = { requestId: 'req-1', agentId: 'agent-1', payload: {} }
+const REQUEST: ControlRequest = testControlRequest({ requestId: 'req-1', agentId: 'agent-1' })
 
 /** Twenty keys, which is past the point where the body offers an expansion control. */
 function longInput(): Record<string, string> {

@@ -71,15 +71,18 @@ type Agent struct {
 	// process's first input paid (session.go). Guarded by Mu.
 	inputAuthenticationChecked bool
 	inputAuthenticationChecks  singleflight.Group
-	steerLedger                providerkit.SteerLedger
+	steerLedger                providerkit.IdentifiedSteerLedger
 	// Mu protects the requests and the held native turn end.
 	pendingSteerCalls   map[providerkit.SteerTicket]struct{}
 	pendingSteerTurnEnd json.RawMessage
 	// outputMu protects notifications that follow the held turn end and their replay.
 	deferredSteerOutput  []*providerkit.ParsedLine
 	replayingSteerOutput bool
+	// outputMu protects echoed steers whose native turn has yet to end.
+	replySteers []agent.NativeInputReceipt
 	// pendingStart keeps delivery ownership after a caller stops waiting.
 	pendingStart     *codexPendingTurnStart
+	replyStarts      map[string]*codexTrackedReply
 	settingRevisions map[string]uint64
 	// A contextCompaction item can confirm a compact request before its JSON-RPC
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
@@ -286,6 +289,20 @@ type codexThreadResponse struct {
 	ActivePermissionProfile json.RawMessage `json:"activePermissionProfile"`
 }
 
+func (a *Agent) sendThreadRequest(
+	method string, params map[string]interface{}, timeout time.Duration,
+) (codexThreadResult, error) {
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return codexThreadResult{}, fmt.Errorf("marshal %s params: %w", method, err)
+	}
+	resp, err := a.SendRequest(method, paramsJSON, timeout)
+	if err != nil {
+		return codexThreadResult{}, err
+	}
+	return parseCodexThreadResponse(method, resp)
+}
+
 // resumeThread sends `thread/resume` and returns the thread ID and effective
 // model that Codex reported. An RPC error, a response that does not parse, and
 // a response that carries no required field all fail: none of the three
@@ -293,17 +310,31 @@ type codexThreadResponse struct {
 func (a *Agent) resumeThread(
 	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
 ) (codexThreadResult, error) {
-	paramsJSON, err := json.Marshal(threadParams)
-	if err != nil {
-		return codexThreadResult{}, providerkit.ResumeFailedError(resumeSessionID, fmt.Errorf("marshal thread/resume params: %w", err))
-	}
-	resp, err := a.SendRequest("thread/resume", paramsJSON, timeout)
+	threadResult, err := a.sendThreadRequest("thread/resume", threadParams, timeout)
 	if err != nil {
 		return codexThreadResult{}, providerkit.ResumeFailedError(resumeSessionID, err)
 	}
-	threadResult, err := parseCodexThreadResponse("thread/resume", resp)
+	return threadResult, nil
+}
+
+// forkThread sends `thread/fork` for forkSessionID with the target cwd and
+// settings from threadParams, and returns the newly forked thread identity and
+// effective settings. It rejects a response whose thread ID is empty or matches
+// the source thread ID.
+func (a *Agent) forkThread(
+	threadParams map[string]interface{}, forkSessionID string, timeout time.Duration,
+) (codexThreadResult, error) {
+	params := maps.Clone(threadParams)
+	if params == nil {
+		params = make(map[string]interface{})
+	}
+	params["threadId"] = forkSessionID
+	threadResult, err := a.sendThreadRequest("thread/fork", params, timeout)
 	if err != nil {
-		return codexThreadResult{}, providerkit.ResumeFailedError(resumeSessionID, err)
+		return codexThreadResult{}, fmt.Errorf("fork codex thread %q: %w", forkSessionID, err)
+	}
+	if threadResult.ID == forkSessionID {
+		return codexThreadResult{}, fmt.Errorf("codex thread/fork: response returned the source thread ID %q", forkSessionID)
 	}
 	return threadResult, nil
 }
@@ -315,15 +346,7 @@ func (a *Agent) startThread(threadParams map[string]interface{}, timeout time.Du
 		params = make(map[string]interface{})
 	}
 	params["historyMode"], params["ephemeral"], params["experimentalRawEvents"] = "paginated", false, true
-	paramsJSON, err := json.Marshal(params)
-	if err != nil {
-		return codexThreadResult{}, fmt.Errorf("marshal thread/start params: %w", err)
-	}
-	resp, err := a.SendRequest("thread/start", paramsJSON, timeout)
-	if err != nil {
-		return codexThreadResult{}, err
-	}
-	return parseCodexThreadResponse("thread/start", resp)
+	return a.sendThreadRequest("thread/start", params, timeout)
 }
 
 func parseCodexThreadResponse(method string, raw json.RawMessage) (codexThreadResult, error) {
@@ -470,7 +493,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		_, err := a.interruptMainTurn(threadID, turnID)
 		return err
 	}
-	a.AnswerOutstandingControlRequests(a.sink)
+	a.AnswerOutstandingControlRequests()
 	if threadID == "" {
 		return nil
 	}
@@ -583,7 +606,7 @@ func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err e
 	// withdraws. Without this drain that answer can never be delivered: the
 	// elicitation stays blocked inside the CLI for the rest of the session, well
 	// past the point the user believes the turn ended.
-	a.AnswerOutstandingControlRequests(a.sink)
+	a.AnswerOutstandingControlRequests()
 	if threadID == "" || turnID == "" {
 		return false, nil
 	}
@@ -597,7 +620,7 @@ func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err e
 	// answer it, no later SendRawInput could route one, and the thinking indicator
 	// never stopped.
 	if accepted {
-		a.WithdrawAllControlRequests(a.sink)
+		a.WithdrawAllControlRequests()
 	}
 	return accepted, err
 }
@@ -605,21 +628,17 @@ func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err e
 // Stop stops the process, then retains unfinished model output.
 func (a *Agent) Stop() {
 	a.Process.Stop()
-	a.outputMu.Lock()
-	a.finishCodexSteersAfterExit()
-	completion := a.ProcessExitCompletion()
-	a.flushAllCodexGeneration(completion)
-	a.persistIncompleteCodexTools("", true, completion)
-	a.finishAllCodexRawExecutions(completion)
-	a.retireCodexInputAfterExit()
-	a.rawExecutionOrder = 0
-	a.outputMu.Unlock()
-	providerkit.ResetSpansAndProgress(a.sink)
+	a.finalizeCodexExit()
 }
 
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.finalizeCodexExit()
+	return err
+}
+
+func (a *Agent) finalizeCodexExit() {
 	completion := a.ProcessExitCompletion()
 	a.outputMu.Lock()
 	a.finishCodexSteersAfterExit()
@@ -627,10 +646,10 @@ func (a *Agent) Wait() error {
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
+	a.retireCodexInputReplies("")
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	providerkit.ResetSpansAndProgress(a.sink)
-	return err
 }
 
 // PublishTurnActive publishes the current turn and pending input state.
@@ -665,31 +684,34 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 // queue, which classifies only a plain user message: a control response whose
 // text is "/compact" keeps its kind, reaches this method, and a check here
 // starts a compaction in place of the answer that the agent waits for.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputWithTracking(nil, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendInputWithTracking(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	// Refuse known busy state before waiting for a context transition.
 	// Dispatch checks again under its lock before it writes any bytes.
 	a.Mu.Lock()
 	err := a.checkCodexInputLocked(expected)
 	a.Mu.Unlock()
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	pending, err := a.dispatchInputForSession(expected, input)
+	pending, err := a.dispatchInputForSession(expected, input, true)
 	if pending != nil {
 		a.PublishTurnActive()
 	}
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return a.awaitCodexTurnStart(pending)
+	if err := a.awaitCodexTurnStart(pending); err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	return pending.reply.receipt, nil
 }
 
 func (a *Agent) CompactContext() error {
@@ -771,19 +793,19 @@ var _ agent.SessionInputSteerer = (*Agent)(nil)
 // for any active turn, so the capability needs no handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.steerInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, a.steerInput(nil, request)
 }
 
 // SteerInputForSession delivers the answer to a LeapMux-owned question. The
 // queue owns that answer's row and accepts it at the steer, so this delivery
 // joins no steer ledger: the native echo that later repeats the answer is not
 // news the queue waits for.
-func (a *Agent) SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.steerInput(&sessionID, content, attachments, false)
+func (a *Agent) SteerInputForSession(sessionID string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, a.steerInput(&sessionID, request)
 }
 
-func (a *Agent) steerInput(expected *string, content string, attachments []*leapmuxv1.Attachment, trackEcho bool) error {
+func (a *Agent) steerInput(expected *string, request agent.SteerRequest) error {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
 		a.Mu.Unlock()
@@ -814,10 +836,10 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	// Retry acceptance must wait until every earlier steer resolves.
 	a.mainTurn.steers++
 	a.Mu.Unlock()
-	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	input, err := buildCodexInputBlocks(request.Content, agent.ClassifyAttachments(request.Attachments))
 	var ticket providerkit.SteerTicket
 	if err == nil {
-		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho, expected != nil)
+		ticket, err = a.sendTurnSteer(threadID, turnID, input, request, expected != nil)
 	}
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
@@ -849,7 +871,7 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	}
 	a.retryOfferMu.Unlock()
 	if err != nil || !stillActive {
-		a.forgetCodexSteer(ticket)
+		a.steerLedger.Forget(ticket)
 	}
 	a.finishDeferredCodexSteerOutput()
 	if err != nil {
@@ -1034,6 +1056,6 @@ func codexServiceTierValue(tier string) *string {
 	return nil
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputWithTracking(&sessionID, content, attachments)
 }

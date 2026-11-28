@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -39,6 +40,7 @@ func TestZCodeSendInput_PreservesNativeEventsBeforeTheSenderResumes(t *testing.T
 				t.Parallel()
 				sink := &agenttest.Sink{}
 				a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+				wireInputID := make(chan string, 1)
 				a.SetStdinForTest(agenttest.NopStdin(zcodeInputWriter(func(raw []byte) (int, error) {
 					var request zcodeSentRequest
 					require.NoError(t, json.Unmarshal(raw, &request))
@@ -49,6 +51,7 @@ func TestZCodeSendInput_PreservesNativeEventsBeforeTheSenderResumes(t *testing.T
 						InputID string `json:"inputId"`
 					}
 					require.NoError(t, json.Unmarshal(request.Params, &input))
+					wireInputID <- input.InputID
 					reply := func() {
 						a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(
 							`{"sessionId":"sess-1","accepted":true,"stateRevision":1}`)))
@@ -69,7 +72,10 @@ func TestZCodeSendInput_PreservesNativeEventsBeforeTheSenderResumes(t *testing.T
 					}
 					return len(raw), nil
 				})))
-				require.NoError(t, a.SendInput("hello", nil))
+				receipt, err := a.SendInput("hello", nil)
+				require.NoError(t, err)
+				require.Equal(t, "sess-1", receipt.SessionID)
+				require.Equal(t, <-wireInputID, receipt.InputID)
 				if !completed {
 					a.Mu.Lock()
 					owner := a.turns["native-turn"]
@@ -84,15 +90,173 @@ func TestZCodeSendInput_PreservesNativeEventsBeforeTheSenderResumes(t *testing.T
 				for _, row := range sink.Messages() {
 					if _, text, _, ok := agenttest.DecodeAssembledMessage(row.Content); ok {
 						texts = append(texts, text)
+						assert.Equal(t, receipt.InputID, row.NativeInputID)
 					}
 					if row.TurnEnd {
 						ends++
+						assert.Equal(t, receipt.InputID, row.NativeInputID)
+						assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, row.InputTurnOutcome)
 					}
 				}
 				assert.Equal(t, []string{"retained answer"}, texts)
 				assert.Equal(t, 1, ends)
 			})
 		}
+	}
+}
+
+func TestZCodeTurnEndWithoutAConfirmedInputDoesNotRecordAnOutcome(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "native-turn", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "native-turn", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	rows := sink.Messages()
+	require.NotEmpty(t, rows)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED, rows[len(rows)-1].InputTurnOutcome)
+	assert.Empty(t, rows[len(rows)-1].NativeInputID)
+}
+
+func TestZCodeRecoveredBoundaryRecordsTheConfirmedInputOutcome(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "native-turn", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"inputId":"confirmed-input"}`))
+	a.Mu.Lock()
+	owner := a.turns["native-turn"]
+	a.Mu.Unlock()
+	require.NotNil(t, owner)
+	a.persistZCodeRecoveryEvidenceForOwner(owner, agent.MessageCompletionComplete,
+		[]byte(`{"type":"state.updated","payload":{"reason":"prompt_completed"}}`), false)
+	rows := sink.Messages()
+	require.NotEmpty(t, rows)
+	saved := rows[len(rows)-1]
+	assert.False(t, saved.TurnEnd, "historical storage does not publish a live turn end")
+	assert.Equal(t, "confirmed-input", saved.NativeInputID)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, saved.InputTurnOutcome)
+}
+
+type zcodeInputRetirement struct {
+	receipt agent.NativeInputReceipt
+	outcome leapmuxv1.AgentInputTurnOutcome
+}
+
+type zcodeReceiptSink struct {
+	agenttest.Sink
+	retirements chan zcodeInputRetirement
+}
+
+func (sink *zcodeReceiptSink) RetireNativeInputTurn(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
+	sink.retirements <- zcodeInputRetirement{receipt: receipt, outcome: outcome}
+	return nil
+}
+
+func TestZCodeInputRetirementDoesNotClaimAnUnprovedCompletion(t *testing.T) {
+	t.Parallel()
+	for name, events := range map[string]func(*testing.T, *Agent){
+		"unscoped end": func(t *testing.T, a *Agent) {
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+		},
+		"unscoped reply": func(t *testing.T, a *Agent) {
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "", contracts.ZCodeEventModelStreaming,
+				`{"assistantMessageId":"reply","kind":"text_delta","delta":"unscoped text"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 3, "first-turn", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+		},
+		"unscoped reply with overlapping turns": func(t *testing.T, a *Agent) {
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "background-turn", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":2,"inputSource":"background_task"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 3, "", contracts.ZCodeEventModelStreaming,
+				`{"assistantMessageId":"reply","kind":"text_delta","delta":"unscoped text"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 4, "first-turn", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+		},
+		"reply recovery expires": func(t *testing.T, a *Agent) {
+			a.dispatchMu.Lock()
+			a.markZCodeCanonicalRecoveryLocked()
+			a.unlockZCodeDispatch()
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "first-turn", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+			a.Mu.Lock()
+			owner := a.turns["first-turn"]
+			state, pending := owner.recovery, owner.pendingNative
+			a.Mu.Unlock()
+			require.NotNil(t, pending, "the successful native end must wait for recovery")
+			settled, err := a.expireZCodeNativeSettlement(t.Context(), owner, state, pending)
+			require.NoError(t, err)
+			require.True(t, settled)
+		},
+		"replacement": func(t *testing.T, a *Agent) {
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "second-turn", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":2,"inputId":"second-input"}`))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &zcodeReceiptSink{retirements: make(chan zcodeInputRetirement, 4)}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "first-turn", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":1,"inputId":"first-input"}`))
+			events(t, a)
+			require.Len(t, sink.retirements, 1)
+			retired := <-sink.retirements
+			assert.Equal(t, agent.NativeInputReceipt{SessionID: "sess-1", InputID: "first-input"}, retired.receipt)
+			assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retired.outcome)
+			for _, row := range sink.Messages() {
+				assert.Empty(t, row.NativeInputID)
+				assert.Zero(t, row.InputTurnOutcome)
+			}
+		})
+	}
+}
+
+func TestZCodeInputBindingKeepsTheOriginalTurn(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeReceiptSink{retirements: make(chan zcodeInputRetirement, 4)}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	const input = `{"turnNumber":1,"inputId":"one-input"}`
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "original-turn", contracts.ZCodeEventTurnStarted, input))
+	a.Mu.Lock()
+	original := a.turns["original-turn"]
+	a.Mu.Unlock()
+	require.NotNil(t, original)
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "original-turn", contracts.ZCodeEventTurnStarted, input))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "conflicting-turn", contracts.ZCodeEventTurnStarted, input))
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Same(t, original, a.turns["original-turn"])
+	assert.Nil(t, a.turns["conflicting-turn"])
+	assert.Empty(t, sink.retirements)
+}
+
+func TestZCodeWaitRetiresInputWithTheProcessExitOutcome(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		intentional bool
+		outcome     leapmuxv1.AgentInputTurnOutcome
+	}{
+		{"intentional stop", true, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED},
+		{"unexpected exit", false, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &zcodeReceiptSink{retirements: make(chan zcodeInputRetirement, 4)}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "native-turn", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":1,"inputId":"owned-input"}`))
+			if tc.intentional {
+				a.NoteIntentionalStop()
+			}
+			a.SimulateExitForTest()
+
+			require.NoError(t, a.Wait())
+			require.Len(t, sink.retirements, 1)
+			retired := <-sink.retirements
+			assert.Equal(t, agent.NativeInputReceipt{SessionID: "sess-1", InputID: "owned-input"}, retired.receipt)
+			assert.Equal(t, tc.outcome, retired.outcome)
+
+			a.Stop()
+			assert.Empty(t, sink.retirements)
+		})
 	}
 }
 
@@ -108,7 +272,7 @@ func TestZCodeSendInput_NewAdmissionDoesNotInheritThePreviousToolCount(t *testin
 		`{"kind":"result","toolCallId":"call","toolName":"Bash","result":{"success":true,"content":"/workspace"}}`))
 	a.HandleOutput(zcodeTurnEventLine(t, 0, "first", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":2}`)
-	require.NoError(t, a.SendInput("second", nil))
+	require.NoError(t, agenttest.SendInput(a, "second", nil))
 	request := waitZCodeRequest(t, stdin, MethodSessionSend)
 	var input struct {
 		InputID string `json:"inputId"`
@@ -131,7 +295,7 @@ func TestZCodeSendInput_RetriesABusyRefusalOnTheProcessClock(t *testing.T) {
 		Ctx: a.Context(), Clock: clock, Stdin: stdin, ProcessDone: make(chan struct{}),
 	})
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("guide", nil) }()
+	go func() { result <- agenttest.SendInput(a, "guide", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	answer := func(payload string) {
 		t.Helper()
@@ -167,7 +331,7 @@ func TestZCodeSendInputSendsPlainSessionSend(t *testing.T) {
 	a.model = "provider/model"
 	a.Mu.Unlock()
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"session-1","accepted":true,"stateRevision":0}`)
-	require.NoError(t, a.SendInput("guide", nil))
+	require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
@@ -195,7 +359,7 @@ func TestZCodeSendInputTimeoutIsDeliveryUncertain(t *testing.T) {
 	a.Mu.Unlock()
 
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("guide", nil) }()
+	go func() { result <- agenttest.SendInput(a, "guide", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	assert.Equal(t, time.Minute, testutil.WaitForTimer(t, ctx, trap))
 	clock.Advance(time.Minute).MustWait(ctx)
@@ -217,7 +381,7 @@ func TestZCodeSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 	a.model = "provider/model"
 	a.turnActive = true
 	a.Mu.Unlock()
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later turn", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later turn", nil))
 }
 
 // Every send receipt must be the full {sessionId, accepted:true, stateRevision}
@@ -248,7 +412,7 @@ func TestZCodeSendInput_MalformedReceiptIsDeliveryUncertain(t *testing.T) {
 			stdin := &zcodeRecordedStdin{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 			answerZCodeRequest(t, a, stdin, MethodSessionSend, tc.result)
-			err := a.SendInput("guide", nil)
+			err := agenttest.SendInput(a, "guide", nil)
 			require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 			a.Mu.Lock()
 			defer a.Mu.Unlock()
@@ -272,7 +436,7 @@ func TestZCodeSendInput_ExplicitRejectionKeepsTheOrdinaryError(t *testing.T) {
 			stdin := &zcodeRecordedStdin{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 			answerZCodeRequest(t, a, stdin, MethodSessionSend, tc.result)
-			err := a.SendInput("guide", nil)
+			err := agenttest.SendInput(a, "guide", nil)
 			require.Error(t, err)
 			assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the app-server answered with a verdict")
 			assert.ErrorContains(t, err, "did not accept")
@@ -291,7 +455,7 @@ func TestZCodeSendInput_AcceptsAZeroStateRevision(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":0}`)
-	require.NoError(t, a.SendInput("guide", nil))
+	require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -312,7 +476,7 @@ func TestZCodeSendInput_FoldsTheReceiptRevisionMonotonically(t *testing.T) {
 		a.stateRevision = 3
 		a.Mu.Unlock()
 		answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":7}`)
-		require.NoError(t, a.SendInput("guide", nil))
+		require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -327,7 +491,7 @@ func TestZCodeSendInput_FoldsTheReceiptRevisionMonotonically(t *testing.T) {
 		a.stateRevision = 10
 		a.Mu.Unlock()
 		answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":7}`)
-		require.NoError(t, a.SendInput("guide", nil))
+		require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -348,7 +512,7 @@ func TestZCodeSendInput_ReplacedSessionReceiptDoesNotTouchTheNewSession(t *testi
 	a.Mu.Unlock()
 
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("guide", nil) }()
+	go func() { result <- agenttest.SendInput(a, "guide", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	request := waitZCodeRequest(t, stdin, MethodSessionSend)
 
@@ -378,15 +542,24 @@ func TestZCodeSendInput_ReplacedSessionReceiptDoesNotTouchTheNewSession(t *testi
 func TestZCodeSendInput_SameIDReplacementReceiptCannotCreateAnOwner(t *testing.T) {
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}
-	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	sink := &zcodeReceiptSink{retirements: make(chan zcodeInputRetirement, 4)}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("old input", nil) }()
+	go func() { result <- agenttest.SendInput(a, "old input", nil) }()
 	request := zcodeNthRequest(t, stdin, MethodSessionSend, 1)
 	snapshot, ok := a.parseStateSnapshot(json.RawMessage(`{"session":{"sessionId":"sess-1"},"runtime":{"stateRevision":1,"eventSeq":0}}`))
 	require.True(t, ok)
 	a.adoptCompleteZCodeSessionSnapshot(snapshot, true)
 	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"sessionId":"sess-1","accepted":true,"stateRevision":9}`)))
 	require.NoError(t, <-result, "the old receipt still proves delivery to its original lifetime")
+	var params struct {
+		InputID string `json:"inputId"`
+	}
+	require.NoError(t, json.Unmarshal(request.Params, &params))
+	require.Len(t, sink.retirements, 1)
+	retired := <-sink.retirements
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: "sess-1", InputID: params.InputID}, retired.receipt)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retired.outcome)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	assert.Equal(t, int64(1), a.stateRevision)

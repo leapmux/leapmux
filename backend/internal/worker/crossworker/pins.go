@@ -19,6 +19,6 @@ func NewPinStore(dataDir string) (*tofupins.Store, error) {
 		Path:             filepath.Join(dataDir, "cross_worker_pins.json"),
 		DirMode:          0o700,
 		FileMode:         0o600,
-		MismatchHintTmpl: "the target worker keeps its keys while it stays registered; clear the pin only after the presented fingerprint matches the one the target worker logs when it starts: `leapmux worker cross-worker-pins remove --target-worker-id=%s`",
+		MismatchHintTmpl: "the target Worker keeps its keys while it stays registered. Verify that the presented fingerprint matches the one the target Worker logs at startup, then clear the pin with `leapmux daemon worker cross-worker-pins remove %s`",
 	})
 }

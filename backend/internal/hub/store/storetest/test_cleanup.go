@@ -9,7 +9,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -430,89 +429,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// Verify children are gone.
 		_, err = st.DelegationTokens().GetByID(ctx, tokenID)
 		assert.ErrorIs(t, err, store.ErrNotFound, "the worker's delegation tokens must go with it")
-	})
-
-	// The sweep that finishes every deregistration the notifier could not:
-	// it deletes a worker deregistering since before the cutoff, and leaves
-	// every other worker exactly as it was.
-	t.Run("complete stale deregistrations deletes only workers deregistering since before the cutoff", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "cleanup-stale-dereg-user")
-		stale := SeedWorker(t, st, user.ID)
-		recent := SeedWorker(t, st, user.ID)
-		active := SeedWorker(t, st, user.ID)
-		alreadyDeleted := SeedWorker(t, st, user.ID)
-		for _, w := range []string{stale.ID, recent.ID} {
-			_, err := st.Workers().ForceDeregister(ctx, w)
-			require.NoError(t, err)
-		}
-		require.NoError(t, st.Workers().MarkDeleted(ctx, alreadyDeleted.ID))
-		deletedBefore, err := st.Workers().GetByIDIncludeDeleted(ctx, alreadyDeleted.ID)
-		require.NoError(t, err)
-		recentRow, err := st.Workers().GetByID(ctx, recent.ID)
-		require.NoError(t, err)
-		require.NotNil(t, recentRow.DeregisteringAt)
-
-		// Move the stale worker's intent back past a cutoff that sits just
-		// before the recent worker's own stamp.
-		cutoff := recentRow.DeregisteringAt.Add(-time.Minute)
-		require.NoError(t, st.TestHelper().SetDeregisteringAt(ctx, stale.ID, cutoff.Add(-time.Hour)))
-
-		n, err := st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
-		require.NoError(t, err)
-		assert.Equal(t, int64(1), n, "only the worker deregistering since before the cutoff")
-
-		got, err := st.Workers().GetByIDIncludeDeleted(ctx, stale.ID)
-		require.NoError(t, err)
-		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, got.Status)
-		got, err = st.Workers().GetByID(ctx, recent.ID)
-		require.NoError(t, err)
-		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.Status, "a recent deregistration keeps waiting")
-		got, err = st.Workers().GetByID(ctx, active.ID)
-		require.NoError(t, err)
-		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, got.Status, "an active worker is untouched")
-		got, err = st.Workers().GetByIDIncludeDeleted(ctx, alreadyDeleted.ID)
-		require.NoError(t, err)
-		require.NotNil(t, got.DeletedAt)
-		assert.True(t, deletedBefore.DeletedAt.Equal(*got.DeletedAt), "an already-deleted worker keeps its deletion time")
-
-		n, err = st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
-		require.NoError(t, err)
-		assert.Zero(t, n, "a second pass finds nothing")
-	})
-
-	// The sweep's LIMIT 1000 must hold in every dialect, and the drain loop
-	// must finish the rest.
-	t.Run("complete stale deregistrations drains more than one batch", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "cleanup-stale-dereg-bulk")
-		const (
-			seeded    = 1200
-			sweepStep = 1000 // the LIMIT literal in every dialect's sweep
-		)
-		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
-			for range seeded {
-				workerID := id.Generate()
-				require.NoError(t, tx.Workers().Create(ctx, store.CreateWorkerParams{
-					ID: workerID, AuthTokenHash: FixtureSecretHash(id.Generate()), RegisteredBy: userid.MustNew(user.ID),
-					PublicKeys: WorkerKeys(workerkeystest.SeededWorkerFill),
-				}))
-				_, err := tx.Workers().ForceDeregister(ctx, workerID)
-				require.NoError(t, err)
-			}
-			return nil
-		}))
-		// A cutoff after every stamp makes every seeded worker stale.
-		cutoff := time.Now().UTC().Add(time.Hour)
-		n, err := st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
-		require.NoError(t, err)
-		assert.Equal(t, int64(sweepStep), n, "one pass changes exactly LIMIT rows")
-		n, err = st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
-		require.NoError(t, err)
-		assert.Equal(t, int64(seeded-sweepStep), n)
-		n, err = st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
-		require.NoError(t, err)
-		assert.Zero(t, n)
 	})
 
 	t.Run("hard delete users cascades to remaining children", func(t *testing.T) {

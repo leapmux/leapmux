@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/periodic"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 const (
@@ -19,12 +20,15 @@ const (
 )
 
 // StartCleanupLoop starts a background goroutine that periodically
-// hard-deletes agents and terminals that have been closed for longer
-// than the retention period. A random jitter of up to cleanupJitter is
-// added before each run. The returned channel closes after the loop stops.
-func StartCleanupLoop(ctx context.Context, queries *db.Queries) <-chan struct{} {
+// hard-deletes the agents, the terminals and the worktrees that have been
+// closed or deleted for longer than the retention period, and the rows of
+// the queued inputs that someone removed longer than
+// inputqueue.RemovedInputRetention ago. A random jitter of up to
+// cleanupJitter is added before each run. The returned channel closes after
+// the loop stops.
+func StartCleanupLoop(ctx context.Context, queries *db.Queries, inputs *inputqueue.Manager) <-chan struct{} {
 	return periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(ctx context.Context) {
-		runCleanup(ctx, queries)
+		runCleanup(ctx, queries, inputs)
 	})
 }
 
@@ -76,7 +80,7 @@ func (svc *Service) SweepOrphanedAgentState() {
 	}
 }
 
-func runCleanup(ctx context.Context, queries *db.Queries) {
+func runCleanup(ctx context.Context, queries *db.Queries, inputs *inputqueue.Manager) {
 	// Bound as a SQLiteNullTime: the sweeps compare closed_at/deleted_at as raw
 	// strings, so the cutoff must be byte-exact against the stored bytes.
 	// SQLiteNullTime.Value() emits the canonical strftime layout; a raw time.Time
@@ -87,6 +91,9 @@ func runCleanup(ctx context.Context, queries *db.Queries) {
 	cleanupStep(ctx, "agents", func() (sql.Result, error) { return queries.DeleteClosedAgentsBefore(ctx, cutoff) })
 	cleanupStep(ctx, "terminals", func() (sql.Result, error) { return queries.DeleteClosedTerminalsBefore(ctx, cutoff) })
 	cleanupStep(ctx, "worktrees", func() (sql.Result, error) { return queries.HardDeleteWorktreesBefore(ctx, cutoff) })
+	// The queue computes its own cutoff, from the clock that stamped each
+	// removal, with its own retention.
+	cleanupStep(ctx, "removed agent inputs", func() (sql.Result, error) { return inputs.PurgeRemoved(ctx) })
 }
 
 func cleanupStep(ctx context.Context, name string, fn func() (sql.Result, error)) {

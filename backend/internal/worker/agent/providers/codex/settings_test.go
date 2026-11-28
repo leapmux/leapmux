@@ -664,7 +664,7 @@ func TestCodexModelSwitchCarriesTheHeldAxesIntoTheNextTurn(t *testing.T) {
 	assert.Equal(t, "xhigh", a.effort)
 	assert.Equal(t, ServiceTierFast, a.serviceTier)
 
-	require.NoError(t, a.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(a, "hi", nil))
 	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
 	sent := requests()[0]
 	assert.Equal(t, "turn/start", sent.Method)

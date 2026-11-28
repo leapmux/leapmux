@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
@@ -64,7 +63,7 @@ func TestURLElicitationCompleteAfterReaderAnswerSendsNothing(t *testing.T) {
 	for _, reused := range []bool{false, true} {
 		a, sink, requests := newRetiringTestAgent(t)
 		a.HandleOutput(nativeElicitationRequest(t, 7, "url"))
-		require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"action":"decline"}}`), agent.StopContext{}))
+		require.NoError(t, a.SendRawInput(sink.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"action":"decline"}}`))))
 		if reused {
 			a.HandleOutput(nativeElicitationRequest(t, 7, "form"))
 		}
@@ -122,7 +121,7 @@ func TestURLElicitationRepeatedRequestKeepsItsPublication(t *testing.T) {
 func TestURLElicitationAReusedFlowGetsItsNewPublication(t *testing.T) {
 	a, sink, requests := newRetiringTestAgent(t)
 	a.HandleOutput(nativeElicitationRequest(t, 7, "url"))
-	require.NoError(t, a.SendRawInput([]byte(`{"id":7,"result":{"action":"decline"}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("jsonrpc:7", []byte(`{"id":7,"result":{"action":"decline"}}`))))
 	a.HandleOutput(nativeElicitationRequest(t, 7, "url"))
 	a.HandleOutput([]byte(`{"method":"elicitation/complete","params":{"elicitationId":"flow"}}`))
 	syncTestPeer(t, a)
@@ -137,13 +136,13 @@ func TestURLElicitationRejectsAnAbsentRequest(t *testing.T) {
 }
 
 func TestURLElicitationForgetsAnsweredFlowsBeforeANewRequest(t *testing.T) {
-	a, _, _ := newRetiringTestAgent(t)
+	a, sink, _ := newRetiringTestAgent(t)
 	for index := range 5 {
 		id := index + 7
 		raw := bytes.ReplaceAll(nativeElicitationRequest(t, id, "url"), []byte(`"flow"`), []byte(fmt.Sprintf(`"flow-%d"`, index)))
 		a.HandleOutput(raw)
 		assert.Len(t, a.urlElicitations, 1)
-		require.NoError(t, a.SendRawInput([]byte(fmt.Sprintf(`{"id":%d,"result":{"action":"decline"}}`, id)), agent.StopContext{}))
+		require.NoError(t, a.SendRawInput(sink.Answer(fmt.Sprintf("jsonrpc:%d", id), []byte(fmt.Sprintf(`{"id":%d,"result":{"action":"decline"}}`, id)))))
 		assert.Empty(t, a.urlElicitations)
 	}
 }
@@ -152,7 +151,7 @@ func TestURLElicitationKeepsALiveFlowWhenAnotherRequestEnds(t *testing.T) {
 	a, sink, requests := newRetiringTestAgent(t)
 	a.HandleOutput(nativeElicitationRequest(t, 7, "url"))
 	a.HandleOutput(nativeElicitationRequest(t, 8, "form"))
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":8,"result":{"action":"decline"}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("jsonrpc:8", []byte(`{"jsonrpc":"2.0","id":8,"result":{"action":"decline"}}`))))
 	assert.Len(t, a.urlElicitations, 1)
 	a.HandleOutput([]byte(`{"method":"elicitation/complete","params":{"elicitationId":"flow"}}`))
 	syncTestPeer(t, a)

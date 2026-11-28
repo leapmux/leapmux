@@ -46,7 +46,7 @@ func TestCodexSendInputDoesNotInterceptCompactCommand(t *testing.T) {
 	agent.threadID = "thread-1"
 
 	result := make(chan error, 1)
-	go func() { result <- agent.SendInput(" /compact ", nil) }()
+	go func() { result <- agenttest.SendInput(agent, " /compact ", nil) }()
 	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
 
 	assert.Equal(t, "turn/start", requests()[0].Method,
@@ -72,7 +72,7 @@ func TestCodexTurnStartProcessExitIsDeliveryUncertain(t *testing.T) {
 	a.threadID = "thread-1"
 	a.SimulateExitForTest()
 
-	assert.ErrorIs(t, a.SendInput("hello", nil), agent.ErrDeliveryUncertain)
+	assert.ErrorIs(t, agenttest.SendInput(a, "hello", nil), agent.ErrDeliveryUncertain)
 }
 
 func TestCodexTurnStartExplicitRejectionIsKnownFailure(t *testing.T) {
@@ -82,8 +82,7 @@ func TestCodexTurnStartExplicitRejectionIsKnownFailure(t *testing.T) {
 		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32600,"message":"thread is active"}`)}
 	})
 	a.threadID = "thread-1"
-
-	err := a.SendInput("hello", nil)
+	_, err := a.SendInput("hello", nil)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.Contains(t, err.Error(), "thread is active")

@@ -597,6 +597,29 @@ func createTestOIDCProviderWithAuthTime(
 	authTime func() any,
 ) string {
 	t.Helper()
+	return createTestOIDCProviderWithClaims(t, st, ks, email, subject, "Newcomer", authTime)
+}
+
+func createTestOIDCProviderWithClaims(
+	t *testing.T,
+	st store.Store,
+	ks *keystore.Keystore,
+	email, subject, name string,
+	authTime func() any,
+) string {
+	t.Helper()
+	return createTestOIDCProviderWithMode(t, st, ks, email, subject, name, leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_QUERY, authTime)
+}
+
+func createTestOIDCProviderWithMode(
+	t *testing.T,
+	st store.Store,
+	ks *keystore.Keystore,
+	email, subject, name string,
+	responseMode leapmuxv1.OAuthResponseMode,
+	authTime func() any,
+) string {
+	t.Helper()
 
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -632,7 +655,7 @@ func createTestOIDCProviderWithAuthTime(
 			"iat":            time.Now().Unix(),
 			"email":          email,
 			"email_verified": true,
-			"name":           "Newcomer",
+			"name":           name,
 		}
 		if v := authTime(); v != nil {
 			idClaims["auth_time"] = v
@@ -653,6 +676,7 @@ func createTestOIDCProviderWithAuthTime(
 		ClientSecret: []byte("test-client-secret"),
 		Scopes:       "openid email profile",
 		TrustEmail:   false,
+		ResponseMode: responseMode,
 		Enabled:      true,
 	}))
 	return providerID

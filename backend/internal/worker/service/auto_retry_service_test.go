@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,22 +67,18 @@ func TestCloseAgent_CancelsScheduledRetries(t *testing.T) {
 func TestCloseAgent_RemovesARetryThatALateReportCreatesDuringTheClose(t *testing.T) {
 	t.Parallel()
 
-	var svc *Service
-	var injected atomic.Bool
-	svc, d, w := setupTestService(t, withQueryRewrite(func(query string) string {
-		if strings.Contains(query, "-- name: CloseAgent :") && injected.CompareAndSwap(false, true) {
-			// The report lands after the teardown and before closed_at. The
-			// handler may run off the test goroutine, so assert, not require.
-			assert.NoError(t, svc.InputQueue.ScheduleAutoRetry(context.Background(), "agent-1", retrySchedule(
-				leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, time.Now().Add(time.Hour))))
-		}
-		return query
-	}))
+	svc, d, w := setupTestService(t)
+	injected := make(chan struct{}, 1)
+	svc.beforeAgentRetirementFn = func(agentID string) {
+		assert.NoError(t, svc.InputQueue.ScheduleAutoRetry(context.Background(), agentID, retrySchedule(
+			leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, time.Now().Add(time.Hour))))
+		injected <- struct{}{}
+	}
 	seedScheduledRetries(t, svc, "agent-1")
 
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
-	require.True(t, injected.Load(), "the close must run CloseAgent")
+	require.Len(t, injected, 1, "the close must reach the subtree transaction")
 	assertRetriesCancelled(t, svc, "agent-1")
 
 	// closed_at is committed, so a report after the close stores nothing.

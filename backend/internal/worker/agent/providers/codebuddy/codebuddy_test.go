@@ -44,6 +44,15 @@ func TestCodebuddyPlanModePermissionMode(t *testing.T) {
 	assert.Empty(t, p.PlanModePermissionMode(agent.PlanModeControlNone))
 }
 
+func TestCodebuddyIsSelfDisplayingControlToolUsesDefault(t *testing.T) {
+	t.Parallel()
+
+	p := codebuddyProvider{}
+	for _, tool := range []string{"AskUserQuestion", "ExitPlanMode", "EnterPlanMode", "Bash", ""} {
+		assert.False(t, p.IsSelfDisplayingControlTool(tool), tool)
+	}
+}
+
 func TestCodebuddyTurnEndToolUses(t *testing.T) {
 	t.Parallel()
 
@@ -139,7 +148,7 @@ func newOfflineAgentWithRuntime(t *testing.T, sink *agenttest.Sink, clock quartz
 		sink:           agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
 		sessionID:      "session-1",
 		permissionMode: "default",
-		pendingControl: make(map[string]chan<- codebuddyControlResult),
+		pendingControl: make(map[string]pendingControlWaiter),
 	}
 	t.Cleanup(func() {
 		cancel()
@@ -160,7 +169,7 @@ func TestCodebuddyBusyRefusalRepublishesTheTurn(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	a.setTurnActive(true)
-	err := a.SendInput("later turn", nil)
+	_, err := a.SendInput("later turn", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }
 

@@ -9,6 +9,7 @@ import (
 // agentActivity.mu guards every field. Repeated turn publications keep the scope.
 type activityScope struct {
 	publisher         any
+	turnSequence      uint64
 	attempts          map[*stopAttempt]struct{}
 	controlsStopped   bool
 	transcriptThreads map[transcriptOwnerKey]*transcriptThread

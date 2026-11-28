@@ -241,7 +241,7 @@ func TestInputRecoveryApprovalCannotTransferThroughAPremintedOutputSource(t *tes
 	require.NotNil(t, approved)
 	assert.False(t, oldProcess.wasStopped(), "the proposal was captured for the first physical process")
 	options := svc.baseAgentOptions(id, row.WorkingDir, row.AgentProvider)
-	options.ResumeSessionID = "saved-thread"
+	options.Session = agent.ResumeSession("saved-thread")
 	unlock := svc.Agents.LockAgent(id)
 	svc.Agents.StopAndWaitAgent(id)
 	_, err := svc.startAgent(t.Context(), options, preminted)

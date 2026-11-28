@@ -67,6 +67,7 @@ func (a *Agent) Stop() {
 	a.cancelMediaSession(sessionID)
 	a.shutdownServer()
 	a.Process.Stop()
+	a.withdrawAllControls()
 	if a.endpoint != nil {
 		a.endpoint.Close()
 	}
@@ -142,6 +143,7 @@ func (a *Agent) abortTurnForShutdown() bool {
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.closeStream()
+	a.withdrawAllControls()
 	a.settleAfterExit(a.ProcessExitCompletion())
 	return err
 }
@@ -175,19 +177,21 @@ func (a *Agent) closeStream() {
 // streamed, the tool calls that no result closed, and the turn flags.
 // completion states how the process ended.
 //
-// A pending request needs nothing here: the worker withdraws every request of
-// an agent whose process exited.
+// Stop and Wait withdraw pending control requests and workspace-trust checks
+// through withdrawAllControls before this runs.
 func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
 	defer a.finishDispatch()
 	a.Mu.Lock()
 	runs := make([]*kimiRun, 0, len(a.runs))
+	sessionID := a.sessionID
 	for _, run := range a.runs {
 		runs = append(runs, run)
 	}
 	a.turnActive = false
 	a.turnSteerable = false
 	a.Mu.Unlock()
+	a.retireKimiSessionReplies(sessionID)
 
 	// Each run writes to its own transcript, so the order of the runs does not
 	// matter.

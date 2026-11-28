@@ -17,6 +17,7 @@ import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { HubUserId } from '~/lib/browserStorage'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
+import type { Tab } from '~/stores/tab.types'
 import type { TabView } from '~/stores/tabView'
 import { useLocation, useSearchParams } from '@solidjs/router'
 import { batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
@@ -79,6 +80,7 @@ import { createSectionStore } from '~/stores/section.store'
 import { agentTabToInfo, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
 import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.store'
 import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelection.store'
+import { createTabStatusStore } from '~/stores/tabStatus.store'
 import { createTabView } from '~/stores/tabView'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
@@ -187,6 +189,10 @@ export const AppShell: Component = () => {
   // globally unique across the account — so one flat store holds every
   // workspace's worker-sourced fields with no active/inactive split.
   const tabMetadata = createTabMetadataStore()
+  // The status each tab shows beside its title, as its Worker reports it on the
+  // private-event stream. Its own store, keyed by tab id, because a status can
+  // arrive before its tab does; `tabView` joins it in.
+  const tabStatuses = createTabStatusStore()
   // The workers whose watch stream this client lost. `useWorkspaceConnection`
   // writes it, and each surface that shows a terminal status reads it.
   const workerOnline = createWorkerOnlineStore()
@@ -243,6 +249,7 @@ export const AppShell: Component = () => {
     projection,
     state: crdtState,
     metadata: tabMetadata,
+    statuses: tabStatuses,
     detachedTerminals: () => quakeStore.detachedTerminals(),
     // A hoisted function declaration, which its own definition keeps hoisted
     // for exactly this kind of earlier caller.
@@ -435,6 +442,11 @@ export const AppShell: Component = () => {
     view: tabView,
     metadata: tabMetadata,
     quakeStore,
+    tabStatuses,
+    // A hoisted function declaration: the tab operations it calls exist only
+    // further down, and a reveal arrives from an event, after they do.
+    revealTab,
+    revealWorkspace: handleSelectWorkspace,
   })
 
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
@@ -1219,6 +1231,9 @@ export const AppShell: Component = () => {
   useMetadataSweep(() => crdtState(), tabMetadata, (retired) => {
     for (const tabId of retired)
       agentInputQueueStore.clearAgent(tabId)
+    // A status belongs to its tab. The Worker clears it on the close too, and
+    // this drops it even when the stream missed that event.
+    tabStatuses.dropTabs(retired)
     // The same "was live, now is not" edge answers "a tab closed", and the
     // store re-asks its own question from it: has the LAST tab of some
     // directory gone, which is one of the two things that ends a quake
@@ -1395,6 +1410,19 @@ export const AppShell: Component = () => {
   function handleSelectWorkspace(id: string) {
     closeMobileOverlay()
     switchWorkspace(id)
+  }
+
+  /**
+   * Show one tab, for `leapmux control tab reveal`: the same two steps, in the
+   * same order, as a click on the tab in the sidebar (see the tree's
+   * `onTabClick` in WorkspaceSectionContent). The selection activates the tab
+   * and focuses its tile first, which works for a workspace that is not on
+   * screen yet, and the switch then brings that workspace into view.
+   */
+  function revealTab(tab: Tab) {
+    tabOps.handleTabSelect(tab)
+    if (tab.workspaceId !== workspace.activeWorkspaceId())
+      handleSelectWorkspace(tab.workspaceId)
   }
 
   /**

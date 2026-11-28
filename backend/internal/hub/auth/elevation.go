@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -303,12 +304,11 @@ func RequireElevatableCredential(userInfo *UserInfo) error {
 // RequireElevatableSession returns the acting SESSION id, refusing every
 // other credential -- a command-line credential included.
 //
-// The narrower rule, and the two service callers need it. The elevation RPCs
-// collect a factor and stamp a row: a bearer that could call them would
-// elevate ITSELF, which is exactly the property the browser verification exists to
-// prevent (the factor must be proven somewhere the credential file cannot
-// reach). requireElevatedSessionForDurableAuthority needs it for its own
-// reason, which it states.
+// The narrower rule, used by the browser elevation RPCs. Those RPCs collect a
+// factor and stamp a session row: a bearer that could call them would elevate
+// ITSELF, which is exactly the property browser verification at /oauth/step-up
+// exists to prevent (the factor must be proven somewhere the credential file
+// cannot reach).
 //
 // Nil-safe, like every sibling in this family.
 func RequireElevatableSession(userInfo *UserInfo) (string, error) {
@@ -320,6 +320,36 @@ func RequireElevatableSession(userInfo *UserInfo) (string, error) {
 		return "", CredentialNotElevatableError()
 	}
 	return sessionID, nil
+}
+
+// RequireElevatableSessionOrControlCLI refuses every credential except a
+// browser session cookie or an API token issued to the built-in interactive
+// CLI (oauthapp.ControlCLIClientID).
+//
+// Service-account tokens (including bearer-minted child tokens clamped by
+// mintAuthority.clamp) and third-party OAuth apps are rejected without
+// ErrElevationRequired so they cannot create or take over accounts.
+func RequireElevatableSessionOrControlCLI(userInfo *UserInfo) error {
+	if userInfo != nil {
+		if userInfo.Credential.SessionID() != "" || userInfo.Credential.ClientID() == oauthapp.ControlCLIClientID {
+			return nil
+		}
+	}
+	return CredentialNotElevatableError()
+}
+
+// RequireElevationForDurableAuthority enforces both the credential-class gate
+// (browser session or built-in Control CLI) and a live step-up elevation
+// window. Disallowed bearers receive CredentialNotElevatableError (no step-up
+// prompt marker).
+func RequireElevationForDurableAuthority(userInfo *UserInfo, now time.Time) error {
+	if userInfo.SoloAuthenticated() {
+		return nil
+	}
+	if err := RequireElevatableSessionOrControlCLI(userInfo); err != nil {
+		return err
+	}
+	return RequireElevation(userInfo, now)
 }
 
 // CredentialNotElevatableError is the refusal both elevatable-credential

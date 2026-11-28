@@ -151,7 +151,7 @@ func TestAdminWorkerService_DeregisterAndGet(t *testing.T) {
 		Id: worker.ID,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.GetWorker().GetStatus())
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, got.GetWorker().GetStatus())
 	assert.Equal(t, "admin", got.GetWorker().GetOwnerUsername())
 
 	_, err = env.client.DeregisterWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
@@ -530,7 +530,7 @@ func TestAdminWorkerService_DeregisterOfABundledWorker(t *testing.T) {
 
 		row, err := env.st.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
 		require.NoError(t, err)
-		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, row.Status)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, row.Status)
 	})
 
 	t.Run("deleted", func(t *testing.T) {

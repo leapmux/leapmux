@@ -72,7 +72,7 @@ func startNativeCopilotWithClock(ctx context.Context, opts agent.Options, sink a
 		a.outputMu.Unlock()
 		return nil, err
 	}
-	id := opts.ResumeSessionID
+	id := opts.Session.ResumeID()
 	if id == "" {
 		generated, err := uuid.NewRandom()
 		if err != nil {
@@ -83,7 +83,7 @@ func startNativeCopilotWithClock(ctx context.Context, opts agent.Options, sink a
 	a.stateMu.Lock()
 	a.sessionID = id
 	a.stateMu.Unlock()
-	if _, err := connection.openSession(opts, id, opts.ResumeSessionID != "", opts.EffectiveStartupTimeout()); err != nil {
+	if _, err := connection.openSession(opts, id, opts.Session.IsResume(), opts.EffectiveStartupTimeout()); err != nil {
 		_, err = cleanup(err)
 		return nil, connection.FormatStartupError("native session initialization", err)
 	}
@@ -129,7 +129,7 @@ func startNativeCopilotWithClock(ctx context.Context, opts agent.Options, sink a
 	}
 	// A resumed session can already hold an objective. Read it before the first
 	// broadcast so the goal card opens on the stored objective rather than empty.
-	a.refreshNativeGoal(opts.ResumeSessionID != "")
+	a.refreshNativeGoal(opts.Session.IsResume())
 	a.sink.BroadcastStatusActive(id)
 	a.checkFolderTrustInBackground()
 	return a, nil

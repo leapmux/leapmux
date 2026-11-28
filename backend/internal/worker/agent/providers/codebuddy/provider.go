@@ -32,11 +32,11 @@ func (codebuddyProvider) IsInterrupt(content string) bool {
 		frame.Request.Subtype == contracts.CodebuddyControlRequestSubtypeInterrupt
 }
 
-// ResolveControlResponse turns the browser's neutral decision into CodeBuddy's
-// native answer.
+// ResolveControlResponse turns the neutral answer of AnswerControlRequest into
+// CodeBuddy's native answer.
 //
 // CodeBuddy's can_use_tool parser reads `allowed` and rejects a `behavior`
-// envelope. The browser sends
+// envelope. AnswerControlRequest builds
 // {response:{request_id, response:{behavior, message}}}; the worker forwards
 // {response:{request_id, response:{allowed, reason, interrupt, updatedInput}}}.
 func (p codebuddyProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
@@ -58,22 +58,20 @@ func (p codebuddyProvider) ResolveControlResponse(ctx agent.ControlResponseConte
 // that actually states allow or deny is translated: a foreign shape (a JSON-RPC
 // result, an elicitation reply) passes through untouched.
 //
-// An allow forwards the nonempty `updatedInput` that the browser supplied.
+// An allow forwards the nonempty `updatedInput` that AnswerControlRequest
+// supplied.
 // An AskUserQuestion reply supplies the whole tool input with `answers` added.
 // CodeBuddy merges that object into the tool call. A deny carries the
 // user's reason in `reason`, which is the field CodeBuddy's own permission
 // reader takes.
 func translateCanUseToolAnswer(content []byte) ([]byte, bool) {
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(content)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		return nil, false
 	}
-	answer := contracts.CodebuddyCanUseToolAnswer{Allowed: behavior == agent.ControlBehaviorAllow}
+	answer := contracts.CodebuddyCanUseToolAnswer{Allowed: behavior == contracts.ControlAnswerBehaviorAllow}
 	if !answer.Allowed {
-		answer.Reason = message
-		if answer.Reason == "" {
-			answer.Reason = agent.ControlRejectedByUserMessage
-		}
+		answer.Reason = agent.DenyMessage(message)
 	} else if updatedInput := agent.DecodeControlUpdatedInput(content); len(updatedInput) > 0 {
 		encoded, err := json.Marshal(updatedInput)
 		if err != nil {
@@ -125,10 +123,6 @@ func (codebuddyProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) 
 	}
 }
 
-// IsSelfDisplayingControlTool keeps the stored control response visible.
-// Native tool results remain separate transcript rows.
-func (codebuddyProvider) IsSelfDisplayingControlTool(string) bool { return false }
-
 // TurnEndToolUses reads the tool-use count of a result frame.
 func (codebuddyProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	var result struct {
@@ -139,5 +133,3 @@ func (codebuddyProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	}
 	return *result.NumToolUses, true
 }
-
-// controlRequestSubtype extracts the subtype of a control request payload.

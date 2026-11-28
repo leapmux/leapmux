@@ -122,3 +122,37 @@ func TestAntigravityConsumedStepRefreshesStructuredModelUsage(t *testing.T) {
 	require.True(t, rows[0].TurnEnd)
 	assert.JSONEq(t, `{"name":"antigravity_turn_end","num_tool_uses":0,"metadata":{"modelUsage":{"inputTokens":100,"outputTokens":25}}}`, string(rows[0].Content))
 }
+
+func TestAntigravityInteractionKind(t *testing.T) {
+	kind, err := interactionKind(json.RawMessage(`{"permission":{}}`))
+	require.NoError(t, err)
+	assert.Equal(t, antigravityControlPermission, kind)
+
+	kind, err = interactionKind(json.RawMessage(`{"askQuestion":{}}`))
+	require.NoError(t, err)
+	assert.Equal(t, antigravityControlQuestion, kind)
+
+	for _, tc := range []struct {
+		name        string
+		raw         json.RawMessage
+		errContains string
+	}{
+		{name: "empty", raw: nil, errContains: "no requested interaction"},
+		{name: "null", raw: json.RawMessage(`null`), errContains: "no requested interaction"},
+		{name: "empty object", raw: json.RawMessage(`{}`), errContains: "no requested interaction"},
+		{name: "whitespace-padded empty object", raw: json.RawMessage(`{ }`), errContains: "holds 0 kinds"},
+		{name: "multiple keys", raw: json.RawMessage(`{"permission":{},"askQuestion":{}}`), errContains: "holds 2 kinds"},
+		{name: "malformed json", raw: json.RawMessage(`{"permission":`), errContains: "unexpected end"},
+		{name: "non-object array", raw: json.RawMessage(`[]`), errContains: "cannot unmarshal"},
+		{name: "non-object string", raw: json.RawMessage(`"permission"`), errContains: "cannot unmarshal"},
+		{name: "non-object number", raw: json.RawMessage(`42`), errContains: "cannot unmarshal"},
+		{name: "unknown kind", raw: json.RawMessage(`{"browserAction":{}}`), errContains: `unknown Antigravity interaction "browserAction"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := interactionKind(tc.raw)
+			assert.Zero(t, got)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tc.errContains)
+		})
+	}
+}

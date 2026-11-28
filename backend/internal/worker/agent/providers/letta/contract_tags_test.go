@@ -2,17 +2,19 @@ package letta
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 )
 
-// The flat approval_response payload and the command vocabulary are written
-// from these names. This test is the Go reader of the contract tables that no
-// production call site branches on: a rename in contracts/letta-protocol.json
-// moves it here and fails, instead of silently leaving the wire stale.
+// Letta Code owns these words. The worker writes the approval_response payload
+// and the question response through generated structs, whose tags follow the
+// contract, and it reads the stream through the hand-written structs below.
+// This test pins each word to Letta Code's spelling, so a rename in
+// contracts/letta-protocol.json fails here instead of silently leaving the wire
+// stale. It is also the Go reader of the contract tables that no production
+// call site branches on.
 func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	t.Parallel()
 
@@ -22,6 +24,11 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	assert.Equal(t, "decision", contracts.LettaReplyDecision)
 	assert.Equal(t, "behavior", contracts.LettaReplyBehavior)
 	assert.Equal(t, "message", contracts.LettaReplyMessage)
+	assert.Equal(t, "updated_input", contracts.LettaReplyUpdatedInput)
+	assert.Equal(t, "selected_permission_suggestion_ids", contracts.LettaReplySelectedPermissionSuggestionIDs)
+	assert.Equal(t, "error", contracts.LettaReplyError)
+	assert.Equal(t, "allow", contracts.LettaBehaviorAllow)
+	assert.Equal(t, "deny", contracts.LettaBehaviorDeny)
 
 	assert.Equal(t, "input", contracts.LettaCommandInput)
 	assert.Equal(t, "abort_message", contracts.LettaCommandAbortMessage)
@@ -37,6 +44,12 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	assert.Equal(t, "ask_user_question_response", contracts.LettaQuestionResponseType)
 	assert.Equal(t, "answered", contracts.LettaQuestionStatusAnswered)
 	assert.Equal(t, "dismissed", contracts.LettaQuestionStatusDismissed)
+	assert.Equal(t, "type", contracts.LettaQuestionFieldType)
+	assert.Equal(t, "version", contracts.LettaQuestionFieldVersion)
+	assert.Equal(t, "toolCallId", contracts.LettaQuestionFieldToolCallID)
+	assert.Equal(t, "questions", contracts.LettaQuestionFieldQuestions)
+	assert.Equal(t, "status", contracts.LettaQuestionFieldStatus)
+	assert.Equal(t, "answers", contracts.LettaQuestionFieldAnswers)
 	assert.Equal(t, "cancelled", contracts.LettaStopReasonCancelled)
 	assert.Equal(t, "error", contracts.LettaStopReasonError)
 	assert.Equal(t, "llm_api_error", contracts.LettaStopReasonLLMAPIError)
@@ -50,12 +63,30 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	assert.Equal(t, "error", contracts.LettaToolStatusError)
 	for field, key := range map[string]string{
 		"ID": contracts.LettaDeltaFieldID, "RunID": contracts.LettaDeltaFieldRunID,
+		"Status":      contracts.LettaDeltaFieldStatus,
+		"MessageType": contracts.LettaDeltaFieldMessageType,
+		"Content":     contracts.LettaDeltaFieldContent,
+		"ToolCallID":  contracts.LettaDeltaFieldToolCallID,
+		"ToolCalls":   contracts.LettaDeltaFieldToolCalls,
+		"ToolCall":    contracts.LettaDeltaFieldToolCall,
+		"ToolName":    contracts.LettaDeltaFieldToolName,
+		"ToolInput":   contracts.LettaDeltaFieldToolInput,
+		"ToolReturn":  contracts.LettaDeltaFieldToolReturn,
 		"ToolReturns": contracts.LettaDeltaFieldToolReturns,
 		"EventType":   contracts.LettaDeltaFieldEventType,
 		"EventData":   contracts.LettaDeltaFieldEventData,
 		"Message":     contracts.LettaDeltaFieldMessage,
 	} {
 		decoded, found := reflect.TypeFor[lettaDelta]().FieldByName(field)
+		assert.True(t, found, field)
+		assert.Equal(t, key, decoded.Tag.Get("json"))
+	}
+	for field, key := range map[string]string{
+		"CallID":    contracts.LettaDeltaFieldToolCallID,
+		"Name":      contracts.LettaDeltaFieldName,
+		"Arguments": contracts.LettaDeltaFieldArguments,
+	} {
+		decoded, found := reflect.TypeFor[lettaNativeToolCall]().FieldByName(field)
 		assert.True(t, found, field)
 		assert.Equal(t, key, decoded.Tag.Get("json"))
 	}
@@ -75,22 +106,4 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	errorField, found := reflect.TypeFor[lettaTurnFinished]().FieldByName("Error")
 	assert.True(t, found, "Error")
 	assert.Equal(t, contracts.LettaDeltaFieldError, errorField.Tag.Get("json"))
-
-	// The receipt and the response read and write the same fields, so one table pins both structs.
-	for _, record := range []reflect.Type{reflect.TypeFor[lettaQuestionReceipt](), reflect.TypeFor[lettaQuestionResponse]()} {
-		for field, key := range map[string]string{
-			"Type": contracts.LettaQuestionFieldType, "Version": contracts.LettaQuestionFieldVersion,
-			"ToolCallID": contracts.LettaQuestionFieldToolCallID, "Questions": contracts.LettaQuestionFieldQuestions,
-		} {
-			decoded, found := record.FieldByName(field)
-			assert.True(t, found, record.Name()+"."+field)
-			assert.Equal(t, key, decoded.Tag.Get("json"), record.Name()+"."+field)
-		}
-	}
-	for field, key := range map[string]string{"Status": contracts.LettaQuestionFieldStatus, "Answers": contracts.LettaQuestionFieldAnswers} {
-		decoded, found := reflect.TypeFor[lettaQuestionResponse]().FieldByName(field)
-		assert.True(t, found, field)
-		// The answers are omitted from a dismissal, so the tag carries an option.
-		assert.Equal(t, key, strings.Split(decoded.Tag.Get("json"), ",")[0], field)
-	}
 }

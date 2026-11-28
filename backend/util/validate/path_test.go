@@ -83,3 +83,24 @@ func assertSanitizePathDropsInvalidBytes(t *testing.T, dir, home string) {
 	require.NoError(t, err)
 	assert.Contains(t, got, "�")
 }
+
+func TestCheckWindowsTrailingDotOrSpace(t *testing.T) {
+	t.Parallel()
+	// UNC FQDN hostnames may legitimately end in a DNS root dot; stripping the
+	// volume prefix prevents rejecting the host segment.
+	assert.NoError(t, checkWindowsPath(
+		`\\fileserver.corp.example.\share\repo`,
+		`\\fileserver.corp.example.\share`,
+	))
+	// Extended-length paths opt out of Win32 trailing-character stripping.
+	assert.NoError(t, checkWindowsPath(`\\?\C:\dir.\file `, `\\?\C:`))
+	// Normal components and pre-Clean "." components stay clean.
+	assert.NoError(t, checkWindowsPath(`C:\Users\alice\repo`, `C:`))
+	assert.NoError(t, checkWindowsPath(`C:\Users\.\alice`, `C:`))
+
+	// Device namespace and trailing spaces or dots on non-volume components are rejected.
+	assert.ErrorIs(t, checkWindowsPath(`\\.\pipe\leapmux`, `\\.\pipe`), ErrReservedName)
+	assert.ErrorIs(t, checkWindowsPath(`C:\Users\alice \repo`, `C:`), ErrTrailingDotOrSpace)
+	assert.ErrorIs(t, checkWindowsPath(`C:\Users\alice\repo.`, `C:`), ErrTrailingDotOrSpace)
+	assert.ErrorIs(t, checkWindowsPath(`\\fileserver.corp.example.\share\repo.`, `\\fileserver.corp.example.\share`), ErrTrailingDotOrSpace)
+}

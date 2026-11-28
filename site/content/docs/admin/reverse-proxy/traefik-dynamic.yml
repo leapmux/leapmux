@@ -3,11 +3,19 @@
 http:
   routers:
     # The web app, API calls, and all WebSocket upgrades.
+    # Exclude /metrics so unauthenticated Prometheus metrics stay host-local.
     leapmux:
-      rule: Host(`hub.example.com`)
+      rule: Host(`hub.example.com`) && !Path(`/metrics`)
       entryPoints: [websecure]
+      middlewares: [strip-forwarded]
       service: leapmux
       tls: {}
+
+  middlewares:
+    strip-forwarded:
+      headers:
+        customRequestHeaders:
+          Forwarded: ""
 
   services:
     leapmux:

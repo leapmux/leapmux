@@ -729,3 +729,39 @@ func assertInternalErrorWithoutCause(t *testing.T, resp *http.Response) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), "database is locked", "the store's error text must not reach the worker")
 }
+
+// Deregistering a worker soft-deletes it immediately, so a deregistered worker
+// cannot mint or revoke delegation tokens during any grace window.
+func TestWorkerDelegation_RejectsDeregisteredWorkerImmediately(t *testing.T) {
+	t.Parallel()
+
+	env := setupDelegation(t)
+	mintedResp := mintRequest(t, env, env.workerAuthToken, map[string]any{
+		"user_id":           env.userID,
+		"issued_for_tab_id": env.tabID,
+	})
+	require.Equal(t, http.StatusOK, mintedResp.StatusCode)
+	var minted struct {
+		TokenID string `json:"token_id"`
+	}
+	require.NoError(t, json.NewDecoder(mintedResp.Body).Decode(&minted))
+	require.NoError(t, mintedResp.Body.Close())
+	require.NotEmpty(t, minted.TokenID)
+
+	n, err := env.store.Workers().ForceDeregister(context.Background(), env.workerID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
+		"user_id":           env.userID,
+		"issued_for_tab_id": env.tabID,
+	})
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	revResp := revokeRequest(t, env, env.workerAuthToken, map[string]any{
+		"token_id": minted.TokenID,
+	})
+	defer func() { _ = revResp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, revResp.StatusCode)
+}

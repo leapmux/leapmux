@@ -1,6 +1,9 @@
 package atomicfile
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -283,4 +286,201 @@ func TestWriteFilePublicationOrder(t *testing.T) {
 		assert.Equal(t, []string{"createTemp", "chmod", "write", "sync", "close", "rename"},
 			rec.calls, "on Windows the write-through replacement carries the publication")
 	}
+}
+
+func TestWriteStream_WritesContentAtRequestedMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	err := WriteStream(path, 0o600, func(w io.Writer) error {
+		_, writeErr := io.WriteString(w, `{"type":"session"}`+"\n")
+		return writeErr
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"session"}`+"\n", string(data))
+
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "session.jsonl", entries[0].Name())
+}
+
+func TestWriteStream_OverwritesExistingFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	require.NoError(t, WriteFile(path, []byte("original content"), 0o600))
+
+	err := WriteStream(path, 0o640, func(w io.Writer) error {
+		_, writeErr := io.WriteString(w, "replacement content")
+		return writeErr
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "replacement content", string(data))
+
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+	}
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "session.jsonl", entries[0].Name())
+}
+
+func TestWriteStream_CallbackErrorLeavesTargetUntouchedAndRemovesTempFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("existing target stays intact", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "session.jsonl")
+		require.NoError(t, WriteFile(path, []byte("keep me"), 0o600))
+
+		boom := errors.New("stream aborted mid-write")
+		err := WriteStream(path, 0o600, func(w io.Writer) error {
+			_, _ = io.WriteString(w, "partial garbage")
+			return boom
+		})
+		require.ErrorIs(t, err, boom)
+
+		data, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		assert.Equal(t, "keep me", string(data))
+
+		entries, listErr := os.ReadDir(dir)
+		require.NoError(t, listErr)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "session.jsonl", entries[0].Name())
+	})
+
+	t.Run("new target is not created", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "new.jsonl")
+
+		boom := errors.New("write failed")
+		err := WriteStream(path, 0o600, func(w io.Writer) error {
+			_, _ = io.WriteString(w, "partial")
+			return boom
+		})
+		require.ErrorIs(t, err, boom)
+
+		_, statErr := os.Stat(path)
+		assert.ErrorIs(t, statErr, os.ErrNotExist)
+
+		entries, listErr := os.ReadDir(dir)
+		require.NoError(t, listErr)
+		assert.Empty(t, entries, "failed WriteStream must leave no temporary file")
+	})
+}
+
+func TestWriteStream_EmptyWrite(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.jsonl")
+	err := WriteStream(path, 0o600, func(io.Writer) error {
+		return nil
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Empty(t, data)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "empty.jsonl", entries[0].Name())
+}
+
+func TestWriteStream_MultiChunkStreamingWrite(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.jsonl")
+
+	var expected bytes.Buffer
+	chunks := []string{
+		strings.Repeat("a", 40*1024) + "\n",
+		strings.Repeat("b", 75*1024) + "\n",
+		strings.Repeat("c", 19*1024) + "\n",
+	}
+	for _, chunk := range chunks {
+		expected.WriteString(chunk)
+	}
+
+	err := WriteStream(path, 0o600, func(w io.Writer) error {
+		for _, chunk := range chunks {
+			if _, err := io.Copy(w, strings.NewReader(chunk)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, expected.Bytes(), data)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "large.jsonl", entries[0].Name())
+}
+
+func TestWriteStream_RejectsNilCallbackAndMissingDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	err := WriteStream(filepath.Join(dir, "x.jsonl"), 0o600, nil)
+	require.Error(t, err)
+
+	entries, listErr := os.ReadDir(dir)
+	require.NoError(t, listErr)
+	assert.Empty(t, entries)
+
+	missing := filepath.Join(dir, "absent", "x.jsonl")
+	err = WriteStream(missing, 0o600, func(w io.Writer) error {
+		_, writeErr := io.WriteString(w, "x")
+		return writeErr
+	})
+	assert.Error(t, err)
+}
+
+func TestWriteStream_RemovesTempFileWhenRenameFails(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	require.NoError(t, os.Mkdir(path, 0o700))
+
+	err := WriteStream(path, 0o600, func(w io.Writer) error {
+		_, writeErr := io.WriteString(w, "secret")
+		return writeErr
+	})
+	require.Error(t, err)
+
+	entries, listErr := os.ReadDir(dir)
+	require.NoError(t, listErr)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "target", entries[0].Name())
 }

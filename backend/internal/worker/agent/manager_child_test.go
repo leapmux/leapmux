@@ -42,12 +42,14 @@ func (s *steerableStub) SendChildInput(childKey string, input agent.ChildInput) 
 	return agent.ChildInputResult{StartsTurn: true}, s.sendInputErr
 }
 
-func (s *steerableStub) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+func (s *steerableStub) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	s.steerInputCalls = append(s.steerInputCalls, sendInputCall{
-		childKey: childKey, content: content, attachments: len(attachments),
+		childKey: childKey, content: request.Content, attachments: len(request.Attachments),
 	})
-	return s.sendInputErr
+	return agent.NativeInputReceipt{}, s.sendInputErr
 }
+
+func (*steerableStub) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 func (s *steerableStub) InterruptChild(childKey string, stop agent.StopContext) error {
 	s.interruptCalls = append(s.interruptCalls, childKey)
@@ -116,10 +118,56 @@ func TestManager_SteerChildInputDispatch(t *testing.T) {
 	st := &steerableStub{}
 	m.PutAgentForTest("root", st)
 
-	require.NoError(t, m.SteerChildInput("root", "child-1", "guide", nil))
+	receipt, err := m.SteerChildInput("root", "child-1", agent.SteerRequest{InputID: "input-1", Content: "guide"})
+	require.NoError(t, err)
+	assert.Empty(t, receipt)
 	require.Len(t, st.steerInputCalls, 1)
 	assert.Equal(t, "child-1", st.steerInputCalls[0].childKey)
 	assert.Equal(t, "guide", st.steerInputCalls[0].content)
+}
+
+func TestManager_SteerChildInputRejectsEmptyInputID(t *testing.T) {
+	t.Parallel()
+	m := agent.NewManager(testRegistry, nil)
+	provider := &echoChildSteerer{}
+	m.PutAgentForTest("owner", provider)
+
+	receipt, err := m.SteerChildInput("owner", "child-key", agent.SteerRequest{Content: "guide"})
+	require.Error(t, err)
+	assert.Empty(t, receipt)
+	assert.Empty(t, provider.childKey)
+	assert.Empty(t, provider.steerInputCalls)
+}
+
+type echoChildSteerer struct {
+	steerableStub
+	childKey string
+	request  agent.SteerRequest
+}
+
+func (s *echoChildSteerer) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	s.childKey, s.request = childKey, request
+	return agent.NativeInputReceipt{}, nil
+}
+
+func (*echoChildSteerer) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
+
+func TestManagerChildEchoKeepsTheDispatchIdentity(t *testing.T) {
+	t.Parallel()
+	m := agent.NewManager(testRegistry, nil)
+	provider := &echoChildSteerer{}
+	m.PutAgentForTest("owner", provider)
+	assert.Equal(t, agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}, m.ChildSteerPolicy("owner"))
+	assert.Empty(t, m.SteerPolicy("owner"))
+	request := agent.SteerRequest{InputID: "input", AttemptID: "dispatch", Content: "Guide the child."}
+	receipt, err := m.SteerChildInput("owner", "child-key", request)
+	require.NoError(t, err)
+	assert.Empty(t, receipt)
+	assert.Equal(t, "child-key", provider.childKey)
+	assert.Equal(t, request, provider.request)
+	assert.Empty(t, provider.steerInputCalls)
 }
 
 func TestManager_InterruptChildDispatch(t *testing.T) {

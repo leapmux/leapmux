@@ -302,6 +302,7 @@ func TestQoderDroppedFramesAndUserReplay(t *testing.T) {
 		`{"type":"attachment","session_id":"session-1"}`,
 		`{"type":"user","session_id":"session-1","message":{"content":[{"type":"text","text":"Replay."}]}}`,
 		`{"type":"system","subtype":"task_started","task_type":"local_bash","session_id":"session-1"}`,
+		`{"type":"system","subtype":"query.mcp.server_updated","server_id":"form-probe","server_name":"Form Probe","change":"updated","tools_count":1,"session_id":"session-1"}`,
 	} {
 		t.Run(raw, func(t *testing.T) {
 			a, sink, _ := newGoalAgent(t)

@@ -11,7 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// browserAnswer is the neutral envelope the browser sends.
+// browserAnswer is the neutral envelope that AnswerControlRequest builds.
 func browserAnswer(t *testing.T, requestID, behavior, message string, updatedInput map[string]any) []byte {
 	return browserAnswerWithChoice(t, requestID, behavior, message, updatedInput, "")
 }
@@ -60,7 +60,7 @@ func TestQoderTranslateAllowWithoutAnUpdateStatesProceedOnce(t *testing.T) {
 	}, nativeAnswer(t, translated))
 }
 
-// An allow that carries the browser's updatedInput states NO outcome beside it:
+// An allow that carries an updatedInput states NO outcome beside it:
 // Qoder resolves an explicit outcome first and then reads the modified input
 // from a `payload` field, so the two together drop the input -- which is what
 // an AskUserQuestion reply would lose.
@@ -93,8 +93,8 @@ func TestQoderTranslateDenyCarriesTheReasonOnBothFields(t *testing.T) {
 	assert.NotContains(t, native, "outcome", "an explicit cancel outcome would drop the words")
 }
 
-// A bare deny states no typed reason, and the placeholder the browser auto-fills
-// is never handed to the model as if the user had written it.
+// A bare deny states no typed reason, and the placeholder that DenyResponse
+// fills in is never handed to the model as if the user had written it.
 func TestQoderTranslateBareDenyStatesNoReason(t *testing.T) {
 	t.Parallel()
 	translated, ok := translateQoderCanUseTool(browserAnswer(t, "approval:1", "deny", "", nil))

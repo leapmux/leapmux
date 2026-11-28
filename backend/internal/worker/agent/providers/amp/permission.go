@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 
 	"github.com/leapmux/leapmux/locallisten"
@@ -115,7 +116,8 @@ const requestReadTimeout = 30 * time.Second
 // The resolver withdraws an existing banner. Otherwise, the publisher withdraws it after publication.
 // The bridge's mu guards both flags.
 type pendingPermission struct {
-	answer chan helperDecision
+	instanceID string
+	answer     chan helperDecision
 	// published is true once the request's banner exists.
 	published bool
 	// resolved is true once the bridge claims the request for a decision.
@@ -352,13 +354,13 @@ func (b *permissionBridge) newRequestID() string {
 
 // register holds one request until an answer or a cancellation reaches it. It
 // refuses a request after close.
-func (b *permissionBridge) register(requestID string) (*pendingPermission, bool) {
+func (b *permissionBridge) register(requestID, instanceID string) (*pendingPermission, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
 		return nil, false
 	}
-	pending := &pendingPermission{answer: make(chan helperDecision, 1)}
+	pending := &pendingPermission{instanceID: instanceID, answer: make(chan helperDecision, 1)}
 	b.pending[requestID] = pending
 	return pending, true
 }
@@ -370,21 +372,24 @@ func (b *permissionBridge) unregister(requestID string) {
 	b.mu.Unlock()
 }
 
-// answer delivers the user's decision to one request. It reports false for a
-// request that no longer waits.
-func (b *permissionBridge) answer(requestID string, decision helperDecision) bool {
+// answer delivers the user's decision to one request. It refuses an answer for
+// a request that no longer waits or whose instance does not match.
+func (b *permissionBridge) answer(requestID, instanceID string, decision helperDecision) error {
 	b.mu.Lock()
 	pending, ok := b.pending[requestID]
-	delete(b.pending, requestID)
-	if ok {
-		pending.resolved = true
-	}
-	b.mu.Unlock()
 	if !ok {
-		return false
+		b.mu.Unlock()
+		return fmt.Errorf("%w: the Amp permission request %s no longer waits for an answer", agent.ErrControlRequestNotPending, requestID)
 	}
+	if err := agent.ControlInstanceRefusal(pending.instanceID, instanceID); err != nil {
+		b.mu.Unlock()
+		return err
+	}
+	delete(b.pending, requestID)
+	pending.resolved = true
+	b.mu.Unlock()
 	pending.answer <- decision
-	return true
+	return nil
 }
 
 // pendingCount reports how many requests wait for the user.

@@ -352,3 +352,69 @@ SET elevation_proven_at = NULL,
 WHERE id = sqlc.arg(id)
   AND user_id = sqlc.arg(user_id)
   AND elevation_expires_at IS NOT NULL;
+
+-- name: ListAPITokensByUserIDExact :many
+SELECT sqlc.embed(t),
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at,
+       c.verified_at AS client_verified_at,
+       c.registration_source AS client_registration_source
+FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
+WHERE t.id = sqlc.arg(id)
+  AND t.user_id = sqlc.arg(user_id)
+  AND (t.client_id = sqlc.arg(client_id) OR CAST(sqlc.arg(client_id) AS TEXT) = '')
+  AND t.revoked_at IS NULL;
+
+-- name: ListAPITokensByUserIDPrefix :many
+SELECT sqlc.embed(t),
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at,
+       c.verified_at AS client_verified_at,
+       c.registration_source AS client_registration_source
+FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
+WHERE t.id >= sqlc.arg(id_lo)
+  AND t.id < sqlc.arg(id_hi)
+  AND t.id > sqlc.arg(id_gt)
+  AND t.user_id = sqlc.arg(user_id)
+  AND (t.client_id = sqlc.arg(client_id) OR CAST(sqlc.arg(client_id) AS TEXT) = '')
+  AND t.revoked_at IS NULL
+ORDER BY t.id ASC
+LIMIT sqlc.arg(limit);
+
+-- name: ListAllAPITokensByIDExact :many
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted,
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at
+FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
+LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
+WHERE t.id = sqlc.arg(id)
+  AND (t.user_id = sqlc.arg(user_id) OR CAST(sqlc.arg(user_id) AS TEXT) = '')
+  AND (t.client_id = sqlc.arg(client_id) OR CAST(sqlc.arg(client_id) AS TEXT) = '')
+  AND (CAST(sqlc.arg(include_revoked) AS INTEGER) = 1 OR t.revoked_at IS NULL);
+
+-- name: ListAllAPITokensByIDPrefix :many
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted,
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at
+FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
+LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
+WHERE t.id >= sqlc.arg(id_lo)
+  AND t.id < sqlc.arg(id_hi)
+  AND t.id > sqlc.arg(id_gt)
+  AND (t.user_id = sqlc.arg(user_id) OR CAST(sqlc.arg(user_id) AS TEXT) = '')
+  AND (t.client_id = sqlc.arg(client_id) OR CAST(sqlc.arg(client_id) AS TEXT) = '')
+  AND (CAST(sqlc.arg(include_revoked) AS INTEGER) = 1 OR t.revoked_at IS NULL)
+ORDER BY t.id ASC
+LIMIT sqlc.arg(limit);

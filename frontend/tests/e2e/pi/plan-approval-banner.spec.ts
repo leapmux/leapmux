@@ -62,7 +62,7 @@ piTest('rejects the native Pi plan review and keeps planning in the same session
     await answerPlanReview(page, 'reject')
 
     await expect(banner).toHaveCount(0)
-    await expect(savedControlAnswer(page)).toHaveText('Rejected')
+    await expect(savedControlAnswer(page)).toHaveText('Reject')
     await waitForAgentIdle(page)
     await expectTurnEndedAfter(modelScript, start + 1)
 
@@ -82,6 +82,6 @@ piTest('rejects the native Pi plan review and keeps planning in the same session
     expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
 
     await page.reload()
-    await expect(savedControlAnswer(page)).toHaveText('Rejected')
+    await expect(savedControlAnswer(page)).toHaveText('Reject')
   }, async () => watch.cancel())
 })

@@ -853,6 +853,31 @@ func TestFinishAllChildConversations_EndsEveryChildAsAStop(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion)
 }
 
+func TestChildClosePreservesTheNativeKeyOfBufferedReplyText(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "root-session"}
+	b.hooks.AssistantTextKey = func(messageID string) string { return "reply:" + messageID }
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "child-row", ChildAgentKey: "child-row", Status: bgtask.StatusRunning,
+	})
+	target := ChildSessionTarget{RootSessionID: "root-session", SessionID: "child-session", RowKey: "child-row"}
+	require.True(t, b.AttachChildSession(target))
+	child := sink.Child("child-of-child-row")
+	child.UpdateSessionID("child-session")
+	b.HandleSessionUpdateForTest(sessionUpdate(t, "child-session", `{"sessionUpdate":"agent_message_chunk","messageId":"child-reply","content":{"type":"text","text":"Child answer."}}`))
+	b.FlushChildNativeReplyOutput(target, map[string]bool{"foreign-reply": true})
+	assert.Empty(t, child.Messages())
+
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "child-row", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly})
+	b.FlushChildNativeReplyOutput(target, map[string]bool{"child-reply": true})
+	rows := child.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "reply:child-reply", rows[0].IdempotencyKey)
+	assert.Equal(t, []string{"text:Child answer."}, assembledTexts(t, rows))
+	assert.Empty(t, sink.Messages())
+}
+
 // A child renders conversation updates only.
 // These updates belong to the main session:
 //   - Mode.
@@ -1067,29 +1092,33 @@ func TestSubagentObservationChildUpdateFeedsTheChildConversation(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionComplete, completion)
 }
 
-func TestLoadChildSessionReturnsItsOwnModelWithoutChangingTheRoot(t *testing.T) {
+func TestLoadChildSessionReturnsItsOwnSettingsWithoutChangingTheRoot(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
-		raw   string
-		model string
-		fails bool
+		raw    string
+		model  string
+		mode   string
+		effort string
+		fails  bool
 	}{
-		"legacy model": {`{"models":{"currentModelId":"private/child"}}`, "private/child", false},
-		"legacy model wins when both channels report a model": {`{"models":{"currentModelId":"private/legacy"},"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/child","options":[{"value":"private/child","name":"Child"}]}]}`, "private/legacy", false},
-		"config-only model": {`{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/child","options":[{"value":"private/child","name":"Child"}]}]}`, "private/child", false},
-		"missing model":     {`{}`, "", false},
-		"malformed model":   {`{"models":42}`, "", true},
+		"legacy model":           {`{"models":{"currentModelId":"private/child"},"modes":{"currentModeId":"legacy"}}`, "private/child", "legacy", "", false},
+		"both settings channels": {`{"models":{"currentModelId":"private/legacy"},"modes":{"currentModeId":"legacy"},"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/child"},{"id":"mode","category":"mode","type":"select","currentValue":"child"},{"id":"effort","type":"select","currentValue":"low"}]}`, "private/legacy", "child", "low", false},
+		"config-only model":      {`{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/child","options":[{"value":"private/child","name":"Child"}]}]}`, "private/child", "", "", false},
+		"missing model":          {`{}`, "", "", "", false},
+		"malformed model":        {`{"models":42}`, "", "", "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			b, requests := acptest.NewAgentForRPCWithResponder(t, func() *Base { return &Base{} }, func(b *Base) *Base { return b }, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(tc.raw)} })
 			b.SetCurrentModel("private/parent")
-			model, err := b.LoadChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "child-row"})
+			settings, err := b.LoadChildSession(ChildSessionTarget{RootSessionID: b.CurrentSessionID(), SessionID: "child-session", RowKey: "child-row"})
 			if tc.fails {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, tc.model, model)
+				assert.Equal(t, tc.model, settings.ModelID)
+				assert.Equal(t, tc.mode, settings.ModeID)
+				assert.Equal(t, tc.effort, settings.ConfigValues[agent.OptionIDEffort])
 			}
 			assert.Equal(t, "private/parent", b.CurrentModel())
 			require.Len(t, requests(), 1)

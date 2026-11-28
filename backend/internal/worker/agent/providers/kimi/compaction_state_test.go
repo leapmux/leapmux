@@ -34,7 +34,8 @@ func TestKimiNativeCompactingStateControlsExactAgentInput(t *testing.T) {
 			}
 			send := func() error {
 				if agentID == kimiMainAgentID {
-					return rig.agent.SendInput("After compaction", nil)
+					_, err := rig.agent.SendInput("After compaction", nil)
+					return err
 				}
 				_, err := rig.agent.SendChildInput("session_1/"+agentID, agent.ChildInput{Content: "After compaction"})
 				return err

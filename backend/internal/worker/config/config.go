@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,8 +13,12 @@ import (
 	"time"
 
 	"github.com/knadh/koanf/v2"
+	"github.com/spf13/pflag"
+
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -253,139 +256,117 @@ func (s *State) EnsureCompositeKeypair() (*noiseutil.CompositeKeypair, bool, err
 	return ck, true, nil
 }
 
-// LoadOptions supplies flags and configuration hooks for a command.
+// LoadOptions selects the flags of a command.
 type LoadOptions struct {
-	// FlagSetName and Description head the help output. Empty values give
-	// "leapmux worker" and the description of the worker mode.
-	FlagSetName string
-	Description string
 	// CLIFlags, when non-nil, lists the only worker flags the command accepts
-	// and shows; config and version are always registered. The config file and
+	// and shows; config is always registered. The config file and
 	// LEAPMUX_WORKER_* variables still reach every key.
 	CLIFlags []string
-	// ConfigureFlags registers caller-owned command flags.
-	ConfigureFlags func(*flag.FlagSet)
-	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
-	AfterFlagsParsed func(*flag.FlagSet) error
 }
 
 // Load parses worker configuration from defaults, config file, env vars, and CLI flags.
-// Returns the config, whether -version was requested, and any error.
-func Load(args []string) (*Config, bool, error) {
+func Load(args []string) (*Config, error) {
 	return LoadWithOptions(args, LoadOptions{})
 }
 
-// LoadWithOptions parses mode flags and caller-owned command flags together.
-// Only mode flags enter the configuration values.
-func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
-	flagSetName := opts.FlagSetName
-	if flagSetName == "" {
-		flagSetName = "leapmux worker"
-	}
-	description := opts.Description
-	if description == "" {
-		description = "Run a Worker connected to a Hub."
-	}
-
-	// Define every worker flag on a scratch set, then copy the ones this
-	// command accepts. One definition list serves every subset, so a subset
-	// cannot carry a stale default or usage string of its own.
-	all := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
-	all.String("config", defaultConfigFile, "path to config file")
-	all.String("name", "", "worker display name (default: hostname)")
-	all.String("data-dir", ".", "data directory")
-	all.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
-	all.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
-	all.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
-	all.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
-	all.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
-	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAgentStartupTimeout),
-		"agent-startup-timeout", "agent startup timeout. "+internalconfig.UnitSyntax)
-	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
-		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
-	all.Int("agent-startup-concurrency", 0,
-		fmt.Sprintf("how many agents to bring back at once after a restart "+
-			"(0 = %d, or the CPU count when that is lower); "+
-			"it never delays an agent you start yourself", DefaultMaxStartupConcurrency))
-	all.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
-	all.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
-	all.Bool("use-login-shell", true, "wrap each agent invocation in the user's login shell")
-	showVersion := all.Bool("version", false, "print version and exit")
-
-	fs := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
-	all.VisitAll(func(f *flag.Flag) {
-		if opts.CLIFlags != nil && f.Name != "config" && f.Name != "version" && !slices.Contains(opts.CLIFlags, f.Name) {
-			return
-		}
-		fs.Var(f.Value, f.Name, f.Usage)
+// LoadWithOptions parses args as the flags of the worker and loads the
+// configuration, for a caller that has no command tree to parse them. A
+// command registers Flags on its own flag set instead, and calls Flags.Load
+// after the parse.
+func LoadWithOptions(args []string, opts LoadOptions) (*Config, error) {
+	flags := NewFlags(opts)
+	fs, err := internalconfig.ParseFlags("leapmux worker", args, func(fs *pflag.FlagSet) error {
+		flags.Register(fs)
+		return nil
 	})
-	usageCategories := map[string]string{
-		"config":                    "Common options",
-		"version":                   "Common options",
-		"name":                      "Worker options",
-		"data-dir":                  "Worker options",
-		"log-level":                 "Worker options",
-		"encryption-mode":           "Worker options",
-		"use-login-shell":           "Worker options",
-		"max-incomplete-chunked":    "Timeout and limit options",
-		"max-message-size":          "Timeout and limit options",
-		"agent-startup-timeout":     "Timeout and limit options",
-		"api-timeout":               "Timeout and limit options",
-		"agent-startup-concurrency": "Timeout and limit options",
-		"db-max-conns":              "SQLite database options",
-		"db-cache-size":             "SQLite database options",
-		"db-mmap-size":              "SQLite database options",
+	if err != nil {
+		return nil, err
 	}
-	if opts.ConfigureFlags != nil {
-		opts.ConfigureFlags(fs)
-	}
-	if err := internalconfig.ConfigureAndParse(fs, args, description, usageCategories, workerFlagCategoryOrder); err != nil {
-		return nil, false, err
-	}
+	return flags.Load(fs)
+}
 
-	if *showVersion {
-		return nil, true, nil
+// Flags declares the flags of the worker for one command. Register adds them
+// to the command's flag set, and Load reads that set after the parse, so the
+// help, the parse and the load read one declaration.
+type Flags struct {
+	opts LoadOptions
+}
+
+// NewFlags declares the flags of the worker with opts.
+func NewFlags(opts LoadOptions) *Flags {
+	return &Flags{opts: opts}
+}
+
+// flagDef is one worker CLI flag, its koanf config key, its help group, its
+// usage text, and its typed default value.
+type flagDef struct {
+	name     string
+	koanfKey string
+	group    string
+	usage    string
+	value    any
+}
+
+func (fd flagDef) register(fs *pflag.FlagSet) {
+	switch v := fd.value.(type) {
+	case string:
+		fs.String(fd.name, v, fd.usage)
+	case int:
+		fs.Int(fd.name, v, fd.usage)
+	case bool:
+		fs.Bool(fd.name, v, fd.usage)
+	case time.Duration:
+		fs.Var(internalconfig.NewDurationFlag(new(time.Duration), v), fd.name, fd.usage)
+	default:
+		panic(fmt.Sprintf("config: flag %q has an unsupported default type %T", fd.name, fd.value))
 	}
-	if opts.AfterFlagsParsed != nil {
-		if err := opts.AfterFlagsParsed(fs); err != nil {
-			return nil, false, err
+	cli.SetFlagGroup(fs, fd.name, fd.group)
+}
+
+// workerFlagDefs is the single definition table for worker flags, in help order.
+// An empty koanfKey marks CLI-only flags (such as --config).
+var workerFlagDefs = []flagDef{
+	{name: "config", group: "Common options", usage: "path to config file", value: defaultConfigFile},
+	{name: "name", koanfKey: "name", group: "Worker options", usage: "worker display name (default: hostname)", value: ""},
+	{name: "data-dir", koanfKey: "data_dir", group: "Worker options", usage: "data directory, which LEAPMUX_WORKER_DATA_DIR and data_dir of the config file also set; a relative path is relative to the directory of the config file", value: "."},
+	{name: "log-level", koanfKey: "log_level", group: "Worker options", usage: "log level (debug, info, warn, error)", value: defaultLogLevel},
+	{name: "encryption-mode", koanfKey: "encryption_mode", group: "Worker options", usage: "encryption mode (classic, post-quantum)", value: "post-quantum"},
+	{name: "use-login-shell", koanfKey: "use_login_shell", group: "Worker options", usage: "wrap each agent invocation in the user's login shell", value: true},
+	{name: "max-incomplete-chunked", koanfKey: "max_incomplete_chunked", group: "Timeout and limit options", usage: fmt.Sprintf("maximum in-flight chunked sequences per channel (0 = %d)", contracts.DefaultMaxIncompleteChunked), value: 0},
+	{name: "max-message-size", koanfKey: "max_message_size", group: "Timeout and limit options", usage: "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom", value: 0},
+	{name: "agent-startup-timeout", koanfKey: "agent_startup_timeout", group: "Timeout and limit options", usage: "agent startup timeout; " + internalconfig.UnitSyntax, value: DefaultAgentStartupTimeout},
+	{name: "api-timeout", koanfKey: "api_timeout", group: "Timeout and limit options", usage: "JSON-RPC request timeout; " + internalconfig.UnitSyntax, value: DefaultAPITimeout},
+	// 0 means "resolve from this machine's core count" -- see Config.AgentStartupConcurrency.
+	{name: "agent-startup-concurrency", koanfKey: "agent_startup_concurrency", group: "Timeout and limit options", usage: fmt.Sprintf("how many agents to bring back at once after a restart (0 = %d, or the CPU count when that is lower); it never delays an agent you start yourself", DefaultMaxStartupConcurrency), value: 0},
+	{name: "db-max-conns", koanfKey: "db_max_conns", group: "SQLite database options", usage: "maximum number of open database connections", value: sqlitedb.DefaultMaxConns},
+	{name: "db-cache-size", koanfKey: "db_cache_size", group: "SQLite database options", usage: "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)", value: 0},
+	{name: "db-mmap-size", koanfKey: "db_mmap_size", group: "SQLite database options", usage: "SQLite memory-mapped I/O size in bytes (0 = disabled)", value: 0},
+}
+
+// Register adds the flags to fs, in the groups that the help prints.
+func (f *Flags) Register(fs *pflag.FlagSet) {
+	for _, fd := range workerFlagDefs {
+		if f.opts.CLIFlags != nil && fd.name != "config" && !slices.Contains(f.opts.CLIFlags, fd.name) {
+			continue
 		}
+		fd.register(fs)
 	}
+}
+
+// Load reads fs, which a parse filled after Register, and loads the
+// configuration: the defaults, then the config file, then the environment,
+// then the flags that the command line set.
+func (f *Flags) Load(fs *pflag.FlagSet) (*Config, error) {
 	configPath := fs.Lookup("config").Value.String()
 
-	// Flag name -> koanf key mapping.
-	fieldMap := map[string]string{
-		"name":                      "name",
-		"data-dir":                  "data_dir",
-		"db-max-conns":              "db_max_conns",
-		"db-cache-size":             "db_cache_size",
-		"db-mmap-size":              "db_mmap_size",
-		"max-incomplete-chunked":    "max_incomplete_chunked",
-		"max-message-size":          "max_message_size",
-		"agent-startup-timeout":     "agent_startup_timeout",
-		"api-timeout":               "api_timeout",
-		"agent-startup-concurrency": "agent_startup_concurrency",
-		"log-level":                 "log_level",
-		"encryption-mode":           "encryption_mode",
-		"use-login-shell":           "use_login_shell",
-	}
-
-	defaults := map[string]interface{}{
-		"name":                   "",
-		"data_dir":               ".",
-		"db_max_conns":           sqlitedb.DefaultMaxConns,
-		"db_cache_size":          0,
-		"db_mmap_size":           0,
-		"max_incomplete_chunked": 0,
-		"max_message_size":       0,
-		"agent_startup_timeout":  DefaultAgentStartupTimeout,
-		"api_timeout":            DefaultAPITimeout,
-		// 0 means "resolve from this machine's core count" -- see the field's
-		// comment on Config.AgentStartupConcurrency.
-		"agent_startup_concurrency": 0,
-		"log_level":                 defaultLogLevel,
-		"encryption_mode":           "post-quantum",
-		"use_login_shell":           true,
+	fieldMap := make(map[string]string, len(workerFlagDefs))
+	defaults := make(map[string]any, len(workerFlagDefs))
+	for _, fd := range workerFlagDefs {
+		if fd.koanfKey == "" {
+			continue
+		}
+		fieldMap[fd.name] = fd.koanfKey
+		defaults[fd.koanfKey] = fd.value
 	}
 
 	k := koanf.New(internalconfig.Delim)
@@ -394,12 +375,12 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// The worker has no list-typed environment variable: every key it reads
 	// holds one value.
 	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_WORKER_", nil, fp); err != nil {
-		return nil, false, fmt.Errorf("load config: %w", err)
+		return nil, fmt.Errorf("load config: %w", err)
 	}
 
 	var cfg Config
 	if err := internalconfig.Unmarshal(k, &cfg); err != nil {
-		return nil, false, fmt.Errorf("unmarshal config: %w", err)
+		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
 	// Resolve the timeouts before anything reads one.
@@ -408,14 +389,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// Resolve relative data_dir against config file directory.
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, defaultConfigDir)
 
-	return &cfg, false, nil
-}
-
-var workerFlagCategoryOrder = []string{
-	"Common options",
-	"Worker options",
-	"Timeout and limit options",
-	"SQLite database options",
+	return &cfg, nil
 }
 
 // Validate checks the configuration and ensures required directories exist.
@@ -453,15 +427,6 @@ func (c *Config) StatePath() string {
 // DBPath returns the path to the worker database file.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "worker.db")
-}
-
-// DBConfig returns the SQLite configuration for sqlitedb.Open.
-func (c *Config) DBConfig() sqlitedb.Config {
-	return sqlitedb.Config{
-		MaxConns:  c.DBMaxConns,
-		CacheSize: c.DBCacheSize,
-		MmapSize:  c.DBMmapSize,
-	}
 }
 
 // LoadState loads persisted state from disk. Returns nil if no state file exists.

@@ -44,3 +44,17 @@ WITH to_delete AS (
     SELECT w.id FROM workspaces w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < $1 LIMIT 1000
 )
 DELETE FROM workspaces WHERE id IN (SELECT id FROM to_delete);
+
+-- name: ListAccessibleWorkspacesByIDExact :many
+SELECT w.* FROM workspaces w
+WHERE w.deleted_at IS NULL
+  AND w.owner_user_id = sqlc.arg(user_id)
+  AND w.id = sqlc.arg(id)::text;
+
+-- name: ListAccessibleWorkspacesByIDPrefix :many
+SELECT w.* FROM workspaces w
+WHERE w.deleted_at IS NULL
+  AND w.owner_user_id = sqlc.arg(user_id)
+  AND w.id >= sqlc.arg(id_lo)::text
+  AND w.id < sqlc.arg(id_hi)::text
+ORDER BY w.id ASC;

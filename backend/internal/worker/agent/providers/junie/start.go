@@ -36,7 +36,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		ProviderName:  "junie",
 		BaseArgs:      args,
 		PinnedEnv:     []string{junieSkipUpdateEnv, junieShareStatisticsEnv},
-		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
+		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume, ForkRequiresLoad: true},
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {
@@ -72,10 +72,21 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// `_meta.lastRequestComplete` chunk and holds no end frame of
 				// its own (see observeJunieTurnEnd).
 				SessionNotificationMetadata: a.observeJunieTurnEnd,
+				UpdateMessageID:             a.junieSteerAnswerID,
+				AssistantTextKey:            junieSteerAnswerKey,
+				ControlOwner:                a.junieControlOwner,
+				CaptureReplyReconciliation: func() func(agent.MessageCompletion, bool) error {
+					fn := a.captureJunieSteerCompletion(agent.DirectProviderServices(a.Sink()))
+					if fn == nil {
+						return nil
+					}
+					return func(agent.MessageCompletion, bool) error { return fn() }
+				},
 				// Junie streams the output of a running command in rawOutput.
 				ToolOutput:  a.junieToolOutput,
 				PromptEnded: a.finishOpenChildren,
 				ClearProviderState: func() {
+					a.retireJunieSteers()
 					a.stopChildTails()
 					transcript.Reset()
 				},

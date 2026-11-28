@@ -2,7 +2,7 @@
 -- title_auto_generated column. The caller answers it from the request, because
 -- only the client knows whether the user kept the suggestion it pre-filled.
 -- name: CreateAgent :exec
-INSERT INTO agents (id, working_dir, title, title_auto_generated, options, agent_provider, resumed, pending_resume_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, working_dir, title, title_auto_generated, options, agent_provider, resumed, pending_resume_session_id, spawned_by_agent_id, forked_from_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- HasOpenAgentForNativeSession enforces the picker's open-handle exclusion for
 -- manually entered IDs too. It matches across working directories.
@@ -106,6 +106,10 @@ UPDATE agents SET title = ?, title_auto_generated = 0 WHERE id = ?;
 
 -- name: UpdateAgentSessionID :exec
 UPDATE agents SET agent_session_id = ?, pending_resume_session_id = '', session_start_seq = (SELECT COALESCE(MAX(m.seq), 0) FROM messages m WHERE m.agent_id = agents.id) WHERE agents.id = ?;
+
+-- name: BindChildSessionID :execrows
+UPDATE agents SET agent_session_id = sqlc.arg(agent_session_id)
+WHERE agents.id = sqlc.arg(id) AND parent_agent_id IS NOT NULL AND agent_session_id = '' AND closed_at IS NULL;
 
 -- MarkAgentResumedForInputRecovery records the durable intent to resume the
 -- stored native session before an approved process replacement
@@ -512,3 +516,38 @@ WHERE id = sqlc.arg(id) AND parent_agent_id = sqlc.arg(parent_agent_id)
 -- GetRootAgentSessionID validates that id is a root agent and reads its native session ID.
 -- name: GetRootAgentSessionID :one
 SELECT agent_session_id FROM agents WHERE id = ? AND parent_agent_id IS NULL;
+
+-- GetAgentProvider reads only the provider column so attachment validation on
+-- registerAgentGuardedByID handlers skips options and option_groups JSON blobs.
+-- name: GetAgentProvider :one
+SELECT agent_provider FROM agents WHERE id = ?;
+
+-- ListOpenAgentsForSearch returns the minimal metadata needed by
+-- SearchAgentMessages across all open agents.
+-- name: ListOpenAgentsForSearch :many
+SELECT id, title, agent_provider FROM agents WHERE closed_at IS NULL ORDER BY created_at DESC;
+
+-- ListOpenAgentsForSearchByIDs returns the minimal metadata needed by
+-- SearchAgentMessages for an explicit set of open agent IDs.
+-- name: ListOpenAgentsForSearchByIDs :many
+SELECT id, title, agent_provider FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL ORDER BY created_at DESC;
+
+-- ListDescendantAgentIDsByParentIDs walks parent_agent_id down from a batch of
+-- root or intermediate agent IDs in a single recursive query.
+-- name: ListDescendantAgentIDsByParentIDs :many
+WITH RECURSIVE descendants AS (
+    SELECT a.id AS id FROM agents a WHERE a.parent_agent_id IS NOT NULL AND a.parent_agent_id IN (sqlc.slice('parent_ids'))
+    UNION
+    SELECT a.id AS id FROM agents a JOIN descendants ON a.parent_agent_id = descendants.id
+)
+SELECT descendants.id FROM descendants;
+
+-- ListAgentsBySpawnedBy returns all open agents opened or forked by the given
+-- calling agent tab. Repeating spawned_by_agent_id <> '' lets SQLite use
+-- idx_agents_spawned_by.
+-- name: ListAgentsBySpawnedBy :many
+SELECT * FROM agents
+WHERE spawned_by_agent_id = ?
+  AND spawned_by_agent_id <> ''
+  AND closed_at IS NULL
+ORDER BY created_at ASC, id ASC;

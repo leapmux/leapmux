@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -32,6 +34,7 @@ type codexPendingTurnStart struct {
 	failureReported  bool
 	modelObserved    bool
 	effortObserved   bool
+	reply            *codexTrackedReply
 }
 
 func newCodexTurnStart(threadID string, input []map[string]interface{}, settings turnSettings) *codexPendingTurnStart {
@@ -73,7 +76,7 @@ func errCodexInputRecoveryRequired() error {
 
 // dispatchInputForSession captures settings and sends the request under one dispatch lock.
 // The caller waits for acceptance after this method releases that lock.
-func (a *Agent) dispatchInputForSession(expected *string, input []map[string]interface{}) (*codexPendingTurnStart, error) {
+func (a *Agent) dispatchInputForSession(expected *string, input []map[string]interface{}, tracked bool) (*codexPendingTurnStart, error) {
 	a.turnDispatchMu.Lock()
 	defer a.turnDispatchMu.Unlock()
 	a.Mu.Lock()
@@ -83,7 +86,7 @@ func (a *Agent) dispatchInputForSession(expected *string, input []map[string]int
 	}
 	threadID, settings := a.threadID, a.turnSettingsLocked()
 	a.Mu.Unlock()
-	return a.beginCodexTurnStart(threadID, input, settings, nil)
+	return a.beginCodexTurnStartWithTracking(threadID, input, settings, nil, tracked)
 }
 
 // sendTurnStart sends explicit settings. Runtime input dispatch captures current settings separately.
@@ -104,6 +107,10 @@ func (a *Agent) sendTurnStart(threadID string, input []map[string]interface{}, s
 // SendDetachedRequest writes synchronously, then waits for its response separately.
 // Do not hold Mu during the write, because the process transport acquires it.
 func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interface{}, settings turnSettings, retry *codexTurnRetry) (*codexPendingTurnStart, error) {
+	return a.beginCodexTurnStartWithTracking(threadID, input, settings, retry, false)
+}
+
+func (a *Agent) beginCodexTurnStartWithTracking(threadID string, input []map[string]interface{}, settings turnSettings, retry *codexTurnRetry, tracked bool) (*codexPendingTurnStart, error) {
 	params := map[string]interface{}{"threadId": threadID, "input": input}
 	addCodexTurnSettingsParams(params, settings)
 	raw, err := json.Marshal(params)
@@ -131,6 +138,14 @@ func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interfac
 		return nil, err
 	}
 	pending := newCodexTurnStart(threadID, input, settings)
+	if tracked {
+		reply := newCodexTrackedReply(agent.NativeInputReceipt{SessionID: threadID, InputID: id.Generate()})
+		pending.reply = reply
+		if a.replyStarts == nil {
+			a.replyStarts = make(map[string]*codexTrackedReply)
+		}
+		a.replyStarts[reply.receipt.InputID] = reply
+	}
 	pending.settingRevisions = maps.Clone(a.settingRevisions)
 	pending.retry = retry
 	a.pendingStart = pending
@@ -139,11 +154,15 @@ func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interfac
 		retry.input = nil
 	}
 	a.Mu.Unlock()
-	err = a.SendDetachedRequest("turn/start", raw, func(_ json.RawMessage, responseErr error) {
-		a.handleCodexTurnStartResponse(pending, responseErr)
+	var replyTimeout time.Duration
+	if tracked {
+		replyTimeout = turnStartAckTimeout
+	}
+	err = a.SendDetachedRequest("turn/start", raw, providerkit.DetachedRequestOptions{Timeout: replyTimeout}, func(result json.RawMessage, responseErr error) {
+		a.handleCodexTurnStartResult(pending, result, responseErr)
 	})
 	if err != nil {
-		a.handleCodexTurnStartResponse(pending, err)
+		a.handleCodexTurnStartResult(pending, nil, err)
 		return pending, classifyCodexTurnStartRequestError("turn/start", err)
 	}
 	return pending, nil
@@ -167,46 +186,148 @@ func (a *Agent) finishCodexTurnStartLocked(pending *codexPendingTurnStart, turnI
 	return true
 }
 
-func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, responseErr error) {
-	if responseErr == nil {
-		return
-	}
-	err := classifyCodexTurnStartRequestError("turn/start", responseErr)
-	// A retired request cannot settle its successor, but its authentication
-	// rejection still describes this physical process's cached login.
-	if codexAuthenticationRejection(responseErr) {
-		a.markAuthenticationRecoveryRequired()
-		err = fmt.Errorf("%w: %w", agent.ErrInputProcessRestartRequired, err)
-	}
+// handleCodexTurnStartResult reconciles turn-start admission and tracked reply
+// ownership from one turn/start RPC result under a single Agent.Mu transition.
+func (a *Agent) handleCodexTurnStartResult(pending *codexPendingTurnStart, raw json.RawMessage, responseErr error) {
 	processEnded := false
 	select {
 	case <-a.ProcessDone():
 		processEnded = true
 	default:
 	}
+	if responseErr == nil && pending.reply != nil && codexReplyTurnID(raw) == "" && processEnded {
+		responseErr = a.ProcessExitError()
+	}
+	if responseErr != nil {
+		err := classifyCodexTurnStartRequestError("turn/start", responseErr)
+		// A retired request cannot settle its successor, but its authentication
+		// rejection still describes this physical process's cached login.
+		if codexAuthenticationRejection(responseErr) {
+			a.markAuthenticationRecoveryRequired()
+			err = fmt.Errorf("%w: %w", agent.ErrInputProcessRestartRequired, err)
+		}
+		var (
+			failRetry     bool
+			publishActive bool
+			retireReply   *codexTrackedReply
+			deliveryErr   error
+		)
+		a.Mu.Lock()
+		reply := pending.reply
+		if reply != nil && a.replyStarts[reply.receipt.InputID] == reply && !reply.settled && reply.turnID == "" {
+			delete(a.replyStarts, reply.receipt.InputID)
+			reply.endedBeforeAck = nil
+			reply.detached = true
+			deliveryErr = pending.err
+			if deliveryErr == nil {
+				deliveryErr = err
+			}
+			retireReply = reply
+		}
+		if !pending.settled && a.pendingStart == pending {
+			keepPending := errors.Is(err, agent.ErrDeliveryUncertain) && !processEnded &&
+				(reply == nil || a.mainTurn.id == "")
+			if keepPending {
+				if reply == nil {
+					pending.responseError <- err
+				}
+			} else {
+				if a.finishCodexTurnStartLocked(pending, "", err) {
+					close(pending.done)
+				}
+				if pending.retry != nil {
+					failRetry = true
+				} else {
+					publishActive = true
+				}
+			}
+		}
+		a.Mu.Unlock()
+		if retireReply != nil {
+			outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
+			if deliveryErr != nil && !errors.Is(deliveryErr, agent.ErrDeliveryUncertain) {
+				outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
+			}
+			a.retireCodexNativeReply(retireReply.receipt, outcome)
+		}
+		if failRetry {
+			pending.retry.fail(codexTurnRetryStarting, err)
+		} else if publishActive {
+			a.PublishTurnActive()
+		}
+		if retireReply != nil {
+			a.finishCodexReply(retireReply, deliveryErr)
+		}
+		return
+	}
+
+	reply := pending.reply
+	if reply == nil {
+		return
+	}
+	turnID := codexReplyTurnID(raw)
 	a.Mu.Lock()
-	if pending.settled || a.pendingStart != pending {
+	if a.replyStarts[reply.receipt.InputID] != reply || reply.settled || reply.turnID != "" {
 		a.Mu.Unlock()
 		return
 	}
-	if errors.Is(err, agent.ErrDeliveryUncertain) && !processEnded {
-		pending.responseError <- err
+	if turnID == "" {
+		delete(a.replyStarts, reply.receipt.InputID)
+		reply.endedBeforeAck = nil
+		reply.detached = true
+		var attaching, settings, settled bool
+		var attachedTurnID string
+		if a.pendingStart == pending && a.mainTurn.id != "" {
+			attaching = true
+			attachedTurnID = a.mainTurn.id
+			settings, settled = a.attachCodexTurnStartLocked(pending, attachedTurnID)
+		}
 		a.Mu.Unlock()
+		a.retireCodexNativeReply(reply.receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+		a.finishCodexReply(reply, nil)
+		if attaching {
+			a.publishCodexTurnStart(pending, reply.receipt.SessionID, attachedTurnID, settings, settled)
+			a.PublishTurnActive()
+		}
 		return
 	}
-	if a.finishCodexTurnStartLocked(pending, "", err) {
-		close(pending.done)
+	reply.turnID = turnID
+	retained, ended := reply.endedBeforeAck[turnID]
+	if ended {
+		delete(a.replyStarts, reply.receipt.InputID)
+	}
+	reply.endedBeforeAck = nil
+	var settings, settled bool
+	attaching := !ended && a.pendingStart == pending && a.mainTurn.id == turnID
+	if attaching {
+		settings, settled = a.attachCodexTurnStartLocked(pending, turnID)
+	} else if ended && a.pendingStart == pending {
+		settled = a.finishCodexTurnStartLocked(pending, turnID, nil)
 	}
 	a.Mu.Unlock()
-	if pending.retry != nil {
-		pending.retry.fail(codexTurnRetryStarting, err)
-	} else {
-		a.PublishTurnActive()
+
+	err := a.sink.BindNativeInputTurn(reply.receipt, turnID)
+	if !agent.OutputRetained(err) {
+		slog.Warn("retain the Codex native input binding", "error", err)
 	}
+	if !agent.OutputRetained(err) || ended && !retained {
+		a.retireCodexNativeReply(reply.receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	}
+	if attaching {
+		a.publishCodexTurnStart(pending, reply.receipt.SessionID, turnID, settings, settled)
+	} else if settled {
+		close(pending.done)
+	}
+	a.PublishTurnActive()
+	a.finishCodexReply(reply, nil)
 }
 
 // awaitCodexTurnStart limits the caller's wait, not the request's lifetime.
 func (a *Agent) awaitCodexTurnStart(pending *codexPendingTurnStart) error {
+	if pending.reply != nil {
+		<-pending.reply.done
+		return pending.reply.err
+	}
 	timer := a.Clock().NewTimer(turnStartAckTimeout, codexTurnStartAckTimerTag)
 	defer timer.Stop(codexTurnStartAckTimerTag)
 	var err error
@@ -239,19 +360,15 @@ func classifyCodexTurnStartRequestError(operation string, err error) error {
 const codexSteerClientIDPrefix = "leapmux-steer-"
 
 // sendTurnSteer serializes its write with context replacement, then waits without the lock.
-// A caller that owns its row itself passes trackEcho false, and the steer joins no ledger.
 // sessionValidated marks a steer whose session the Worker already validated --
-// a recorded question's answer -- which stays deliverable while input recovery
-// is required, so the turn that asked the question can finish.
-func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, trackEcho, sessionValidated bool) (ticket providerkit.SteerTicket, err error) {
-	defer func() {
-		if err != nil {
-			a.outputMu.Lock()
-			a.forgetCodexSteer(ticket)
-			a.outputMu.Unlock()
-		}
-	}()
-	clientID := codexSteerClientIDPrefix + id.Short()
+// a recorded question's answer. It joins no echo ledger and stays deliverable
+// during input recovery, so the turn that asked the question can finish.
+func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, request agent.SteerRequest, sessionValidated bool) (providerkit.SteerTicket, error) {
+	clientID := request.AttemptID
+	if clientID == "" {
+		clientID = id.Short()
+	}
+	clientID = codexSteerClientIDPrefix + clientID
 	raw, err := json.Marshal(map[string]interface{}{"threadId": threadID, "expectedTurnId": turnID, "input": input, "clientUserMessageId": clientID})
 	if err != nil {
 		return 0, fmt.Errorf("marshal turn/steer params: %w", err)
@@ -274,8 +391,14 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 		a.turnDispatchMu.Unlock()
 		return 0, err
 	}
-	if trackEcho {
-		ticket = a.steerLedger.Add(clientID)
+	// The queue already owns the row for a control reply. It supplies an attempt
+	// ID only for a dispatch whose transcript row must wait for the native echo.
+	var ticket providerkit.SteerTicket
+	if !sessionValidated && request.AttemptID != "" {
+		ticket = a.steerLedger.Add(agent.SteerResolution{
+			InputID: request.InputID, AttemptID: request.AttemptID,
+			Receipt: agent.NativeInputReceipt{SessionID: threadID, TurnID: turnID, InputID: clientID},
+		})
 		if a.pendingSteerCalls == nil {
 			a.pendingSteerCalls = make(map[providerkit.SteerTicket]struct{})
 		}
@@ -283,7 +406,7 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 	}
 	a.Mu.Unlock()
 	reply := make(chan error, 1)
-	err = a.SendDetachedRequest("turn/steer", raw, func(_ json.RawMessage, err error) { reply <- err })
+	err = a.SendDetachedRequest("turn/steer", raw, providerkit.DetachedRequestOptions{}, func(_ json.RawMessage, err error) { reply <- err })
 	a.turnDispatchMu.Unlock()
 	if err == nil {
 		err = <-reply
@@ -297,12 +420,6 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 	return ticket, providerkit.ClassifyJSONRPCDeliveryError("turn/steer", err)
 }
 
-// forgetCodexSteer releases later echoes after a failed call. Call it with outputMu held.
-func (a *Agent) forgetCodexSteer(ticket providerkit.SteerTicket) {
-	a.steerLedger.Forget(ticket)
-	a.steerLedger.Settle(a.sink)
-}
-
 // finishCodexSteersAfterExit forgets requests whose delivery the process never confirmed.
 // The service marks unresolved queue inputs uncertain. Call this with outputMu held.
 func (a *Agent) finishCodexSteersAfterExit() {
@@ -313,7 +430,6 @@ func (a *Agent) finishCodexSteersAfterExit() {
 	clear(a.pendingSteerCalls)
 	a.mainTurn.steers = 0
 	a.Mu.Unlock()
-	a.steerLedger.Settle(a.sink)
 	a.finishDeferredCodexSteerOutput()
 	a.steerLedger.Reset()
 }

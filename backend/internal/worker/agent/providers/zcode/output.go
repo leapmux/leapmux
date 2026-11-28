@@ -1,15 +1,16 @@
 package zcode
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -86,6 +87,10 @@ func (a *Agent) dispatchZCodeEventLocked(event zcodeEventEnvelope) {
 		toolCallID = zcodeEventToolCallID(event)
 		a.Mu.Lock()
 		owner = a.resolveZCodeTurnLocked(event, toolCallID)
+		switch event.Type {
+		case contracts.ZCodeEventTurnCompleted, contracts.ZCodeEventTurnFailed, contracts.ZCodeEventModelStreaming:
+			a.observeZCodeReplyEvidenceLocked(event, owner)
+		}
 		if owner != nil {
 			owner.lastEventSeq = max(owner.lastEventSeq, event.Seq)
 		}
@@ -118,7 +123,7 @@ func (a *Agent) dispatchZCodeEventLocked(event zcodeEventEnvelope) {
 	case contracts.ZCodeEventPermissionResolved:
 		a.handleZCodePermissionResolved(event)
 	case contracts.ZCodeEventTurnSteerQueued, contracts.ZCodeEventTurnSteerDrained:
-		// A steer of LeapMux's resolves through the ledger that writes its row
+		// A steer of LeapMux's resolves through the queue that writes its row
 		// at the drain. The runtime's OWN steers (a background task
 		// notification, a subagent message) keep their notification row.
 		if !a.observeZCodeSteerEvent(event) {
@@ -356,6 +361,23 @@ func (a *Agent) resolveZCodeTurnLocked(event zcodeEventEnvelope, toolCallID stri
 	return sole
 }
 
+// observeZCodeReplyEvidenceLocked excludes ambiguous output from a verified
+// answer. An unidentified frame applies no change to the transcript when
+// several turns are running, but any of those inputs could have lost output.
+func (a *Agent) observeZCodeReplyEvidenceLocked(event zcodeEventEnvelope, owner *zcodeTurnState) {
+	if owner != nil {
+		owner.replyUnproved = owner.replyUnproved || event.TurnID != owner.id || event.SessionID != owner.inputSessionID
+		return
+	}
+	if event.TurnID == "" {
+		for _, turn := range a.turns {
+			if !turn.settled && !turn.finalized {
+				turn.replyUnproved = true
+			}
+		}
+	}
+}
+
 // refreshTurnActiveLocked recomputes the turn-active flag from the owner
 // records: any owner with settled == false keeps the agent busy. The caller
 // holds a.Mu.
@@ -407,25 +429,41 @@ func (a *Agent) dropZCodeTurnLocked(owner *zcodeTurnState) {
 
 // clearZCodeTurnsLocked drops every owner, at a session replacement or a
 // teardown. The caller holds a.Mu.
-func (a *Agent) clearZCodeTurnsLocked() {
+func (a *Agent) clearZCodeTurnsLocked() []agent.NativeInputReceipt {
+	owners := make([]*zcodeTurnState, 0, len(a.turns))
 	for _, owner := range a.turns {
+		owners = append(owners, owner)
+	}
+	slices.SortFunc(owners, func(left, right *zcodeTurnState) int {
+		return cmp.Compare(left.generation, right.generation)
+	})
+	var retired []agent.NativeInputReceipt
+	for _, owner := range owners {
 		owner.modelAPIRetry = nil
 		owner.completedModelAPIRetryCalls = nil
 		a.stopZCodeTurnWatcherLocked(owner)
+		if !owner.settled && !owner.finalized {
+			retired = append(retired, owner.nativeReceipt())
+			retired = append(retired, owner.steerReceipts...)
+		}
 	}
 	clear(a.turns)
+	a.seenInputTurns = zcodeSeenInputTurns{}
 	a.foregroundTurnID = ""
 	a.refreshTurnActiveLocked()
+	return retired
 }
 
-// createZCodeTurnLocked installs one new owner with its recovery lifetime.
+// createZCodeTurnLocked installs one new owner with its recovery lifetime and
+// returns any native input receipts displaced from a replaced foreground owner.
 // The caller supplies only state established by this admission.
-func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) *zcodeTurnState {
+func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) (*zcodeTurnState, []agent.NativeInputReceipt) {
 	if a.turns == nil {
 		a.turns = make(map[string]*zcodeTurnState)
 	}
 	a.turnGeneration++
 	initial.generation = a.turnGeneration
+	initial.inputSessionID = a.sessionID
 	if initial.id == "" {
 		initial.id = fmt.Sprintf("#turn-%d", initial.generation)
 	}
@@ -433,16 +471,18 @@ func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) *zcodeTurnState {
 	initial.toolInvocationIDs = make(map[string]struct{})
 	initial.invocationsByNativeID = make(map[string]map[string]*zcodeToolInvocation)
 	owner := &initial
+	var displaced []agent.NativeInputReceipt
 	if !owner.background {
-		a.replaceForegroundZCodeTurnLocked(owner)
+		displaced = a.replaceForegroundZCodeTurnLocked(owner)
 	}
 	a.turns[owner.id] = owner
 	a.refreshTurnActiveLocked()
 	a.startZCodeTurnWatcherLocked(owner)
-	return owner
+	return owner, displaced
 }
 
-func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) {
+func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) []agent.NativeInputReceipt {
+	var displaced []agent.NativeInputReceipt
 	if previous := a.turns[a.foregroundTurnID]; previous != nil {
 		a.retireZCodeForegroundTurnLocked(previous)
 		if !previous.settled && previous.pendingNative == nil && len(previous.deferredResponses) == 0 {
@@ -450,6 +490,8 @@ func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) {
 			for scopeID := range previous.contentByScope {
 				a.generationBuffer.Discard(scopeID)
 			}
+			displaced = append(displaced, previous.nativeReceipt())
+			displaced = append(displaced, previous.steerReceipts...)
 			delete(a.turns, previous.id)
 		}
 	}
@@ -457,6 +499,7 @@ func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) {
 	a.stopCancelledRequest = false
 	a.TurnToolUses = 0
 	a.foregroundTurnID = next.id
+	return displaced
 }
 
 // retireZCodeForegroundTurnLocked clears retry ownership even if the turn
@@ -522,6 +565,16 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	canonicalRequired := event.archive || event.replayUncertain
 
 	a.Mu.Lock()
+	confirmed := !background && event.TurnID != "" && payload.InputID != "" && event.SessionID == a.sessionID
+	if a.seenInputTurns.turns[event.TurnID] || confirmed && a.seenInputTurns.inputs[payload.InputID] != "" {
+		a.Mu.Unlock()
+		return
+	}
+	if existing := a.turns[event.TurnID]; existing != nil &&
+		(existing.background != background || existing.inputID != "" && existing.inputID != payload.InputID) {
+		a.Mu.Unlock()
+		return
+	}
 	// A provisional foreground owner (one sendInputForSession created before
 	// the native start) adopts the native turn ID and execution ID while
 	// preserving its generation and input identity. Adoption requires a
@@ -534,39 +587,62 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 				return
 			}
 			prev.canonicalRequired = prev.canonicalRequired || canonicalRequired
+			prev.inputConfirmed = confirmed
+			if confirmed {
+				a.seenInputTurns.record(payload.InputID, event.TurnID)
+			}
 			prev.foregroundExecutionID = payload.ForegroundExecutionID
 			if payload.MessageID != "" {
 				prev.anchorMessageID = payload.MessageID
 			}
 			turnID := prev.id
+			receipt, confirmed := prev.nativeReceipt(), prev.inputConfirmed
 			a.Mu.Unlock()
+			if confirmed {
+				a.bindObservedInputTurn(receipt, turnID)
+			}
 			a.PublishTurnActive()
-			a.observeZCodeSteerTurnStart(payload.InputID)
 			a.resetZCodeTurnProgress(prev)
 			slog.Debug("zcode provisional turn adopted", "agent_id", a.AgentID(), "turn_id", turnID)
 			return
 		}
 	}
-	turn := a.createZCodeTurnLocked(zcodeTurnState{
+	if confirmed {
+		a.seenInputTurns.record(payload.InputID, event.TurnID)
+	}
+	turn, displaced := a.createZCodeTurnLocked(zcodeTurnState{
 		id:                    event.TurnID,
 		background:            background,
 		foregroundExecutionID: payload.ForegroundExecutionID,
 		admissionRevision:     a.stateRevision,
 		anchorMessageID:       payload.MessageID,
 		inputID:               payload.InputID,
+		inputConfirmed:        confirmed,
 		canonicalRequired:     canonicalRequired,
 	})
 	if admission := a.inputAdmissions[payload.InputID]; admission != nil && admission.sessionID == a.sessionID && admission.epoch == a.sessionEpoch {
 		admission.owner = turn
 	}
 	a.refreshTurnActiveLocked()
+	receipt, confirmed, turnID := turn.nativeReceipt(), turn.inputConfirmed, turn.id
 	a.Mu.Unlock()
+	a.retireUnprovedInputs(displaced)
+	if confirmed {
+		a.bindObservedInputTurn(receipt, turnID)
+	}
 	if !background {
 		a.publishZCodeModelAPIRetryLocked()
 	}
 	a.PublishTurnActive()
-	// A steer that ZCode moved to the ordinary queue runs as this turn's prompt.
-	a.observeZCodeSteerTurnStart(payload.InputID)
+	// The native start places a steer that runs as this turn's prompt.
+	if !background {
+		if confirmed {
+			receipt.TurnID = turnID
+		} else {
+			receipt = agent.NativeInputReceipt{}
+		}
+		a.observeZCodeSteerTurnStart(payload.InputID, receipt)
+	}
 
 	if !background {
 		a.resetZCodeTurnProgress(turn)
@@ -723,21 +799,27 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, owner *zcodeTurnState,
 	case owner.background:
 		callCompletion = agent.MessageCompletionComplete
 	}
-	source := a.zcodeProgressSinkForTurn(owner).CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
-	sink := a.zcodeProgressSinkForTurn(owner)
-	sink.source = source
+	turnSink := a.zcodeProgressSinkForTurn(owner)
+	source := turnSink.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
 	content := zcodeTurnContent(raw, a.usageSnapshot())
 	if end.cancelled {
 		content.Completion = agent.MessageCompletionInterrupted
 	}
-	content = sink.CaptureMessage(content, agent.SpanInfo{})
+	content.AgentSessionID, content.Publication = source.AgentSessionID, source.Publication
+	content = turnSink.CaptureMessage(content, agent.SpanInfo{})
 	a.Mu.Lock()
-	divider := zcodeTurnDivider{kind: event.Type, content: content, toolUses: owner.toolUses, nativeCountKnown: end.toolCallCount > 0}
+	divider := zcodeTurnDivider{
+		kind: event.Type, content: content, toolUses: owner.toolUses, nativeCountKnown: end.toolCallCount > 0,
+	}
 	canonicalRequired := owner.canonicalRequired
 	a.Mu.Unlock()
-	persistEnd := func(closed int, publish bool) { a.persistZCodeTurnDivider(owner, divider, closed, publish) }
+	persistEnd := func(closed int, publish bool, completion agent.MessageCompletion) {
+		a.persistZCodeTurnDivider(owner, divider, closed, publish, completion)
+	}
 	if owner.background {
-		persistEnd = func(int, bool) { a.persistZCodeBackgroundTurnEnd(owner, raw, textCompletion) }
+		persistEnd = func(_ int, _ bool, completion agent.MessageCompletion) {
+			a.persistZCodeBackgroundTurnEnd(owner, raw, completion)
+		}
 	}
 	settle := zcodeTurnSettlement{textCompletion: textCompletion, callCompletion: callCompletion, persistEnd: persistEnd}
 	if raw == nil {
@@ -756,22 +838,39 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, owner *zcodeTurnState,
 
 // persistZCodeTurnDivider emits activity-ending effects only for an isolated
 // current foreground. Historical output still retains its native divider row.
-func (a *Agent) persistZCodeTurnDivider(owner *zcodeTurnState, divider zcodeTurnDivider, closed int, publish bool) {
+func (a *Agent) persistZCodeTurnDivider(owner *zcodeTurnState, divider zcodeTurnDivider, closed int, publish bool, completion agent.MessageCompletion) {
 	toolUses := divider.toolUses
 	if !divider.nativeCountKnown {
 		toolUses += closed
 	}
 	content := agent.WithToolUseCount(divider.content, toolUses)
-	sink := a.zcodeProgressSinkForTurn(owner)
+	sink, scope := a.zcodeReplySinkForTurn(owner)
+	content.InputTurnOutcome = a.zcodeReplyOutcome(owner, scope, completion)
 	var err error
 	if publish {
 		err = sink.PersistTurnEnd(content, agent.SpanInfo{})
 	} else {
 		err = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
 	}
-	if err != nil {
+	if !agent.OutputRetained(err) {
 		slog.Error("zcode persist turn end", "agent_id", a.AgentID(), "type", divider.kind, "error", err)
+		if content.InputTurnOutcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+			a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+			a.retireZCodeTurnSteers(owner, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+		}
 	}
+}
+
+func zcodeInputTurnOutcome(completion agent.MessageCompletion) leapmuxv1.AgentInputTurnOutcome {
+	switch completion {
+	case agent.MessageCompletionComplete, agent.MessageCompletionFinished:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
+	case agent.MessageCompletionInterrupted:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	case agent.MessageCompletionError:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
+	}
+	return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 }
 
 // --- streaming ---
@@ -1574,6 +1673,7 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		// of one turn must not close another turn's stream.
 		a.Mu.Lock()
 		owner := a.resolveZCodeTurnLocked(event, "")
+		a.observeZCodeReplyEvidenceLocked(event, owner)
 		if owner != nil {
 			owner.lastEventSeq = max(owner.lastEventSeq, event.Seq)
 		}
@@ -2240,8 +2340,9 @@ func (a *Agent) adoptZCodeRegistryFallbackLocked(payload zcodeSessionUpdatedPayl
 // The payload states its role through `querySource` when it carries one: only
 // `main_turn` is the reply. A payload with no `querySource` falls back to the
 // `stopReason`: `tool_internal` marks a side query. A `querySource` that is not a
-// string is not the reply either. The browser replays the same rule; the shared
-// corpus is testdata/zcode_model_response_conformance.json.
+// string is not the reply either. testdata/zcode_model_response_conformance.json
+// pins the rule. The browser has no copy of it, because the worker stores no side
+// query.
 func zcodeIsMainReply(querySource json.RawMessage, stopReason string) bool {
 	if len(querySource) == 0 {
 		return stopReason != contracts.ZCodeStopReasonToolInternal

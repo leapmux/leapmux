@@ -60,12 +60,15 @@ func (a *Agent) hooks() acp.Hooks {
 			gooseSteerNamespace: map[string]any{"customNotifications": true},
 		},
 		ExtraMethod:            a.handleGooseExtraMethod,
-		ToolOutputComplete:     a.clearGooseToolOutput,
+		ToolOutputComplete:     func(_ string, toolCallID string) { a.clearGooseToolOutput(toolCallID) },
 		SessionMetadataHandler: a.captureSteerRunID,
 		SessionUpdateHandler:   a.observeGooseSessionUpdate,
 		PromptEnded:            a.finishGoosePrompt,
 		IdleInterrupt:          a.cancelActiveDelegations,
-		ClearProviderState:     a.clearGooseState,
-		AdvertisedSteerMethod:  gooseSteeringMethod,
+		ClearProviderState: func() {
+			a.clearGooseState()
+			a.dropPendingGooseSteers(agent.SteerOutcomeUncertain)
+		},
+		AdvertisedSteerMethod: gooseSteeringMethod,
 	}
 }

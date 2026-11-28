@@ -156,11 +156,64 @@ func (s *oauthClientStore) List(ctx context.Context, p store.ListOAuthClientsPar
 		// "what may THIS user see", and there is no such user.
 		return store.Page[store.OAuthClient]{}, nil
 	}
-	return store.QueryPageErr(ctx, p.Limit,
-		func() (gendb.ListOAuthClientsParams, error) {
-			return listOAuthClientsParams(owner, p)
-		},
-		s.conn.q.ListOAuthClients, s.conn.fromListRow, s.conn.queryError)
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.OAuthClient]{}, err
+	}
+	if !hasPrefix {
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListOAuthClientsParams, error) {
+				return listOAuthClientsParams(owner, p)
+			},
+			s.conn.q.ListOAuthClients, s.conn.fromListRow, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.OAuthClient]{}, err
+	}
+	ownerParam := sql.NullString{String: owner, Valid: true}
+	includeRevoked := boolToInt64(p.IncludeRevoked)
+	hubWideOnly := boolToInt64(p.HubWideOnly)
+	includeHubWide := boolToInt64(p.IncludeHubWide)
+	if filter.Exact {
+		rows, err := s.conn.q.ListOAuthClientsByExactID(ctx, gendb.ListOAuthClientsByExactIDParams{
+			ID:             filter.Lower,
+			IncludeRevoked: includeRevoked,
+			HubWideOnly:    hubWideOnly,
+			UserID:         ownerParam,
+			IncludeHubWide: includeHubWide,
+		})
+		if err != nil {
+			return store.Page[store.OAuthClient]{}, s.conn.queryError(err)
+		}
+		mapped, err := store.MapSliceErr(rows, func(r gendb.ListOAuthClientsByExactIDRow) (store.OAuthClient, error) {
+			return s.conn.fromGetOAuthClientRow(gendb.GetOAuthClientRow(r))
+		})
+		if err != nil {
+			return store.Page[store.OAuthClient]{}, err
+		}
+		return store.NewPage(mapped, p.Limit), nil
+	}
+	rows, err := s.conn.q.ListOAuthClientsByIDPrefix(ctx, gendb.ListOAuthClientsByIDPrefixParams{
+		IDLo:           filter.Lower,
+		IDHi:           filter.Upper,
+		IDGt:           idGt,
+		IncludeRevoked: includeRevoked,
+		HubWideOnly:    hubWideOnly,
+		UserID:         ownerParam,
+		IncludeHubWide: includeHubWide,
+		Limit:          fetchLimit,
+	})
+	if err != nil {
+		return store.Page[store.OAuthClient]{}, s.conn.queryError(err)
+	}
+	mapped, err := store.MapSliceErr(rows, func(r gendb.ListOAuthClientsByIDPrefixRow) (store.OAuthClient, error) {
+		return s.conn.fromGetOAuthClientRow(gendb.GetOAuthClientRow(r))
+	})
+	if err != nil {
+		return store.Page[store.OAuthClient]{}, err
+	}
+	return store.NewPage(mapped, p.Limit), nil
 }
 
 func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClientParams) (int64, error) {

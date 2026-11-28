@@ -3298,6 +3298,40 @@ func TestCallRPCReturnsTheWorkersErrorWithItsCode(t *testing.T) {
 	}
 }
 
+// CallRequest sends the request as the caller built it, so a Worker that
+// relays a call states its source on the wire, and the answer arrives as
+// CallRPC's does.
+func TestCallRequestSendsTheWholeRequest(t *testing.T) {
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
+	ctx := testutil.DeadlineContext(t)
+	want := &leapmuxv1.InnerRpcRequest{
+		Method:  leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure,
+		Payload: []byte("payload"),
+		Source: &leapmuxv1.CallSource{TabId: "agent-on-A", Agent: &leapmuxv1.CallSourceAgent{
+			Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Title: "Fix flaky spec",
+		}},
+	}
+	called := make(chan *leapmuxv1.InnerRpcResponse, 1)
+	go func() {
+		resp, err := ch.CallRequest(ctx, want)
+		assert.NoError(t, err)
+		called <- resp
+	}()
+
+	correlationID, request := readPeerRequest(t, peer, peerWS)
+	assert.True(t, proto.Equal(want, request), "request: %v", request)
+	writePeerMessage(t, peer, peerWS, correlationID, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Response{Response: channelwire.NewPayloadResponse([]byte("ok"))},
+	})
+
+	select {
+	case resp := <-called:
+		assert.Equal(t, []byte("ok"), resp.GetPayload())
+	case <-ctx.Done():
+		t.Fatal("CallRequest never returned")
+	}
+}
+
 // failOnRejection is the StreamRejected handler of a test stream that no frame
 // is rejected for. A rejection fails the test.
 func failOnRejection(t *testing.T) func(error) {

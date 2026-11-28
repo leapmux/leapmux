@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -47,7 +48,7 @@ func (svc *Service) agentLoginShell() bool {
 // baseAgentOptions builds an agent.Options pre-filled with the per-agent identity
 // (agentID, workingDir, provider) and the shared launch-environment block -- timeouts,
 // shell, and home dir -- that every launch / restart / clear-context / relaunch path
-// repeats verbatim. Callers overlay the per-site fields (ResumeSessionID, Options,
+// repeats verbatim. Callers overlay the per-site fields (Session, Options,
 // ExtraEnv) on the returned value, so a new launch-environment field or a renamed
 // timeout accessor is a one-line change here instead of five parallel edits that one
 // path would eventually drift on.
@@ -64,9 +65,27 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 	}
 }
 
+// deduplicateNonEmpty returns the unique non-empty strings in order of first appearance.
+func deduplicateNonEmpty(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, value := range ids {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerAgentInputQueueHandlers(d, svc)
+	registerAgentSearchHandlers(d, svc)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, dispatchTracked,
 		svc.handleOpenAgent)
 
@@ -82,6 +101,11 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "this subagent cannot be messaged")
 				return
 			}
+			finish := svc.requireAgentMutation(sender, dbAgent)
+			if finish == nil {
+				return
+			}
+			defer finish()
 			content := r.GetContent()
 			isInterrupt := svc.Agents.Registry().IsInterrupt(dbAgent.AgentProvider, content)
 			var stop *agentStopRequest
@@ -100,11 +124,13 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
 			}
 
+			// A raw message answers no control request, so it states no
+			// request instance: AnswerControl is the one path of an answer.
 			deliver := func(data []byte) error {
 				if stop != nil {
-					return target.SendRawInput(data, stop.Context())
+					return target.SendRawInput(agent.RawInput{Data: data, Stop: stop.Context()})
 				}
-				return svc.Agents.SendRawInput(agentID, data, agent.StopContext{})
+				return svc.Agents.SendRawInput(agentID, agent.RawInput{Data: data})
 			}
 			if err := svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content, deliver); err != nil {
 				if stop != nil {
@@ -127,21 +153,81 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// BatchGetGitStatus.
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, dispatchPlain, func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentsRequest, sender channel.ResponseWriter) {
 		tabIDs := r.GetTabIds()
-		if len(tabIDs) == 0 {
+		spawnerIDs := deduplicateNonEmpty(r.GetSpawnedByAgentIds())
+		if len(tabIDs) == 0 && len(spawnerIDs) == 0 {
 			sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{})
 			return
 		}
 
-		agents, err := svc.Queries.ListAgentsByIDs(ctx, tabIDs)
-		if err != nil {
-			slog.Error("failed to list agents", "tab_ids", tabIDs, "error", err)
-			sendInternalError(sender, "failed to list agents")
-			return
+		var agents []db.Agent
+		found := make(map[string]bool, len(tabIDs))
+		for _, spawnerID := range spawnerIDs {
+			spawned, err := svc.Queries.ListAgentsBySpawnedBy(ctx, spawnerID)
+			if err != nil {
+				slog.Error("failed to list agents by spawner", "spawned_by_agent_id", spawnerID, "error", err)
+				sendInternalError(sender, "failed to list agents")
+				return
+			}
+			for i := range spawned {
+				if !found[spawned[i].ID] {
+					found[spawned[i].ID] = true
+					agents = append(agents, spawned[i])
+				}
+			}
 		}
 
-		found := make(map[string]bool, len(agents))
-		for i := range agents {
-			found[agents[i].ID] = true
+		extraSeen := make(map[string]bool, len(tabIDs))
+		var extraIDs []string
+		for _, tid := range tabIDs {
+			if !found[tid] && !extraSeen[tid] {
+				extraSeen[tid] = true
+				extraIDs = append(extraIDs, tid)
+			}
+		}
+		if r.GetIncludeDescendants() {
+			parentSeen := make(map[string]bool, len(tabIDs)+len(agents))
+			parentIDs := make([]sql.NullString, 0, len(tabIDs)+len(agents))
+			for _, tid := range tabIDs {
+				if !parentSeen[tid] {
+					parentSeen[tid] = true
+					parentIDs = append(parentIDs, sql.NullString{String: tid, Valid: true})
+				}
+			}
+			for i := range agents {
+				if !parentSeen[agents[i].ID] {
+					parentSeen[agents[i].ID] = true
+					parentIDs = append(parentIDs, sql.NullString{String: agents[i].ID, Valid: true})
+				}
+			}
+			if len(parentIDs) > 0 {
+				descIDs, descErr := svc.Queries.ListDescendantAgentIDsByParentIDs(ctx, parentIDs)
+				if descErr != nil {
+					slog.Error("failed to list descendant agents", "tab_ids", tabIDs, "spawned_by_agent_ids", spawnerIDs, "error", descErr)
+					sendInternalError(sender, "failed to list descendant agents")
+					return
+				}
+				for _, did := range descIDs {
+					if !found[did] && !extraSeen[did] {
+						extraSeen[did] = true
+						extraIDs = append(extraIDs, did)
+					}
+				}
+			}
+		}
+
+		if len(extraIDs) > 0 {
+			extraAgents, err := svc.Queries.ListAgentsByIDs(ctx, extraIDs)
+			if err != nil {
+				slog.Error("failed to list agents", "tab_ids", tabIDs, "spawned_by_agent_ids", spawnerIDs, "error", err)
+				sendInternalError(sender, "failed to list agents")
+				return
+			}
+			for i := range extraAgents {
+				if !found[extraAgents[i].ID] {
+					found[extraAgents[i].ID] = true
+					agents = append(agents, extraAgents[i])
+				}
+			}
 		}
 
 		// Run git FIRST. It is the one slow step of this call: a large working
@@ -230,59 +316,30 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// gets the latest messages also gets the to-do snapshot -- never the
 			// latest page with an empty to-do list.
 			isLatestPage := plan.mode == messagePageLatest
-			// A snapshot is present only when it is authoritative. The client
-			// overwrites its list only from a present snapshot, so a non-latest
-			// page (no snapshot) and a failed LoadTodos (DB error) both leave the
-			// client's list intact instead of wiping it.
-			var todos *leapmuxv1.AgentTodoSnapshot
+			var snap agentSnapshot
 			if isLatestPage {
-				items, todoErr := svc.Output.LoadTodos(ctx, agentID)
-				if todoErr != nil {
-					slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
-				} else {
-					todos = todoevents.SnapshotToProto(items)
-				}
-			}
-
-			// Background-task registry snapshot, same presence contract as
-			// todos. A CHILD agent (virtual subagent) owns no registry and must
-			// NOT inherit the root's -- otherwise every active sibling task spins
-			// the child's thinking indicator. A child answers a present, empty
-			// snapshot, so the client overwrites with the correct empty set and
-			// never keeps a stale inherited registry; a root loads its own.
-			var backgroundTasks *leapmuxv1.AgentBackgroundTaskSnapshot
-			if isLatestPage {
-				if agentRow.ParentAgentID.Valid {
-					backgroundTasks = bgtask.SnapshotToProto(nil)
-				} else {
-					items, bgErr := svc.Output.LoadBackgroundTasks(ctx, agentID)
-					if bgErr != nil {
-						slog.Warn("failed to load agent_background_tasks", "agent_id", agentID, "error", bgErr)
-					} else {
-						backgroundTasks = bgtask.SnapshotToProto(items)
-					}
-				}
-			}
-
-			// Session goal, same presence contract again. The projection
-			// answers an empty goal for a CHILD agent for the reason the
-			// registry does: a child owns no goal, and its snapshot stays
-			// PRESENT so the client overwrites with the correct empty answer
-			// instead of keeping whatever its previous root put there.
-			//
-			// Projected from agentRow, which the dispatcher already loaded.
-			// Re-reading through LoadGoal would run a second full-row query per
-			// cold chat load for columns that are right here, which is what the
-			// registry branch above avoids by reading agentRow.ParentAgentID.
-			// The supported actions share the guard: computing them for a scroll
-			// page asks the Manager a question nobody reads.
-			var goal *leapmuxv1.AgentGoalSnapshot
-			if isLatestPage {
-				goal = svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(agentRow)).Proto(svc.Output.SupportedGoalActions(agentID))
+				snap = svc.loadAgentSnapshot(ctx, agentRow)
 			}
 
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
-			dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
+			var dbMessages []db.Message
+			var nextReplyCursor int64
+			var replyCanonical bool
+			var queryErr error
+			if inputID := r.GetReplyInputId(); inputID != "" {
+				if r.GetAnchor() != leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST ||
+					r.GetCursorSeq() != 0 || r.GetReplyCursor() < 0 {
+					sendInvalidArgument(sender, "select an oldest page and use only the reply cursor")
+					return
+				}
+				dbMessages, nextReplyCursor, replyCanonical, queryErr = svc.listExactInputReply(ctx, agentID, inputID, r.GetReplyCursor(), r.ReplyCursorCanonical, plan.limit)
+			} else {
+				if r.GetReplyCursor() != 0 || r.ReplyCursorCanonical != nil {
+					sendInvalidArgument(sender, "reply_cursor requires an input ID")
+					return
+				}
+				dbMessages, queryErr = svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
+			}
 			if queryErr != nil {
 				slog.Error("failed to list messages", "agent_id", agentID, "error", queryErr)
 				sendInternalError(sender, "failed to list messages")
@@ -302,11 +359,14 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 			protoMessages := make([]*leapmuxv1.AgentChatMessage, 0, len(dbMessages))
 			for i := range dbMessages {
-				message, err := messageToProto(&dbMessages[i], agentRow.AgentProvider)
+				message, supplement, err := messageToProtoWithSupplement(&dbMessages[i], agentRow.AgentProvider)
 				if err != nil {
 					slog.Error("prepare the listed transcript message", "agent_id", agentID, "message_id", dbMessages[i].ID, "error", err)
 					sendInternalError(sender, "failed to prepare transcript message")
 					return
+				}
+				if r.GetIncludeReplyText() {
+					message.ReplyText = svc.replyTextOf(message, supplement)
 				}
 				protoMessages = append(protoMessages, message)
 			}
@@ -328,10 +388,26 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
 				Messages:        protoMessages,
 				HasMore:         hasMore,
-				Todos:           todos,
+				Todos:           snap.todos,
 				LatestSeq:       latestSeq,
-				BackgroundTasks: backgroundTasks,
-				Goal:            goal,
+				BackgroundTasks: snap.backgroundTasks,
+				Goal:            snap.goal,
+				NextReplyCursor: nextReplyCursor,
+				ReplyCanonical:  replyCanonical,
+			})
+		})
+
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceGetAgentSnapshotProcedure,
+		func(ctx context.Context, _ channel.Caller, _ *leapmuxv1.GetAgentSnapshotRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+			if agentRow.ClosedAt.Valid {
+				sendProtoResponse(sender, &leapmuxv1.GetAgentSnapshotResponse{})
+				return
+			}
+			snap := svc.loadAgentSnapshot(ctx, agentRow)
+			sendProtoResponse(sender, &leapmuxv1.GetAgentSnapshotResponse{
+				Todos:           snap.todos,
+				BackgroundTasks: snap.backgroundTasks,
+				Goal:            snap.goal,
 			})
 		})
 
@@ -368,13 +444,36 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 
-			message, err := messageToProto(&row, agentRow.AgentProvider)
+			message, supplement, err := messageToProtoWithSupplement(&row, agentRow.AgentProvider)
 			if err != nil {
 				slog.Error("prepare the requested transcript message", "agent_id", agentID, "message_id", row.ID, "error", err)
 				sendInternalError(sender, "failed to prepare transcript message")
 				return
 			}
+			if r.GetIncludeReplyText() {
+				message.ReplyText = svc.replyTextOf(message, supplement)
+			}
 			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: message})
+		})
+
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceGetAgentSessionInfoProcedure,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.GetAgentSessionInfoRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+			if agentRow.ClosedAt.Valid {
+				sendProtoResponse(sender, &leapmuxv1.GetAgentSessionInfoResponse{SessionInfoJson: "{}"})
+				return
+			}
+			info := svc.Output.SessionInfoSnapshot(r.GetAgentId())
+			if len(info) == 0 {
+				sendProtoResponse(sender, &leapmuxv1.GetAgentSessionInfoResponse{SessionInfoJson: "{}"})
+				return
+			}
+			raw, err := json.Marshal(info)
+			if err != nil {
+				slog.Error("failed to marshal agent session info", "agent_id", r.GetAgentId(), "error", err)
+				sendInternalError(sender, "failed to encode agent session info")
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.GetAgentSessionInfoResponse{SessionInfoJson: string(raw)})
 		})
 
 	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceGetAgentSpanMessagesProcedure,
@@ -396,12 +495,15 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 			messages := make([]*leapmuxv1.AgentChatMessage, 0, len(rows))
-			for _, row := range rows {
-				message, err := messageToProto(&row, agentRow.AgentProvider)
+			for i := range rows {
+				message, supplement, err := messageToProtoWithSupplement(&rows[i], agentRow.AgentProvider)
 				if err != nil {
-					slog.Error("prepare the related transcript message", "agent_id", agentRow.ID, "message_id", row.ID, "error", err)
+					slog.Error("prepare the related transcript message", "agent_id", agentRow.ID, "message_id", rows[i].ID, "error", err)
 					sendInternalError(sender, "failed to prepare transcript message")
 					return
+				}
+				if r.GetIncludeReplyText() {
+					message.ReplyText = svc.replyTextOf(message, supplement)
 				}
 				messages = append(messages, message)
 			}
@@ -618,14 +720,55 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 	// A response must finish even if the requesting client disconnects.
 	// The saved delivery state distinguishes provider delivery from local recording.
-	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
-			response, err := svc.respondToControlRequest(dbAgent, r)
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceRecordControlResponseProcedure,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RecordControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+			response, err := svc.recordControlResponse(dbAgent, r)
 			if err != nil {
-				sendInvalidArgument(sender, err.Error())
+				sendControlError(sender, err)
 				return
 			}
 
+			sendProtoResponse(sender, response)
+		})
+
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure,
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.ListControlRequestsRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+			response, err := svc.listControlRequests(dbAgent)
+			if err != nil {
+				slog.Error("failed to list control requests", "agent_id", dbAgent.ID, "error", err)
+				sendInternalError(sender, "failed to list control requests")
+				return
+			}
+			sendProtoResponse(sender, response)
+		})
+
+	// An answer must finish even if the requesting client disconnects, as a
+	// recording does.
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.AnswerControlRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+			if caller.SourceTabID != "" {
+				if caller.SourceTabID == dbAgent.ID {
+					sendPermissionDenied(sender, "an agent cannot answer its own requests")
+					return
+				}
+				if dbAgent.ParentAgentID.Valid && dbAgent.ParentAgentID.String != "" {
+					rootID, err := svc.Queries.GetRootAgentID(bgCtx(), dbAgent.ID)
+					if err != nil {
+						slog.Error("failed to resolve root agent for control answer", "agent_id", dbAgent.ID, "error", err)
+						sendInternalError(sender, "failed to verify control answer caller")
+						return
+					}
+					if rootID == caller.SourceTabID {
+						sendPermissionDenied(sender, "an agent cannot answer its own requests")
+						return
+					}
+				}
+			}
+			response, err := svc.answerControl(dbAgent, r)
+			if err != nil {
+				sendControlError(sender, err)
+				return
+			}
 			sendProtoResponse(sender, response)
 		})
 
@@ -653,6 +796,11 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendNotFoundError(sender, "agent not found")
 				return
 			}
+			finish := svc.requireAgentMutation(sender, dbAgent)
+			if finish == nil {
+				return
+			}
+			defer finish()
 			if dbAgent.ParentAgentID.Valid {
 				if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsInterrupt {
 					sendFailedPrecondition(sender, "this subagent cannot be interrupted")
@@ -809,7 +957,12 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "only a root agent offers a turn retry")
 				return
 			}
-			if err := svc.Agents.RetryTurn(agentID, turnID, model); err != nil {
+			finish := svc.requireAgentMutation(sender, dbAgent)
+			if finish == nil {
+				return
+			}
+			if err := svc.Agents.RetryTurn(agentID, turnID, model, finish); err != nil {
+				finish()
 				slog.Warn("retry agent turn failed", "agent_id", agentID, "error", err)
 				sendTurnRetryError(sender, err)
 				return
@@ -820,11 +973,11 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceRespondAgentStartupPromptProcedure,
 		svc.handleRespondAgentStartupPrompt)
 
-	// WatchWorkerPrivateEvents streams this worker's private tab events
-	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked, QuakePanelCommand)
-	// over the existing E2EE channel. The bootstrap-replay sends one
-	// TabPayloadRegistered per worker_tab_payloads row the caller owns before
-	// any live events.
+	// WatchWorkerPrivateEvents streams this worker's private events (every
+	// case of WorkerPrivateEvent) over the existing E2EE channel. The
+	// bootstrap-replay sends one TabPayloadRegistered per worker_tab_payloads
+	// row the caller owns, and one TabStatusChanged per tab whose status is
+	// set, before any live events (see privateEventsSnapshot).
 	//
 	// SnapshotAndSubscribe drives the stream lifetime off a cancellable
 	// context bound to the stream's correlation id (via BindStream). An
@@ -856,11 +1009,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 					// frame during a slow/large snapshot must retire the stream
 					// rather than wait for a SQLite lock, a wait with no
 					// practical limit (`sqlitedb.Open`).
-					snapshot, err := svc.TabPayloads.SnapshotForOwner(ctx, owner)
-					if err != nil {
-						return nil
-					}
-					return snapshot
+					return svc.privateEventsSnapshot(ctx, owner)
 				},
 				func(evt *leapmuxv1.WorkerPrivateEvent) error {
 					// Per-EVENT-KIND gates, mirroring the partition WatchEvents
@@ -1093,11 +1242,14 @@ func (svc *Service) replayAgentCatchUp(
 			return
 		}
 		for j := range replayMessages {
-			message, err := messageToProto(&replayMessages[j], dbAgent.AgentProvider)
+			message, supplement, err := messageToProtoWithSupplement(&replayMessages[j], dbAgent.AgentProvider)
 			if err != nil {
 				slog.Error("prepare the replayed transcript message", "agent_id", agentID, "message_id", replayMessages[j].ID, "error", err)
 				sink.fail(err)
 				return
+			}
+			if agentEntry.GetIncludeReplyText() {
+				message.ReplyText = svc.replyTextOf(message, supplement)
 			}
 			broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
@@ -1243,7 +1395,7 @@ func (svc *Service) replayAgentCatchUp(
 	} else {
 		for _, cr := range controlReqs {
 			replayedControls[controlRequestInstance{RequestID: cr.RequestID, ClaimToken: cr.ClaimToken}] = struct{}{}
-			request, stateErr := buildAgentControlRequest(svc.Output, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID, NonBlocking: cr.NonBlocking}, cr.ClaimToken)
+			request, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(dbAgent.AgentProvider), agentID, dbAgent.AgentProvider, cr.controlRequest(), cr.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", cr.RequestID, "error", stateErr)
 			}
@@ -1267,9 +1419,7 @@ func (svc *Service) replayAgentCatchUp(
 			if _, exists := replayedControls[controlRequestInstance{RequestID: answer.RequestID, ClaimToken: answer.ClaimToken}]; exists {
 				continue
 			}
-			request, stateErr := buildAgentControlRequest(svc.Output, agentID, answer.AgentProvider, agent.ControlRequest{
-				RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID, NonBlocking: answer.NonBlocking,
-			}, answer.ClaimToken)
+			request, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(answer.AgentProvider), agentID, answer.AgentProvider, storedControlFromAnswer(answer).controlRequest(), answer.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", answer.RequestID, "error", stateErr)
 			}
@@ -1466,6 +1616,9 @@ func (svc *Service) agentToProto(a *db.Agent, live agentLiveness, gs *leapmuxv1.
 		StartupMessage:    derived.startupMessage,
 		StartupPrompt:     derived.startupPrompt,
 		QueueHeadDispatch: svc.queueHeadDispatch(a, isRunning),
+		SpawnedByAgentId:  a.SpawnedByAgentID,
+		ForkedFromAgentId: a.ForkedFromAgentID,
+		SupportsFork:      svc.agentSupportsFork(a),
 	}
 
 	// Subagent linkage. parent_agent_id is set only for virtual child agents.
@@ -1513,6 +1666,34 @@ func (svc *Service) agentToProto(a *db.Agent, live agentLiveness, gs *leapmuxv1.
 	}
 
 	return info
+}
+
+// providerSupportsFork reports whether the provider supports native
+// conversation-history forking for agentID. A running agent implementing
+// agent.ForkCapable takes precedence over the provider's static capability.
+func (svc *Service) providerSupportsFork(agentID string, provider leapmuxv1.AgentProvider) bool {
+	if live := svc.Agents.RunningAgent(agentID); live != nil {
+		if fc, ok := live.(agent.ForkCapable); ok {
+			return fc.SupportsNativeFork()
+		}
+	}
+	return svc.Agents.Registry().Plugin(provider).SupportsFork()
+}
+
+// agentSupportsFork reports whether a can serve as the source of a native
+// conversation-history fork.
+func (svc *Service) agentSupportsFork(a *db.Agent) bool {
+	if a.ParentAgentID.Valid || storedSessionID(*a) == "" {
+		return false
+	}
+	return svc.providerSupportsFork(a.ID, a.AgentProvider)
+}
+
+// isAgentBusyForFork reports whether a root agent is actively working or
+// waiting for user input, in which case forking must wait for the turn to
+// settle so the transcript snapshot and native session stay consistent.
+func (svc *Service) isAgentBusyForFork(a *db.Agent) bool {
+	return svc.Output.AgentActivitySnapshot(a.ID, a.ID).InterruptsWork()
 }
 
 // rootAgentIDFor resolves the ROOT main agent id for the given agent. A root
@@ -1855,6 +2036,23 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 		defer hold.release()
 		// Overwrite runAgentStartup's retired confirmer (even when hold.handle is nil).
 		opts.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
+		// If the initial launch already forked and confirmed its new session ID,
+		// resume that session on relaunch instead of forking the source again.
+		// Re-read under LockAgent rather than relying on the pre-handoff
+		// fallback snapshot, which can miss a session ID confirmed after
+		// releaseHandoff.
+		if opts.Session.IsFork() {
+			current := fallback
+			if latest, readErr := svc.getAgentByID(bgCtx(), agentID); readErr == nil {
+				current = latest
+			} else {
+				slog.Warn("agent startup: failed to refresh agent row before fork relaunch; using fallback snapshot",
+					"agent_id", agentID, "error", readErr)
+			}
+			if confirmedID := storedSessionID(current); confirmedID != "" {
+				opts.Session = agent.ResumeSession(confirmedID)
+			}
+		}
 		sink, sourceErr := svc.Output.NewRootSink(agentID, provider)
 		if sourceErr != nil {
 			return nil, false, sourceErr
@@ -2755,6 +2953,14 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 	if currentStop != nil && !currentStop() {
 		return "", errStopTargetChanged
 	}
+	finish, admissionErr := svc.admitAgentMutation(bgCtx(), dbAgent)
+	if errors.Is(admissionErr, errAgentPublicationClosed) {
+		return "", errAgentClosedDuringLaunch
+	}
+	if admissionErr != nil {
+		return "", admissionErr
+	}
+	defer finish()
 	if err := svc.awaitAgentCreationCheckpoint(agentID); err != nil {
 		return "", err
 	}
@@ -2808,10 +3014,16 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		// entry is back. The hold ends before the lifecycle lock does.
 		hold := svc.holdRelaunch(agentID, current.AgentProvider)
 		defer hold.settle()
+		current, readErr = svc.readOpenAgentForLaunch(agentID)
+		if readErr != nil {
+			rowUnavailable = isLaunchRowUnavailableError(readErr)
+			rowReadFailed = !rowUnavailable
+			return nil, false, readErr
+		}
 		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, current)
 		options := optionsFor(current)
 		agentOpts := svc.baseAgentOptions(agentID, current.WorkingDir, current.AgentProvider)
-		agentOpts.ResumeSessionID = resumeSessionID
+		agentOpts.Session = agent.ResumeSession(resumeSessionID)
 		agentOpts.Options = options
 		agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(svc.Agents.Registry(), options, current.AgentProvider)
 		agentOpts.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
@@ -3328,10 +3540,15 @@ func (h relaunchHold) settle() {
 	if h.handle == nil {
 		return
 	}
+	finish := h.svc.semanticEvents.agentMutations.begin(h.handle.id)
+	defer finish()
 	h.release()
 	row, err := h.svc.getAgentByID(bgCtx(), h.handle.id)
 	if err != nil {
 		slog.Warn("could not read the agent to announce the end of its relaunch", "agent_id", h.handle.id, "error", err)
+		return
+	}
+	if row.ClosedAt.Valid {
 		return
 	}
 	if h.svc.Agents.HasAgent(row.ID) {
@@ -3414,7 +3631,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// mintAndLaunch keeps the mint failure and the start failure on one exit, so
 	// the STARTING state this function entered is cleared by one piece of code.
 	//
-	// The launch never resumes: launchOptions carries no ResumeSessionID. That
+	// The launch never resumes: launchOptions carries a fresh Session. That
 	// is what makes a clear the recovery from a refused native resume, which a
 	// repeated resume could damage further.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
@@ -3802,7 +4019,7 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	// worker process, after a restart). Without this the auto-started agent
 	// comes up with no `leapmux control` at all.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
-	launchOptions.ResumeSessionID = resumeSessionID
+	launchOptions.Session = agent.ResumeSession(resumeSessionID)
 	if priority != backgroundStart {
 		launchOptions.ConfirmStartupPrompt = svc.startupPromptConfirmer(agentID, handle, nil)
 	}
@@ -4189,9 +4406,10 @@ func broadcastReplayAgentEvent(sink *replaySink, replayAgentID string, event *le
 	})
 }
 
-func buildAgentControlRequest(output *OutputHandler, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
-	state, err := controlResponseState(output, agentID, request.RequestID, claimToken)
+func buildAgentControlRequest(output *OutputHandler, plugin agent.Provider, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
+	state, err := controlResponseState(bgCtx(), output, agentID, request.RequestID, claimToken)
 	return &leapmuxv1.AgentControlRequest{
+		Prompt:         controlRequestPrompt(output.queries, plugin, agentID, request),
 		ResponseState:  state,
 		AgentSessionId: request.AgentSessionID,
 		RequestId:      request.RequestID,
@@ -4341,38 +4559,160 @@ func reverseMessages(msgs []db.Message) {
 	}
 }
 
+type agentSnapshot struct {
+	todos           *leapmuxv1.AgentTodoSnapshot
+	backgroundTasks *leapmuxv1.AgentBackgroundTaskSnapshot
+	goal            *leapmuxv1.AgentGoalSnapshot
+}
+
+// loadAgentSnapshot loads an agent's authoritative to-do list, background-task
+// registry, and session goal. Shared by ListAgentMessages (latest page) and
+// GetAgentSnapshot so both enforce the same presence contract:
+//   - A snapshot is present only when it is authoritative, so a failed DB query
+//     leaves the field nil rather than wiping the client's copy.
+//   - A child agent owns no background-task registry and no goal, so it returns
+//     present empty snapshots for both to overwrite any inherited state.
+func (svc *Service) loadAgentSnapshot(ctx context.Context, agentRow db.Agent) agentSnapshot {
+	agentID := agentRow.ID
+	var snap agentSnapshot
+	if items, todoErr := svc.Output.LoadTodos(ctx, agentID); todoErr != nil {
+		slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
+	} else {
+		snap.todos = todoevents.SnapshotToProto(items)
+	}
+	if agentRow.ParentAgentID.Valid {
+		snap.backgroundTasks = bgtask.SnapshotToProto(nil)
+	} else if items, bgErr := svc.Output.LoadBackgroundTasks(ctx, agentID); bgErr != nil {
+		slog.Warn("failed to load agent_background_tasks", "agent_id", agentID, "error", bgErr)
+	} else {
+		snap.backgroundTasks = bgtask.SnapshotToProto(items)
+	}
+	snap.goal = svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(agentRow)).Proto(svc.Output.SupportedGoalActions(agentID))
+	return snap
+}
+
+// replyTextOf reads plain text from a transcript message:
+//   - MESSAGE_SOURCE_AGENT rows go through the provider's ReplyText, using the
+//     same content and uncompressed rendering supplement that the browser reads.
+//   - MESSAGE_SOURCE_USER rows read LeapMux's own neutral envelope
+//     ({"content": "..."} or untyped {"text": "..."}).
+//   - Other sources, rows without text, and rows whose bytes fail to decode
+//     return nil.
+func (svc *Service) replyTextOf(message *leapmuxv1.AgentChatMessage, supplemental []byte) *string {
+	switch message.GetSource() {
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT:
+		if svc.Agents == nil {
+			return nil
+		}
+		content, err := msgcodec.Decompress(message.GetContent(), message.GetContentCompression())
+		if err != nil {
+			slog.Warn("decode the content of a transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+		stored, err := agent.DecodeMessageSupplement(content, supplemental)
+		if err != nil {
+			slog.Warn("parse the supplement of a transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+		stored.AgentSessionID = message.GetAgentSessionId()
+		text, ok := agent.ReplyText(svc.Agents.Registry().Plugin(message.GetAgentProvider()), stored)
+		if !ok {
+			return nil
+		}
+		return &text
+
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_USER:
+		content, err := msgcodec.Decompress(message.GetContent(), message.GetContentCompression())
+		if err != nil {
+			slog.Warn("decode the content of a user transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+		text, ok := neutralUserMessageText(content)
+		if !ok {
+			return nil
+		}
+		return &text
+
+	default:
+		return nil
+	}
+}
+
+// replyTextOfMessage extracts reply text from a live AgentChatMessage whose
+// rendering supplement may still be compressed on the proto message itself.
+func (svc *Service) replyTextOfMessage(message *leapmuxv1.AgentChatMessage) *string {
+	var supplemental []byte
+	if len(message.GetSupplementalContent()) > 0 {
+		var err error
+		supplemental, err = msgcodec.Decompress(message.GetSupplementalContent(), message.GetSupplementalContentCompression())
+		if err != nil {
+			slog.Warn("decode the supplement of a live transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+	}
+	return svc.replyTextOf(message, supplemental)
+}
+
+// neutralUserMessageText extracts plain text from LeapMux's own neutral user
+// envelopes ({"content": "..."} or untyped {"text": "..."}). Typed provider or
+// assembled envelopes (such as {"type": "assembled_message", ...} or provider
+// tool_result echoes) return false so provider wire shapes never leak here.
+func neutralUserMessageText(raw []byte) (string, bool) {
+	var envelope struct {
+		Type    string `json:"type"`
+		Content string `json:"content"`
+		Text    string `json:"text"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Type != "" {
+		return "", false
+	}
+	if text := agent.TrimJavaScriptSpace(envelope.Content); text != "" {
+		return text, true
+	}
+	if text := agent.TrimJavaScriptSpace(envelope.Text); text != "" {
+		return text, true
+	}
+	return "", false
+}
+
 // messageToProto converts a DB Message to a proto AgentChatMessage.
 // The provider is the message's agent's: an agent never changes provider, so
 // no message row stores a copy of it.
 func messageToProto(m *db.Message, provider leapmuxv1.AgentProvider) (*leapmuxv1.AgentChatMessage, error) {
+	msg, _, err := messageToProtoWithSupplement(m, provider)
+	return msg, err
+}
+
+func messageToProtoWithSupplement(m *db.Message, provider leapmuxv1.AgentProvider) (*leapmuxv1.AgentChatMessage, []byte, error) {
+	var projected []byte
 	var rendering []byte
 	compression := leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
 	if len(m.SupplementalContent) != 0 {
 		stored, err := msgcodec.Decompress(m.SupplementalContent, m.SupplementalContentCompression)
 		if err != nil {
-			return nil, fmt.Errorf("decode the stored supplement of message %q: %w", m.ID, err)
+			return nil, nil, fmt.Errorf("decode the stored supplement of message %q: %w", m.ID, err)
 		}
 		parsed, err := agent.ParseStoredMessageSupplement(stored)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		messageCount := 0
 		if parsed.HasNotificationReduction() {
 			content, err := msgcodec.Decompress(m.Content, m.ContentCompression)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			wrapper, err := unwrapNotifContent(content)
 			if err != nil || wrapper.Type != notifThreadWrapperType {
-				return nil, errors.New("the stored notification reduction has no matching thread")
+				return nil, nil, errors.New("the stored notification reduction has no matching thread")
 			}
 			messageCount = len(wrapper.Messages)
 		}
-		rendering, err = parsed.Project(messageCount)
+		projected, err = parsed.Project(messageCount)
 		if err != nil {
-			return nil, fmt.Errorf("project the stored supplement of message %q: %w", m.ID, err)
+			return nil, nil, fmt.Errorf("project the stored supplement of message %q: %w", m.ID, err)
 		}
-		rendering, compression = msgcodec.Compress(rendering)
+		rendering, compression = msgcodec.Compress(projected)
 	}
 	return &leapmuxv1.AgentChatMessage{
 		TranscriptOnly:                 m.TranscriptOnly,
@@ -4396,7 +4736,7 @@ func messageToProto(m *db.Message, provider leapmuxv1.AgentProvider) (*leapmuxv1
 		MarkType:                       workerdb.StorageEnumValue(m.MarkType),
 		AssembledKind:                  workerdb.StorageEnumValue(m.AssembledKind),
 		Completion:                     workerdb.StorageEnumValue(m.Completion),
-	}, nil
+	}, projected, nil
 }
 
 // tabTypeReadScope returns the scope that governs the facts a tab of this kind
@@ -4431,14 +4771,40 @@ func callerReadsTabType(caller channel.Caller, tabType leapmuxv1.TabType) bool {
 	return !governed || caller.Allows(scope)
 }
 
+// callerReadsTabView requires workspace:read and the read scope of the tab's
+// kind. A status text needs the same protection as the tab's title.
+//
+// The Worker always states the kind, so an event without one comes from a bug.
+// It fails closed instead of reading as a kind that no scope governs.
+func callerReadsTabView(caller channel.Caller, tabType leapmuxv1.TabType) bool {
+	return tabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED &&
+		caller.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_READ) &&
+		callerReadsTabType(caller, tabType)
+}
+
 // privateEventVisible reports whether this stream's caller may see one
 // private event. A FILE payload rides the stream's own file:read floor; a tab
 // rename and an IMAGE payload are governed by the scope of the tab KIND they
 // name, exactly as WatchEvents partitions its agent and terminal sections.
 //
+// A notification, a reveal and a tab status act on the user's view of the
+// workspace, as the RPCs that send them (which take workspace:write) do, so
+// workspace:read governs all three. A reveal and a status also identify one
+// tab, so the scope of its kind governs them too (see callerReadsTabView).
+//
 // A payload this binary cannot parse fails closed. It cannot state its kind,
 // so it cannot state which scope governs it.
 func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEvent) bool {
+	switch event := evt.GetEvent().(type) {
+	case *leapmuxv1.WorkerPrivateEvent_UserNotification:
+		return notificationDestinationVisible(caller, event.UserNotification.GetDestination())
+	case *leapmuxv1.WorkerPrivateEvent_UserNotificationCleared:
+		return notificationDestinationVisible(caller, event.UserNotificationCleared.GetDestination())
+	case *leapmuxv1.WorkerPrivateEvent_TabRevealCommand:
+		return callerReadsTabView(caller, event.TabRevealCommand.GetTabType())
+	case *leapmuxv1.WorkerPrivateEvent_TabStatusChanged:
+		return callerReadsTabView(caller, event.TabStatusChanged.GetTabType())
+	}
 	if renamed := evt.GetTabRenamed(); renamed != nil {
 		return callerReadsTabType(caller, renamed.GetTabType())
 	}

@@ -92,6 +92,10 @@ func codexInitializeParams() map[string]interface{} {
 // Start starts a Codex agent process and performs the JSON-RPC handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	if err := opts.ValidateSessionSource(); err != nil {
+		cancel()
+		return nil, err
+	}
 
 	// Codex doesn't have third-party provider detection or model/effort
 	// conditional args, so we pass empty modelEffortArgs for a simple command.
@@ -187,14 +191,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// values against them before thread/start sends them.
 	permissions := a.discoverPermissions(opts.WorkingDir, timeout)
 
-	// 4. Send "thread/start" or "thread/resume" request.
+	// 4. Send "thread/start", "thread/resume", or "thread/fork" request.
 	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, permissions, a.serviceTier)
 
 	// The method is the label that FormatStartupError prefixes the failure with.
-	// startOrResumeThread makes the same choice from the same field, so the two
-	// cannot disagree about what ran.
 	threadMethod := "thread/start"
-	if opts.ResumeSessionID != "" {
+	switch {
+	case opts.Session.IsFork():
+		threadMethod = "thread/fork"
+	case opts.Session.IsResume():
 		threadMethod = "thread/resume"
 	}
 
@@ -204,16 +209,24 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// of the response. Assigning threadID only after startOrResumeThread
 	// returned meant every one of those arrived while a.threadID was still "",
 	// so isMainThreadID rejected them and the resumed goal was dropped.
-	if opts.ResumeSessionID != "" {
+	//
+	// Do NOT pre-assign threadID for thread/fork: Codex allocates a new thread ID
+	// in its response, which we adopt below.
+	if resumeID := opts.Session.ResumeID(); resumeID != "" {
 		a.Mu.Lock()
-		a.threadID = opts.ResumeSessionID
+		a.threadID = resumeID
 		a.Mu.Unlock()
 		// Mark the handshake, so the unsolicited reports it triggers are read as
 		// restatements rather than as events the user just caused.
 		a.resumingThread.Store(true)
 	}
 
-	thread, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
+	var thread codexThreadResult
+	if opts.Session.IsFork() {
+		thread, err = a.forkThread(threadParams, opts.Session.ForkID(), timeout)
+	} else {
+		thread, err = a.startOrResumeThread(threadParams, opts.Session.ResumeID(), timeout)
+	}
 	if err != nil {
 		// Clear on BOTH exits, and not with a defer. A defer here is
 		// function-scoped, not block-scoped, so the flag would stay set through

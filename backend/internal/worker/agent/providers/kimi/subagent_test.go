@@ -326,7 +326,8 @@ func TestKimiChildRouting(t *testing.T) {
 	t.Run("a steer is not possible", func(t *testing.T) {
 		t.Parallel()
 		rig := newLinkedRig(t)
-		require.ErrorIs(t, rig.agent.SteerChildInput("session_1/agent-0", "Hurry.", nil), agent.ErrChildOperationUnsupported)
+		_, err := rig.agent.SteerChildInput("session_1/agent-0", agent.SteerRequest{Content: "Hurry."})
+		require.ErrorIs(t, err, agent.ErrChildOperationUnsupported)
 	})
 
 	t.Run("an interrupt cannot guess a task from current child metadata", func(t *testing.T) {

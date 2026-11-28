@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"errors"
-	"flag"
 	"fmt"
-	"sort"
+	"slices"
+	"strings"
+
+	"github.com/spf13/pflag"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
 )
@@ -33,31 +36,49 @@ type positionSpec struct {
 	refID string
 }
 
-// positionFlags is the shared shape every tab-placement command
-// binds: --first / --last / --before <id> / --after <id>. Use
-// bindPositionFlags to register them on a flag set, then call
-// Resolve() after parseFlags to produce the validated positionSpec.
-type positionFlags struct {
-	first, last         bool
-	beforeRef, afterRef string
+// rankedItem pairs an entity ID with its LexoRank position for ordered
+// placement calculations across tabs, sections, and workspaces.
+type rankedItem struct {
+	ID       string
+	Position string
 }
 
-// bindPositionFlags registers the four placement flags on fs. The
-// shared shape avoids per-command duplication of the ~10-line
-// `posFirst/posLast/posBeforeRef/posAfterRef` block.
-func bindPositionFlags(fs *flag.FlagSet, verb string) *positionFlags {
-	out := &positionFlags{}
-	fs.BoolVar(&out.first, "first", false, fmt.Sprintf("%s as the first tab on the destination tile", verb))
-	fs.BoolVar(&out.last, "last", false, fmt.Sprintf("%s as the last tab on the destination tile (default)", verb))
-	fs.StringVar(&out.beforeRef, "before", "", fmt.Sprintf("%s immediately before the given tab id", verb))
-	fs.StringVar(&out.afterRef, "after", "", fmt.Sprintf("%s immediately after the given tab id", verb))
-	return out
+// addPositionFlags registers the four placement flags that every
+// tab-placement command shares: --first, --last, --before <tab> and
+// --after <tab>. positionSpec reads them back.
+func addPositionFlags(fs *pflag.FlagSet, verb string) {
+	fs.Bool("first", false, fmt.Sprintf("%s first on the destination tile", verb))
+	fs.Bool("last", false, fmt.Sprintf("%s last on the destination tile (default)", verb))
+	fs.String("before", "", fmt.Sprintf("%s right before this tab", verb))
+	fs.String("after", "", fmt.Sprintf("%s right after this tab", verb))
 }
 
-// Resolve converts the four flag values into a positionSpec, returning
-// an error envelope on mutually-exclusive misuse.
-func (p *positionFlags) Resolve() (positionSpec, error) {
-	return parsePositionSpec(p.first, p.last, p.beforeRef, p.afterRef)
+// positionSpec reads the placement flags of the invocation. A tab that
+// --before or --after gives accepts every target form, so it resolves to a
+// full id here.
+func (s *session) positionSpec() (positionSpec, error) {
+	before, after := stringFlag(s.inv, "before"), stringFlag(s.inv, "after")
+	spec, err := parsePositionSpec(boolFlag(s.inv, "first"), boolFlag(s.inv, "last"), before, after)
+	if err != nil {
+		return positionSpec{}, cli.Usagef("%s", err.Error())
+	}
+	return s.resolvePositionRef(spec)
+}
+
+// resolvePositionRef resolves a --before / --after target to a full tab ID and
+// caches its Hub row on the session so later lookups skip a redundant LocateTab.
+func (s *session) resolvePositionRef(spec positionSpec) (positionSpec, error) {
+	if spec.refID != "" {
+		ref, err := s.resolveOne(resolve.KindTab, spec.refID)
+		if err != nil {
+			return positionSpec{}, err
+		}
+		if ref.Tab != nil {
+			s.cacheLocatedTab(ref.ID, ref.Tab)
+		}
+		spec.refID = ref.ID
+	}
+	return spec, nil
 }
 
 // parsePositionSpec validates the four placement flags are mutually
@@ -109,11 +130,81 @@ func flagLabelForPositionKind(k positionKind) string {
 	return ""
 }
 
+// computeRankedPosition calculates a destination LexoRank among peers for an
+// item being inserted or moved. It does not mutate peers, excludes movingID,
+// rejects self-relative moves, and skips tied ranks when scanning for the
+// nearest strictly smaller or strictly larger sibling.
+func computeRankedPosition(peers []rankedItem, movingID string, spec positionSpec, noun string) (string, error) {
+	filtered := make([]rankedItem, 0, len(peers))
+	for _, peer := range peers {
+		if movingID != "" && peer.ID == movingID {
+			continue
+		}
+		filtered = append(filtered, peer)
+	}
+	slices.SortFunc(filtered, func(a, b rankedItem) int {
+		if a.Position != b.Position {
+			return strings.Compare(a.Position, b.Position)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+
+	switch spec.kind {
+	case positionBefore, positionAfter:
+		if spec.refID == "" {
+			return "", cli.Usagef("%s needs a %s", flagLabelForPositionKind(spec.kind), noun)
+		}
+		if movingID != "" && spec.refID == movingID {
+			return "", cli.Usagef("cannot move %s relative to itself", noun)
+		}
+		idx := slices.IndexFunc(filtered, func(item rankedItem) bool {
+			return item.ID == spec.refID
+		})
+		if idx < 0 {
+			return "", cli.Newf(cli.CodeNotFound, "%s %s not found", noun, spec.refID)
+		}
+		refPos := filtered[idx].Position
+		if spec.kind == positionBefore {
+			var prevPos string
+			for i := idx - 1; i >= 0; i-- {
+				if filtered[i].Position < refPos {
+					prevPos = filtered[i].Position
+					break
+				}
+			}
+			return lexorank.Mid(prevPos, refPos), nil
+		}
+		var nextPos string
+		for i := idx + 1; i < len(filtered); i++ {
+			if filtered[i].Position > refPos {
+				nextPos = filtered[i].Position
+				break
+			}
+		}
+		if nextPos != "" {
+			return lexorank.Mid(refPos, nextPos), nil
+		}
+		return lexorank.After(refPos), nil
+	case positionFirst:
+		if len(filtered) == 0 {
+			return lexorank.First(), nil
+		}
+		return lexorank.Mid("", filtered[0].Position), nil
+	case positionLast:
+		if len(filtered) == 0 {
+			return lexorank.First(), nil
+		}
+		return lexorank.After(filtered[len(filtered)-1].Position), nil
+	default:
+		return "", cli.Usagef("unknown position kind")
+	}
+}
+
 // resolvePositionSpec converts a spec into a (tileID, lexorank) pair
 // against the bootstrapped state.
 //
 // destTileID is the caller-preferred destination tile (e.g. via
-// --tile-id / --target-tile-id, or "" when the spec is allowed to
+// --tile, or "" when the spec is allowed to
 // derive it from a ref tab). For --first / --last destTileID is
 // required; for --before / --after the tile is taken from the ref
 // tab's record and, if destTileID is also set, the two must agree.
@@ -131,63 +222,50 @@ func resolvePositionSpec(
 	switch spec.kind {
 	case positionFirst, positionLast:
 		if destTileID == "" {
-			return "", "", control.EmitError(
-				"invalid_request",
-				"destination tile required for "+flagLabelForPositionKind(spec.kind),
-			)
+			return "", "", cli.Usagef("%s needs a destination tile", flagLabelForPositionKind(spec.kind))
 		}
-		tabs := liveTabsOnTile(state, destTileID, movingTabID)
-		if len(tabs) == 0 {
-			return destTileID, lexorank.First(), nil
+		pos, err := computeRankedPosition(liveTabPeersOnTile(state, destTileID), movingTabID, spec, "tab")
+		if err != nil {
+			return "", "", err
 		}
-		if spec.kind == positionFirst {
-			return destTileID, lexorank.Mid("", tabs[0].GetPosition().GetValue()), nil
-		}
-		return destTileID, lexorank.After(tabs[len(tabs)-1].GetPosition().GetValue()), nil
+		return destTileID, pos, nil
 	case positionBefore, positionAfter:
 		flag := flagLabelForPositionKind(spec.kind)
 		if spec.refID == "" {
-			return "", "", control.EmitError("invalid_request", flag+" requires a tab id")
+			return "", "", cli.Usagef("%s needs a tab", flag)
 		}
 		if spec.refID == movingTabID {
-			return "", "", control.EmitError("invalid_request", flag+" references the tab being moved")
+			return "", "", cli.Usagef("%s points at the tab being moved", flag)
 		}
 		ref, ok := state.GetTabs()[spec.refID]
 		if !ok || ref == nil {
-			return "", "", control.EmitError("not_found", "no such tab: "+spec.refID)
+			return "", "", cli.Newf(cli.CodeNotFound, "no such tab: %s", spec.refID)
 		}
 		if !crdt.HLCIsZero(ref.GetTombstoneAt()) {
-			return "", "", control.EmitError("not_found", "tab is tombstoned: "+spec.refID)
+			return "", "", cli.Newf(cli.CodeNotFound, "tab is tombstoned: %s", spec.refID)
 		}
 		refTile := ref.GetTileId().GetValue()
 		if refTile == "" {
-			return "", "", control.EmitError("not_found", "tab "+spec.refID+" has no tile placement")
+			return "", "", cli.Newf(cli.CodeNotFound, "tab %s has no tile placement", spec.refID)
 		}
 		if destTileID != "" && destTileID != refTile {
-			return "", "", control.EmitError(
-				"invalid_request",
-				fmt.Sprintf("%s references tab %s on tile %s, but destination tile is %s", flag, spec.refID, refTile, destTileID),
-			)
+			return "", "", cli.Usagef("%s refers to tab %s on tile %s, but destination tile is %s", flag, spec.refID, refTile, destTileID)
 		}
-		refPos := ref.GetPosition().GetValue()
-		tabs := liveTabsOnTile(state, refTile, movingTabID)
-		if spec.kind == positionBefore {
-			return refTile, computeBefore(tabs, refPos), nil
+		pos, err := computeRankedPosition(liveTabPeersOnTile(state, refTile), movingTabID, spec, "tab")
+		if err != nil {
+			return "", "", err
 		}
-		return refTile, computeAfter(tabs, refPos), nil
+		return refTile, pos, nil
 	}
-	return "", "", control.EmitError("invalid_request", "unknown position kind")
+	return "", "", cli.Usagef("unknown position kind")
 }
 
-// liveTabsOnTile returns the live tabs anchored to tileID, sorted by
-// LexoRank position. excludeTabID is dropped from the result so that
-// `tab move`'s position computation isn't influenced by the moving
-// tab's pre-move record; pass "" when no exclusion is needed.
-func liveTabsOnTile(state *leapmuxv1.UserMaterialized, tileID, excludeTabID string) []*leapmuxv1.TabRecord {
+// liveTabPeersOnTile returns the live tabs anchored to tileID as ranked items.
+func liveTabPeersOnTile(state *leapmuxv1.UserMaterialized, tileID string) []rankedItem {
 	if tileID == "" {
 		return nil
 	}
-	var out []*leapmuxv1.TabRecord
+	var out []rankedItem
 	for _, t := range state.GetTabs() {
 		if !crdt.HLCIsZero(t.GetTombstoneAt()) {
 			continue
@@ -195,43 +273,10 @@ func liveTabsOnTile(state *leapmuxv1.UserMaterialized, tileID, excludeTabID stri
 		if t.GetTileId().GetValue() != tileID {
 			continue
 		}
-		if t.GetTabId() == excludeTabID {
-			continue
-		}
-		out = append(out, t)
+		out = append(out, rankedItem{
+			ID:       t.GetTabId(),
+			Position: t.GetPosition().GetValue(),
+		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].GetPosition().GetValue() < out[j].GetPosition().GetValue()
-	})
 	return out
-}
-
-// computeBefore returns a LexoRank strictly less than refPos but
-// greater than the previous live tab's position on the same tile.
-// `tabs` must be the tile's live tabs sorted by position.
-func computeBefore(tabs []*leapmuxv1.TabRecord, refPos string) string {
-	var prevPos string
-	for _, t := range tabs {
-		p := t.GetPosition().GetValue()
-		if p >= refPos {
-			break
-		}
-		prevPos = p
-	}
-	return lexorank.Mid(prevPos, refPos)
-}
-
-// computeAfter returns a LexoRank strictly greater than refPos but
-// less than the next live tab's position on the same tile. `tabs`
-// must be the tile's live tabs sorted by position.
-func computeAfter(tabs []*leapmuxv1.TabRecord, refPos string) string {
-	var nextPos string
-	for _, t := range tabs {
-		p := t.GetPosition().GetValue()
-		if p > refPos {
-			nextPos = p
-			break
-		}
-	}
-	return lexorank.Mid(refPos, nextPos)
 }

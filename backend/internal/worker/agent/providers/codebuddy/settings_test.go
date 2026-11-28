@@ -528,7 +528,6 @@ func TestCodebuddyPermissionModesOfferAuto(t *testing.T) {
 		contracts.CodebuddyModePlan, contracts.CodebuddyModeBypassPermissions,
 	}, ids)
 	assert.Equal(t, contracts.CodebuddyModeAuto, group.GetCurrentValue())
-	assert.Equal(t, contracts.CodebuddyModeAuto, permissionModeFlag(contracts.CodebuddyModeAuto), "the launch flag takes the mode verbatim")
 }
 
 // A running session switches to Auto with set_permission_mode, and the mode

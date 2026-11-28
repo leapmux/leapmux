@@ -563,32 +563,106 @@ func droidEarlySendArchive(t *testing.T, sends int) (*Agent, *agenttest.Sink, *q
 	return a, sink, clock, path
 }
 
-func TestDroidChildTailContinuesAfterEarlySend(t *testing.T) {
-	_, sink, clock, _ := droidEarlySendArchive(t, 1)
+func TestDroidChildTailStopsAtInitialOutcomeAfterBoundChildSend(t *testing.T) {
+	a, sink, clock, _ := droidEarlySendArchive(t, 1)
 	advanceDroidArchive(t, clock)
+	var tail *droidChildTail
 	testutil.RequireEventually(t, func() bool {
-		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_1")
-	}, "the accepted follow-up survives the first unpolled outcome")
-}
-
-func TestDroidChildTailCountsEarlySends(t *testing.T) {
-	_, sink, clock, _ := droidEarlySendArchive(t, 2)
-	advanceDroidArchive(t, clock)
-	testutil.RequireEventually(t, func() bool {
-		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_2")
-	}, "both accepted follow-ups survive unpolled outcomes")
-	for _, marker := range []string{"ARCHIVE_FIRST_TURN", "ARCHIVE_FOLLOWUP_1", "ARCHIVE_FOLLOWUP_2"} {
-		count := 0
-		for _, row := range childArchiveRows(sink, archiveChildID) {
-			if strings.Contains(string(row.Content), marker) {
-				count++
-			}
+		a.tailMu.Lock()
+		tail = a.childTails[archiveChildID]
+		a.tailMu.Unlock()
+		if tail == nil {
+			return false
 		}
-		assert.Equal(t, 1, count, "each child message appears once")
+		tail.mu.Lock()
+		defer tail.mu.Unlock()
+		return tail.finished
+	}, "the archive reader stops after the initial background turn outcome")
+	select {
+	case <-tail.stopped:
+	default:
+		t.Fatal("tail.stopped must be closed after SendChildInput stops the tail")
 	}
+	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_1"),
+		"the bound child stream owns follow-up rows so the archive never duplicates them")
+	row, ok := sink.BackgroundTask(archiveChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status,
+		"the delayed initial archive outcome must not close an active bound child turn")
 }
 
-func TestDroidChildTailStopWithPendingContinuation(t *testing.T) {
+func TestDroidChildHasActiveBoundConnectionAndFeedPreservesRunningRow(t *testing.T) {
+	t.Run("childHasActiveBoundConnection covers all connection states", func(t *testing.T) {
+		t.Parallel()
+		root, _, _ := newSteerAgent(t)
+		assert.False(t, root.childHasActiveBoundConnection(archiveChildID), "nil connection returns false")
+
+		// Unready connection (open ready channel).
+		root.childConnMu.Lock()
+		root.childConns = map[string]*droidChildConnection{
+			archiveChildID: {ready: make(chan struct{})},
+		}
+		root.childConnMu.Unlock()
+		assert.False(t, root.childHasActiveBoundConnection(archiveChildID), "unready connection returns false")
+
+		// Ready connection with nil agent.
+		closedReady := make(chan struct{})
+		close(closedReady)
+		root.childConnMu.Lock()
+		root.childConns[archiveChildID] = &droidChildConnection{ready: closedReady, agent: nil}
+		root.childConnMu.Unlock()
+		assert.False(t, root.childHasActiveBoundConnection(archiveChildID), "ready connection with nil agent returns false")
+
+		// Ready connection with idle agent (turnActive == false).
+		child, _, _ := newSteerAgent(t)
+		root.childConnMu.Lock()
+		root.childConns[archiveChildID] = &droidChildConnection{ready: closedReady, agent: child}
+		root.childConnMu.Unlock()
+		assert.False(t, root.childHasActiveBoundConnection(archiveChildID), "inactive bound child turn returns false")
+
+		// Ready connection with active agent (turnActive == true).
+		child.startTurn()
+		assert.True(t, root.childHasActiveBoundConnection(archiveChildID), "active bound child turn returns true")
+	})
+
+	t.Run("tail.feed preserves running row on agent_turn_outcome while bound child turn is active", func(t *testing.T) {
+		a, sink, _, _, work := droidArchiveHarness(t)
+		a.HandleOutput([]byte(droidTaskCall))
+		a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+		child := bindDroidArchiveChild(t, a)
+		child.startTurn()
+		require.True(t, a.childHasActiveBoundConnection(archiveChildID))
+
+		tail := newDroidChildTail(a, archiveChildID, "", nil, nil)
+		tail.workDir = work
+		tail.feed([]byte(droidArchiveStart(archiveChildID, work)))
+		require.True(t, tail.headerSeen)
+
+		tail.feed([]byte(`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`))
+		assert.True(t, tail.finished)
+		row, ok := sink.BackgroundTask(archiveChildID)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status,
+			"agent_turn_outcome must keep the row running when a bound child turn is active")
+		rows := childArchiveRows(sink, archiveChildID)
+		require.NotEmpty(t, rows)
+		assert.True(t, rows[len(rows)-1].TurnEnd, "the initial turn-end divider must still persist")
+
+		// Contrast: once the bound child turn ends, a tail.feed outcome closes the row.
+		child.endTurn()
+		require.False(t, a.childHasActiveBoundConnection(archiveChildID))
+		tail2 := newDroidChildTail(a, archiveChildID, "", nil, nil)
+		tail2.workDir = work
+		tail2.feed([]byte(droidArchiveStart(archiveChildID, work)))
+		tail2.feed([]byte(`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`))
+		assert.True(t, tail2.finished)
+		row, ok = sink.BackgroundTask(archiveChildID)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	})
+}
+
+func TestDroidChildTailStopWithActiveBoundChild(t *testing.T) {
 	a, sink, clock, _ := droidEarlySendArchive(t, 1)
 	a.childConnMu.Lock()
 	child := a.childConns[archiveChildID].agent
@@ -604,7 +678,7 @@ func TestDroidChildTailStopWithPendingContinuation(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("Stop did not finish with a pending child continuation")
+		t.Fatal("Stop did not finish with an active bound child")
 	}
 	advanceDroidArchive(t, clock)
 	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_1"),
@@ -854,4 +928,116 @@ func TestDroidArchiveSkipIfUnchangedAndIdentityChecks(t *testing.T) {
 		require.ErrorContains(t, err, "droid child archive was truncated")
 		assert.Nil(t, chunk)
 	})
+}
+
+func TestDroidChildTailDoesNotOverlapBoundChildTurn(t *testing.T) {
+	a, sink, clock, dir, work := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(archiveChildID, work),
+		`{"type":"message","id":"assistant-first","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_FIRST_TURN"}]}}`,
+	)
+	a.HandleOutput([]byte(droidTaskCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+	testutil.RequireEventually(t, func() bool {
+		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FIRST_TURN")
+	}, "initial archive row appears")
+	_ = bindDroidArchiveChild(t, a)
+	a.disarmChildTurn(archiveChildID)
+	require.NoError(t, agenttest.SendChildInput(a, archiveChildID, agent.ChildInput{Content: "follow-up"}))
+
+	// Any subsequent record written to the archive while the bound child owns the turn must not be projected by the tail.
+	appendDroidArchive(t, path,
+		`{"type":"message","id":"assistant-late","message":{"role":"assistant","content":[{"type":"text","text":"OVERLAPPING_ARCHIVE_ROW"}]}}`,
+	)
+	a.tailMu.Lock()
+	tail := a.childTails[archiveChildID]
+	a.tailMu.Unlock()
+	require.NotNil(t, tail)
+	tail.mu.Lock()
+	assert.True(t, tail.finished, "SendChildInput must mark the initial archive tail finished")
+	tail.mu.Unlock()
+	select {
+	case <-tail.stopped:
+	default:
+		t.Fatal("tail.stopped must be closed after SendChildInput stops the archive tail")
+	}
+	tail.poll()
+	advanceDroidArchive(t, clock)
+	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "OVERLAPPING_ARCHIVE_ROW"),
+		"archive tail must not concurrently write to the child sink after a bound child owns follow-up turns")
+}
+
+func TestDroidStopChildTailFlushAbsentAndIdempotent(t *testing.T) {
+	a, sink, clock, dir, work := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(archiveChildID, work),
+		`{"type":"message","id":"assistant-initial","message":{"role":"assistant","content":[{"type":"text","text":"INITIAL_TAIL_ROW"}]}}`,
+	)
+	a.HandleOutput([]byte(droidTaskCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+	testutil.RequireEventually(t, func() bool {
+		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "INITIAL_TAIL_ROW")
+	}, "initial archive row appears")
+
+	// Absent sessionID is a clean no-op.
+	a.stopChildTail("nonexistent-session-id")
+
+	// Append a record without advancing the clock; stopChildTail must flush it before stopping.
+	appendDroidArchive(t, path,
+		`{"type":"message","id":"assistant-pre-stop","message":{"role":"assistant","content":[{"type":"text","text":"FLUSHED_BEFORE_STOP"}]}}`,
+	)
+	a.stopChildTail(archiveChildID)
+	assert.True(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "FLUSHED_BEFORE_STOP"),
+		"stopChildTail must flush unread records before stopping the tail")
+
+	a.tailMu.Lock()
+	tail := a.childTails[archiveChildID]
+	a.tailMu.Unlock()
+	require.NotNil(t, tail)
+	tail.mu.Lock()
+	assert.True(t, tail.finished)
+	tail.mu.Unlock()
+	select {
+	case <-tail.stopped:
+	default:
+		t.Fatal("stopChildTail must close tail.stopped")
+	}
+
+	// Idempotent repeat call and subsequent archive writes add no rows.
+	countAfterStop := len(childArchiveRows(sink, archiveChildID))
+	appendDroidArchive(t, path,
+		`{"type":"message","id":"assistant-after-stop","message":{"role":"assistant","content":[{"type":"text","text":"WRITTEN_AFTER_STOP"}]}}`,
+	)
+	a.stopChildTail(archiveChildID)
+	advanceDroidArchive(t, clock)
+	assert.Equal(t, countAfterStop, len(childArchiveRows(sink, archiveChildID)))
+	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "WRITTEN_AFTER_STOP"))
+}
+
+func TestDroidChildTailClosesRowWhenPendingBoundConnectionNotReady(t *testing.T) {
+	a, sink, clock, dir, work := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(archiveChildID, work),
+		`{"type":"message","id":"assistant-first","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_FIRST_TURN"}]}}`,
+	)
+	a.HandleOutput([]byte(droidTaskCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+	testutil.RequireEventually(t, func() bool {
+		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FIRST_TURN")
+	}, "initial archive row appears")
+
+	// Simulate startProcess still in flight (connection.ready open).
+	a.childConnMu.Lock()
+	a.childConns = map[string]*droidChildConnection{archiveChildID: {ready: make(chan struct{}), done: make(chan struct{})}}
+	a.childConnMu.Unlock()
+
+	appendDroidArchive(t, path, `{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`)
+	advanceDroidArchive(t, clock)
+	testutil.RequireEventually(t, func() bool {
+		row, ok := sink.BackgroundTask(archiveChildID)
+		return ok && row.Status == bgtask.StatusSucceeded
+	}, "initial archive outcome must still close the row while bound connection startup is not ready")
 }

@@ -3,6 +3,7 @@ package leapmux.v1;
 
 import "leapmux/v1/access.proto";
 import "leapmux/v1/agent.proto";
+import "leapmux/v1/common.proto";
 import "leapmux/v1/terminal.proto";
 
 // WorkerWatchService serves the WatchEvents stream: a channel's per-agent and
@@ -12,6 +13,174 @@ service WorkerWatchService {
   rpc WatchEvents(WatchEventsRequest) returns (stream WatchEventsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
+  rpc WatchSemanticEvents(WatchSemanticEventsRequest) returns (stream WatchSemanticEventsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+  rpc WatchWorkerSemanticEvents(WatchWorkerSemanticEventsRequest) returns (stream WatchWorkerSemanticEventsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+}
+
+// WatchSemanticEvents resumes a tab's journal after a signed cursor. An
+// empty cursor starts at the current committed tail.
+message WatchSemanticEventsRequest {
+  TabIdent tab = 1;
+  bytes after_cursor = 2;
+}
+
+message WatchSemanticEventsResponse {
+  oneof event {
+    SemanticWatchReady ready = 1;
+    SemanticWatchRecord record = 2;
+    SemanticWatchGap gap = 3;
+    SemanticWatchRetired retired = 4;
+  }
+}
+
+// WatchWorkerSemanticEvents follows every tab of one kind on the Worker.
+// An empty cursor starts at the current committed tail, even with no tabs.
+message WatchWorkerSemanticEventsRequest {
+  TabType tab_type = 1;
+  bytes after_cursor = 2;
+}
+
+message WatchWorkerSemanticEventsResponse {
+  oneof event {
+    SemanticWorkerWatchReady ready = 1;
+    SemanticWorkerWatchRecord record = 2;
+    SemanticWatchGap gap = 3;
+  }
+}
+
+message SemanticWorkerWatchReady {
+  TabType tab_type = 1;
+  string worker_id = 2;
+  string journal_id = 3;
+  int64 after_sequence = 4;
+  int64 high_water_sequence = 5;
+  bytes cursor = 6;
+}
+
+message SemanticWorkerWatchRecord {
+  int64 sequence = 1;
+  int64 observed_unix_millis = 2;
+  TabIdent tab = 3;
+  SemanticTabFact fact = 4;
+  bytes cursor = 5;
+  // Present when this exact request instance still waits for an answer.
+  string current_request_handle = 6;
+}
+
+// Ready confirms the accepted position before any record or gap. The high
+// water separates records retained at admission from subsequent publications.
+message SemanticWatchReady {
+  TabIdent tab = 1;
+  string worker_id = 2;
+  string journal_id = 3;
+  string tab_stream_id = 4;
+  int64 after_sequence = 5;
+  int64 high_water_sequence = 6;
+  bytes cursor = 7;
+}
+
+message SemanticWatchRecord {
+  int64 sequence = 1;
+  int64 observed_unix_millis = 2;
+  SemanticTabFact fact = 3;
+  bytes cursor = 4;
+  // Present when this exact request instance still waits for an answer.
+  string current_request_handle = 5;
+}
+
+// Retirement confirms that the Worker has sealed this resource's history.
+message SemanticWatchRetired {
+  int64 final_sequence = 1;
+}
+
+enum SemanticWatchGapReason {
+  SEMANTIC_WATCH_GAP_REASON_UNSPECIFIED = 0;
+  SEMANTIC_WATCH_GAP_REASON_RETENTION = 1;
+  SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP = 2;
+  SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT = 3;
+  SEMANTIC_WATCH_GAP_REASON_HISTORY_UNAVAILABLE = 4;
+}
+
+// A gap advances over an interval whose complete history is unavailable.
+message SemanticWatchGap {
+  SemanticWatchGapReason reason = 1;
+  int64 after_sequence = 2;
+  int64 resume_after_sequence = 3;
+  bytes cursor = 4;
+}
+
+message SemanticTabFact {
+  oneof event {
+    SemanticTerminalStatus terminal_status = 1;
+    TerminalClosed terminal_exit = 2;
+    TerminalBell terminal_bell = 3;
+    TerminalNotification terminal_notification = 4;
+    TerminalTitleChanged terminal_title = 5;
+    TerminalProgress terminal_progress = 6;
+    SemanticAgentActivity agent_activity = 7;
+    SemanticAgentStatus agent_status = 8;
+    AgentTurnEnd agent_turn_end = 9;
+    SemanticAgentRequest agent_request = 10;
+    SemanticAgentRequestEnded agent_request_ended = 11;
+    SemanticAgentTodos agent_todos = 12;
+    SemanticAgentBackgroundTasks agent_background_tasks = 13;
+  }
+}
+
+message SemanticTerminalStatus {
+  TerminalStatus status = 1;
+  string startup_error = 2;
+}
+
+message SemanticAgentActivity {
+  AgentActivityState state = 1;
+  optional int32 tool_calls = 2;
+}
+
+message SemanticAgentStatus {
+  AgentStatus status = 1;
+  string startup_error = 2;
+}
+
+enum SemanticControlPromptKind {
+  SEMANTIC_CONTROL_PROMPT_KIND_UNSPECIFIED = 0;
+  SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION = 1;
+  SEMANTIC_CONTROL_PROMPT_KIND_PLAN = 2;
+  SEMANTIC_CONTROL_PROMPT_KIND_QUESTION = 3;
+  SEMANTIC_CONTROL_PROMPT_KIND_ELICITATION = 4;
+  SEMANTIC_CONTROL_PROMPT_KIND_DIALOG = 5;
+  SEMANTIC_CONTROL_PROMPT_KIND_UNREADABLE = 6;
+}
+
+// The identity correlates this request with its end without exposing a claim.
+message SemanticAgentRequest {
+  string request_id = 1;
+  bytes request_instance = 2;
+  SemanticControlPromptKind prompt_kind = 3;
+  bool blocking = 4;
+  string detail = 5;
+}
+
+message SemanticAgentRequestEnded {
+  string request_id = 1;
+  bytes request_instance = 2;
+  ControlResponseState state = 3;
+}
+
+message SemanticAgentTodos {
+  int32 total = 1;
+  int32 completed = 2;
+  int32 in_progress = 3;
+  string current = 4;
+}
+
+message SemanticAgentBackgroundTasks {
+  int32 total = 1;
+  int32 active = 2;
 }
 
 // WatchReplayMode selects which history a WatchEvents subscriber replays before
@@ -110,6 +279,9 @@ message WatchAgentEntry {
   // The transcript page size for this FULL lifetime. Zero uses the default.
   // The Worker clamps this size to the shared message page limit.
   optional uint32 replay_page_limit = 7;
+  // Fill AgentChatMessage.reply_text on replayed and live messages for this
+  // FULL subscription. The browser extracts text itself and leaves this unset.
+  bool include_reply_text = 8;
 }
 
 message WatchTerminalEntry {
@@ -118,6 +290,11 @@ message WatchTerminalEntry {
   // WATCH_MODE_FULL. Ignored otherwise.
   int64 after_offset = 2;
   WatchMode mode = 3;
+  // Include PTY geometry and a screen replay ordered across resizes.
+  bool screen_geometry = 4;
+  // The epoch and geometry revision most recently applied by the watcher.
+  string screen_epoch = 5;
+  uint64 after_geometry_revision = 6;
 }
 
 message WatchEventsResponse {
@@ -216,6 +393,12 @@ message AgentEvent {
     // Worker response state updates do not establish that the provider process is active.
     AgentControlRequest control_response_changed = 22;
     AgentMessagesRetracted messages_retracted = 23;
+    // The revision lets NOTIFY clients re-read the queue without receiving
+    // the input previews in input_queue_changed.
+    uint64 input_queue_revision = 24;
+    // A native input's reply or prompt state changed. This wakes readers
+    // without sending transcript text or native input identities.
+    AgentInputReplyChanged input_reply_changed = 25;
   }
 }
 
@@ -228,6 +411,8 @@ message AgentMessagesRetracted {
   repeated int64 seqs = 1;
 }
 
+message AgentInputReplyChanged {}
+
 // ReplayOrigin identifies the replay that produced a replay frame.
 message ReplayOrigin {
   uint64 replay_id = 1; // The FULL lifetime that produced this replay; always positive.
@@ -236,11 +421,10 @@ message ReplayOrigin {
   string agent_id = 2;
 }
 
-// AgentTurnEnd fires when the agent finishes a turn. NOTIFY-class, so a tab
-// nobody is looking at still rings and still badges -- which the turn-end
-// divider it accompanies cannot do, being a chat message only a rendered tab
-// receives. The turn's tool count travels in AgentActivityChanged, which the
-// turn-end sound reads.
+// AgentTurnEnd reports a provider turn boundary. NOTIFY-class, so a turn in
+// a hidden tab can still trigger a refresh of git status and the file tree.
+// AgentActivityChanged carries the settle transition and its tool count
+// for the turn-end sound.
 message AgentTurnEnd {}
 
 // AgentActivityChanged carries the Worker's authoritative answer to "what is
@@ -252,8 +436,9 @@ message AgentTurnEnd {}
 // output line. NOTIFY-class, so the tab nobody is looking at still learns that
 // its agent settled -- which is the tab that most needs to ring and badge.
 //
-// The WORKING -> not-WORKING edge is the "settled" signal: the turn ended AND no
-// background task of this agent's is still running.
+// A live transition from WORKING to IDLE or WAITING_FOR_USER signals settlement.
+// WAITING_FOR_USER can occur during a turn when a blocking control request
+// needs an answer.
 //
 // EVERY instance of this message is a TRANSITION: the Worker sends it only where
 // its derived state differs from the one it last sent. The catch-up baseline is
@@ -364,5 +549,6 @@ message TerminalEvent {
     TerminalNotification notification = 6;
     TerminalTitleChanged title_changed = 7;
     TerminalProgress progress = 8;
+    TerminalScreenGeometry screen_geometry = 9;
   }
 }

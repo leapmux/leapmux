@@ -128,3 +128,10 @@ func TestJSONRPCResponseRetainsAnErrorWithAnEmptyMessage(t *testing.T) {
 	require.Empty(t, responseError.Message)
 	require.True(t, HasJSONRPCErrorCode(err, 0))
 }
+
+func TestSelectedOptionResult(t *testing.T) {
+	require.JSONEq(t,
+		`{"jsonrpc":"2.0","id":"req-1","result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`,
+		string(SelectedOptionResult("req-1", "allow_once")),
+	)
+}

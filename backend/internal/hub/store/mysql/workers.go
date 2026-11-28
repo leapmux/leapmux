@@ -20,17 +20,22 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	return s.conn.queryError(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID:                    p.ID,
-		AuthTokenHash:         p.AuthTokenHash,
-		RegisteredBy:          p.RegisteredBy.String(),
-		AutoRegistered:        p.AutoRegistered,
-		X25519PublicKey:       p.PublicKeys.X25519,
-		MlkemPublicKey:        p.PublicKeys.Mlkem,
-		SlhdsaPublicKey:       p.PublicKeys.Slhdsa,
-		RegistrationAttemptID: stringToNull(p.RegistrationAttemptID),
-		RegistrationKeyHash:   bytesToNull(p.RegistrationKeyHashOrNil()),
-	}))
+	return s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		if err := conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
+			ID:                    p.ID,
+			AuthTokenHash:         p.AuthTokenHash,
+			RegisteredBy:          p.RegisteredBy.String(),
+			AutoRegistered:        p.AutoRegistered,
+			X25519PublicKey:       p.PublicKeys.X25519,
+			MlkemPublicKey:        p.PublicKeys.Mlkem,
+			SlhdsaPublicKey:       p.PublicKeys.Slhdsa,
+			RegistrationAttemptID: stringToNull(p.RegistrationAttemptID),
+			RegistrationKeyHash:   bytesToNull(p.RegistrationKeyHashOrNil()),
+		}); err != nil {
+			return conn.queryError(err)
+		}
+		return conn.queryError(conn.q.AdvanceWorkerEnrollment(ctx, p.RegisteredBy.String()))
+	})
 }
 
 func (s *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, error) {
@@ -93,12 +98,56 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.Worker]{}, nil
 	}
-	return store.QueryPage(ctx, p.Limit,
-		func() (gendb.ListWorkersByUserIDParams, error) {
-			return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
-		},
-		s.conn.q.ListWorkersByUserID,
-		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }, s.conn.queryError)
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.Worker]{}, err
+	}
+	if !hasPrefix {
+		return store.QueryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersByUserIDParams, error) {
+				return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersByUserID,
+			func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.Worker]{}, err
+	}
+	var rows []gendb.Worker
+	if filter.Exact {
+		rows, err = s.conn.q.ListWorkersByUserIDAndExactID(ctx, gendb.ListWorkersByUserIDAndExactIDParams{
+			RegisteredBy: owner,
+			ID:           filter.Lower,
+		})
+	} else {
+		rows, err = s.conn.q.ListWorkersByUserIDAndIDPrefix(ctx, gendb.ListWorkersByUserIDAndIDPrefixParams{
+			RegisteredBy: owner,
+			IDLo:         filter.Lower,
+			IDHi:         filter.Upper,
+			IDGt:         idGt,
+			Limit:        fetchLimit,
+		})
+	}
+	if err != nil {
+		return store.Page[store.Worker]{}, s.conn.queryError(err)
+	}
+	mapped := store.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
+	return store.NewPage(mapped, p.Limit), nil
+}
+
+func (s *workerStore) InventorySnapshot(ctx context.Context, owner userid.UserID) (store.WorkerInventorySnapshot, error) {
+	userID, ok := userid.OwnerFilter(owner)
+	if !ok {
+		return store.WorkerInventorySnapshot{}, store.ErrNotFound
+	}
+	rows, err := s.conn.q.GetWorkerInventorySnapshot(ctx, gendb.GetWorkerInventorySnapshotParams{UserID: userID})
+	if err != nil {
+		return store.WorkerInventorySnapshot{}, s.conn.queryError(err)
+	}
+	return store.AssembleWorkerInventorySnapshot(rows, func(r gendb.GetWorkerInventorySnapshotRow) (int64, string) {
+		return r.Revision, r.WorkerID
+	}), nil
 }
 
 func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) (store.Page[store.WorkerWithOwner], error) {
@@ -106,8 +155,66 @@ func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPar
 	if err != nil {
 		return store.Page[store.WorkerWithOwner]{}, err
 	}
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.WorkerWithOwner]{}, err
+	}
+	if hasPrefix {
+		idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+		if err != nil || empty {
+			return store.Page[store.WorkerWithOwner]{}, err
+		}
+		var userID string
+		if p.UserID != nil {
+			uid, ok := userid.New(*p.UserID)
+			if !ok {
+				return store.Page[store.WorkerWithOwner]{}, nil
+			}
+			userID = uid.String()
+		}
+		var statusFilter int64
+		switch status {
+		case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:
+			statusFilter = 0
+		case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
+			statusFilter = 1
+		case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
+			statusFilter = 2
+		default:
+			return store.Page[store.WorkerWithOwner]{}, store.ErrInvalidArgument
+		}
+		if filter.Exact {
+			return store.QueryPage(ctx, p.Limit,
+				func() (gendb.ListWorkersAdminByExactIDParams, error) {
+					return gendb.ListWorkersAdminByExactIDParams{
+						ID:           filter.Lower,
+						UserID:       userID,
+						StatusFilter: statusFilter,
+					}, nil
+				},
+				s.conn.q.ListWorkersAdminByExactID,
+				func(r gendb.ListWorkersAdminByExactIDRow) store.WorkerWithOwner {
+					return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+				}, s.conn.queryError)
+		}
+		return store.QueryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminByIDPrefixParams, error) {
+				return gendb.ListWorkersAdminByIDPrefixParams{
+					IDLo:         filter.Lower,
+					IDHi:         filter.Upper,
+					IDGt:         idGt,
+					UserID:       userID,
+					StatusFilter: statusFilter,
+					Limit:        fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListWorkersAdminByIDPrefix,
+			func(r gendb.ListWorkersAdminByIDPrefixRow) store.WorkerWithOwner {
+				return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+			}, s.conn.queryError)
+	}
 	switch status {
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
 		if p.UserID != nil {
 			return store.QueryPage(ctx, p.Limit,
 				func() (gendb.ListWorkersAdminLiveByUserParams, error) {
@@ -118,32 +225,6 @@ func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPar
 		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListWorkersAdminLiveParams, error) { return listWorkersAdminLiveParams(p.Cursor, p.Limit) },
 			s.conn.q.ListWorkersAdminLive, fromDBListWorkersAdminLiveRow, s.conn.queryError)
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
-		if p.UserID != nil {
-			return store.QueryPage(ctx, p.Limit,
-				func() (gendb.ListWorkersAdminActiveByUserParams, error) {
-					return listWorkersAdminActiveByUserParams(*p.UserID, p.Cursor, p.Limit)
-				},
-				s.conn.q.ListWorkersAdminActiveByUser, fromDBListWorkersAdminActiveByUserRow, s.conn.queryError)
-		}
-		return store.QueryPage(ctx, p.Limit,
-			func() (gendb.ListWorkersAdminActiveParams, error) {
-				return listWorkersAdminActiveParams(p.Cursor, p.Limit)
-			},
-			s.conn.q.ListWorkersAdminActive, fromDBListWorkersAdminActiveRow, s.conn.queryError)
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
-		if p.UserID != nil {
-			return store.QueryPage(ctx, p.Limit,
-				func() (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
-					return listWorkersAdminDeregisteringByUserParams(*p.UserID, p.Cursor, p.Limit)
-				},
-				s.conn.q.ListWorkersAdminDeregisteringByUser, fromDBListWorkersAdminDeregisteringByUserRow, s.conn.queryError)
-		}
-		return store.QueryPage(ctx, p.Limit,
-			func() (gendb.ListWorkersAdminDeregisteringParams, error) {
-				return listWorkersAdminDeregisteringParams(p.Cursor, p.Limit)
-			},
-			s.conn.q.ListWorkersAdminDeregistering, fromDBListWorkersAdminDeregisteringRow, s.conn.queryError)
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
 		if p.UserID != nil {
 			return store.QueryPage(ctx, p.Limit,
@@ -207,12 +288,11 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 			Mlkem:  w.MlkemPublicKey,
 			Slhdsa: w.SlhdsaPublicKey,
 		},
-		Status:          store.WorkerStatusOf(w.DeregisteringAt.Ptr(), w.DeletedAt.Ptr()),
-		CreatedAt:       w.CreatedAt.Time,
-		LastSeenAt:      w.LastSeenAt.Ptr(),
-		AutoRegistered:  w.AutoRegistered,
-		DeregisteringAt: w.DeregisteringAt.Ptr(),
-		DeletedAt:       w.DeletedAt.Ptr(),
+		Status:         store.WorkerStatusOf(w.DeletedAt.Ptr()),
+		CreatedAt:      w.CreatedAt.Time,
+		LastSeenAt:     w.LastSeenAt.Ptr(),
+		AutoRegistered: w.AutoRegistered,
+		DeletedAt:      w.DeletedAt.Ptr(),
 
 		RegistrationAttemptID: w.RegistrationAttemptID.String,
 		RegistrationKeyHash:   nullToBytes(w.RegistrationKeyHash),
@@ -245,27 +325,11 @@ func nullToBytes(ns sql.NullString) []byte {
 	return []byte(ns.String)
 }
 
-// workerWithOwner is the shared body of the eight admin-worker Row mappers. The
+// workerWithOwner is the shared body of the four admin-worker Row mappers. The
 // queries select sqlc.embed(w) so every admin Row is {Worker, OwnerUsername};
 // this helper keeps the gendb.Worker -> store.Worker mapping in one site.
 func workerWithOwner(w gendb.Worker, ownerUsername string, ownerDeleted bool) store.WorkerWithOwner {
 	return store.WorkerWithOwner{Worker: *fromDBWorker(w), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
-}
-
-func fromDBListWorkersAdminActiveRow(r gendb.ListWorkersAdminActiveRow) store.WorkerWithOwner {
-	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
-}
-
-func fromDBListWorkersAdminActiveByUserRow(r gendb.ListWorkersAdminActiveByUserRow) store.WorkerWithOwner {
-	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
-}
-
-func fromDBListWorkersAdminDeregisteringRow(r gendb.ListWorkersAdminDeregisteringRow) store.WorkerWithOwner {
-	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
-}
-
-func fromDBListWorkersAdminDeregisteringByUserRow(r gendb.ListWorkersAdminDeregisteringByUserRow) store.WorkerWithOwner {
-	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
 }
 
 func fromDBListWorkersAdminLiveRow(r gendb.ListWorkersAdminLiveRow) store.WorkerWithOwner {

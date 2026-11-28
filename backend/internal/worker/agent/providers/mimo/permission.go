@@ -94,7 +94,7 @@ func (a *Agent) finishControlAnswer(id string, control *mimoControl, err error) 
 	}
 	a.Mu.Unlock()
 	if current && published && (err == nil && automatic || uncertain || gone) {
-		a.sink.CancelControlRequestInstance(id, control.instanceID)
+		a.controlSink(control).CancelControlRequestInstance(id, control.instanceID)
 	}
 	if current && publish {
 		a.publishRegisteredControl(id, control)

@@ -48,7 +48,17 @@ func TestQoderTurnEndToolUses(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, int32(2), count)
 
+	count, ok = p.TurnEndToolUses([]byte(`{"type":"result","num_tool_uses":0}`))
+	assert.True(t, ok)
+	assert.Equal(t, int32(0), count)
+
+	_, ok = p.TurnEndToolUses([]byte(`{"type":"result","num_tool_uses":null}`))
+	assert.False(t, ok, "a null num_tool_uses must report unknown, not zero")
+
 	_, ok = p.TurnEndToolUses([]byte(`{"type":"result"}`))
+	assert.False(t, ok)
+
+	_, ok = p.TurnEndToolUses([]byte(`{`))
 	assert.False(t, ok)
 }
 
@@ -56,6 +66,9 @@ func TestQoderProviderFacts(t *testing.T) {
 	t.Parallel()
 
 	assert.False(t, qoderProvider{}.ChildCapabilities(nil).AcceptsMessages)
+	assert.False(t, qoderProvider{}.IsSelfDisplayingControlTool("AskUserQuestion"))
+	assert.False(t, qoderProvider{}.IsSelfDisplayingControlTool("ExitPlanMode"))
+	assert.False(t, qoderProvider{}.IsSelfDisplayingControlTool("Bash"))
 	agenttest.AssertTokenResumeRule(t, qoderProvider{})
 	agenttest.AssertWithholdsTheResponseForAMalformedRequest(t, qoderProvider{})
 	agenttest.AssertPreservesTheResponseWithoutARequest(t, qoderProvider{})
@@ -130,7 +143,7 @@ func TestQoderBusyRefusalRepublishesTheTurn(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	a.setTurnActive(true)
-	err := a.SendInput("later turn", nil)
+	err := agenttest.SendInput(a, "later turn", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }
 

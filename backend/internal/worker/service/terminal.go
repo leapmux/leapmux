@@ -1,7 +1,10 @@
 package service
 
 import (
+	"container/list"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,17 +12,172 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"google.golang.org/grpc/codes"
 
+	"github.com/leapmux/leapmux/internal/terminput"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/validate"
 )
+
+// terminalSendInputReceipts deduplicates keyed terminal SendInput requests in
+// memory so `leapmux terminal run --request-id` retries safely without
+// double-executing a shell command. A capped FIFO keeps memory O(1).
+const maxTerminalSendInputReceipts = 1024
+
+func terminalSendInputFingerprint(r *leapmuxv1.SendInputRequest) [sha256.Size]byte {
+	h := sha256.New()
+	var lenBuf [8]byte
+	writeLen := func(n int) {
+		binary.LittleEndian.PutUint64(lenBuf[:], uint64(n))
+		h.Write(lenBuf[:])
+	}
+	writeLen(len(r.GetTerminalId()))
+	h.Write([]byte(r.GetTerminalId()))
+	writeLen(len(r.GetData()))
+	h.Write(r.GetData())
+	if r.GetPaste() {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
+	writeLen(len(r.GetKeys()))
+	for _, k := range r.GetKeys() {
+		writeLen(len(k))
+		h.Write([]byte(strings.ToLower(k)))
+	}
+	var sum [sha256.Size]byte
+	copy(sum[:], h.Sum(nil))
+	return sum
+}
+
+type sendInputReceiptEntry struct {
+	key  string
+	fp   [sha256.Size]byte
+	done chan struct{} // non-nil while an initial SendInput for this key is in flight
+	err  error         // outcome of the initial SendInput once done is closed
+}
+
+type terminalSendInputReceipts struct {
+	mu              sync.Mutex
+	entries         map[string]*sendInputReceiptEntry
+	completed       list.List // FIFO of completed *sendInputReceiptEntry; in-flight entries are never evicted
+	onDuplicateWait func()    // optional test hook invoked right before waiting on an in-flight duplicate
+}
+
+type sendInputReceiptOutcome int
+
+const (
+	sendInputNew sendInputReceiptOutcome = iota
+	sendInputDuplicate
+	sendInputConflict
+)
+
+var errSendInputPanicked = errors.New("terminal send input panicked")
+
+// lookupCompleted checks whether (terminalID, requestID) already has a
+// completed receipt. It returns ok=false when the key is absent or still in
+// flight so callers only short-circuit settled outcomes before WaitForStartup.
+func (c *terminalSendInputReceipts) lookupCompleted(terminalID, requestID string, fp [sha256.Size]byte) (sendInputReceiptOutcome, bool) {
+	key := terminalID + "\x00" + requestID
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev, ok := c.entries[key]
+	if !ok || prev.done != nil {
+		return sendInputNew, false
+	}
+	if prev.fp != fp {
+		return sendInputConflict, true
+	}
+	return sendInputDuplicate, true
+}
+
+// execute atomically deduplicates (terminalID, requestID), running fn at most
+// once per succeeded key. In-flight entries stay out of the completed FIFO so
+// they cannot be evicted while running, a deferred release prevents deadlocks
+// on panic, and concurrent retries observe ctx cancellation while waiting.
+func (c *terminalSendInputReceipts) execute(ctx context.Context, terminalID, requestID string, fp [sha256.Size]byte, fn func() error) (sendInputReceiptOutcome, error) {
+	key := terminalID + "\x00" + requestID
+	for {
+		c.mu.Lock()
+		if c.entries == nil {
+			c.entries = make(map[string]*sendInputReceiptEntry)
+		}
+		prev, ok := c.entries[key]
+		if !ok {
+			entry := &sendInputReceiptEntry{key: key, fp: fp, done: make(chan struct{})}
+			c.entries[key] = entry
+			c.mu.Unlock()
+			return sendInputNew, c.runAndFinish(entry, fn)
+		}
+		if prev.fp != fp {
+			c.mu.Unlock()
+			return sendInputConflict, nil
+		}
+		done := prev.done
+		onDuplicateWait := c.onDuplicateWait
+		c.mu.Unlock()
+		if done == nil {
+			return sendInputDuplicate, nil
+		}
+		if onDuplicateWait != nil {
+			onDuplicateWait()
+		}
+		select {
+		case <-done:
+			if prev.err == nil {
+				return sendInputDuplicate, nil
+			}
+			// The prior attempt failed and removed itself; loop to retry cleanly.
+		case <-ctx.Done():
+			return sendInputDuplicate, ctx.Err()
+		}
+	}
+}
+
+func (c *terminalSendInputReceipts) runAndFinish(entry *sendInputReceiptEntry, fn func() error) (runErr error) {
+	completed := false
+	defer func() {
+		finalErr := runErr
+		if !completed {
+			finalErr = errSendInputPanicked
+		}
+		c.mu.Lock()
+		entry.err = finalErr
+		done := entry.done
+		entry.done = nil
+		if finalErr != nil {
+			if c.entries[entry.key] == entry {
+				delete(c.entries, entry.key)
+			}
+		} else {
+			if c.completed.Len() >= maxTerminalSendInputReceipts {
+				if front := c.completed.Front(); front != nil {
+					oldest := c.completed.Remove(front).(*sendInputReceiptEntry)
+					if c.entries[oldest.key] == oldest {
+						delete(c.entries, oldest.key)
+					}
+				}
+			}
+			c.completed.PushBack(entry)
+		}
+		c.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
+	}()
+	runErr = fn()
+	completed = true
+	return runErr
+}
 
 // pendingResizeWaitCap limits how long runTerminalStartup blocks waiting
 // for the frontend's first ResizeTerminal before spawning the shell. A
@@ -104,12 +262,15 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 			// One process-table scan for the whole batch, and the manager omits
 			// every terminal that is running nothing.
-			running, err := svc.Terminals.DescendantProcesses(ctx, ids)
+			scan := svc.Terminals.DescendantProcesses
+			if svc.scanTerminalProcesses != nil {
+				scan = svc.scanTerminalProcesses
+			}
+			running, err := scan(ctx, ids)
 			if err != nil {
-				// A scan the OS refused answers "nothing running" rather than an
-				// error. A guard that cannot answer has to let the close through,
-				// and an error here would instead make the whole close fail.
 				slog.Warn("inspect terminal processes", "terminal_ids", len(ids), "error", err)
+				sendUnavailable(sender, "the Worker could not scan terminal processes")
+				return
 			}
 			out := make([]*leapmuxv1.TerminalProcesses, 0, len(running))
 			for _, t := range running {
@@ -130,12 +291,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, dispatchTracked,
 		svc.handleOpenTerminal)
 
-	// RestartTerminal respawns the shell process for a terminal whose
-	// previous PTY has exited. Reuses the tab's working_dir / shell /
-	// shell_start_dir and mints fresh LEAPMUX_CONTROL_* env vars. The
-	// existing screen buffer (including the "[Terminal process exited
-	// (N) - Press Enter to restart]" notice) is preserved so the new
-	// shell's prompt lands directly below the notice.
+	// RestartTerminal starts a new shell in the existing tab. An explicit
+	// replacement stops the observed shell before it starts the next one.
 	registerTerminalForRestartGuarded(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
@@ -146,9 +303,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, creationErr.Error())
 				return
 			}
-			latest, readErr := svc.Queries.GetTerminalForRestart(bgCtx(), terminalID)
-			if readErr != nil {
-				sendInternalError(sender, readErr.Error())
+			latest, ok := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalForRestart)
+			if !ok {
 				return
 			}
 			dbTerm = latest
@@ -166,13 +322,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "terminal startup in progress")
 				return
 			}
-			// Reject synchronously if the PTY is still alive so the user sees
-			// FailedPrecondition rather than waiting for an async
-			// STARTUP_FAILED broadcast from the spawn goroutine. The TOCTOU
-			// between this check and Manager.RestartTerminal's own check is
-			// benign: a PTY that exits between calls yields a false reject
-			// that retrying Enter resolves.
-			if svc.Terminals.IsRunning(terminalID) {
+			replaceShellID := r.GetReplaceShellInstanceId()
+			if replaceShellID == "" && svc.Terminals.IsRunning(terminalID) {
 				sendFailedPrecondition(sender, terminal.ErrTerminalStillRunning.Error())
 				return
 			}
@@ -200,6 +351,11 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "terminal has no shell to restart")
 				return
 			}
+			command := r.GetInitialCommand()
+			if err := terminal.CheckInitialCommand(shell, command); err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 
 			// Seed STARTING without git status — the goroutine fetches and
 			// re-broadcasts with branch/origin once it lands. Mirrors
@@ -216,10 +372,35 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				svc.sendStartupRefused(sender, "a restart for this terminal is already in progress")
 				return
 			}
-			if !svc.Terminals.ExitHandlerFinished(terminalID) {
+			if replaceShellID == "" && !svc.Terminals.ExitHandlerFinished(terminalID) {
 				svc.TerminalStartup.abandon(startupHandle)
 				sendFailedPrecondition(sender, "terminal exit cleanup is still in progress; try again")
 				return
+			}
+			// A close can finish between the initial row read and this
+			// startup claim. After the claim, a concurrent close joins it.
+			live, open := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalForRestart)
+			if !open {
+				svc.TerminalStartup.retireInterrupted(terminalID, startupHandle, true, false)
+				svc.TerminalStartup.abandon(startupHandle)
+				return
+			}
+			if refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, live.WorkspaceArchived, "terminal") {
+				svc.TerminalStartup.retireInterrupted(terminalID, startupHandle, false, true)
+				svc.TerminalStartup.abandon(startupHandle)
+				return
+			}
+			if replaceShellID != "" {
+				// The old exit is visible before the response. A wait that follows
+				// the response can observe startup without ending on that exit.
+				stopCtx, cancelStop := context.WithTimeout(startupCtx, svc.creationAttemptTimeout())
+				err := svc.Terminals.StopShellForRestart(stopCtx, terminalID, replaceShellID)
+				cancelStop()
+				if err != nil {
+					svc.TerminalStartup.abandon(startupHandle)
+					sendFailedPrecondition(sender, fmt.Sprintf("stop the previous shell: %v", err))
+					return
+				}
 			}
 			svc.announceTerminalStarting(terminalID, shell)
 
@@ -243,28 +424,120 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				TabID:      terminalID,
 				WorkingDir: dbTerm.WorkingDir,
 			}
-			go svc.runTerminalRestart(startupCtx, terminal.Options{
-				ID:            terminalID,
-				Shell:         shell,
-				WorkingDir:    dbTerm.WorkingDir,
-				ShellStartDir: dbTerm.ShellStartDir,
-				Cols:          uint16(cols),
-				Rows:          uint16(rows),
-			}, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
+			restartOpts := terminal.Options{
+				ID:                terminalID,
+				Shell:             shell,
+				WorkingDir:        dbTerm.WorkingDir,
+				ShellStartDir:     dbTerm.ShellStartDir,
+				Cols:              uint16(cols),
+				Rows:              uint16(rows),
+				InitialCommand:    command,
+				InitialCommandDir: svc.DataDir,
+			}
+			if command != "" {
+				restartOpts.ReleaseInitialCommand = func(_ context.Context, expose func() error) error {
+					return svc.authorizeTerminalCommandRelease(caller.UserID, expose)
+				}
+			}
+			go svc.runTerminalRestart(startupCtx, restartOpts, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
 		})
 
-	// SendInput sends input data to a terminal.
+	// SendInput writes the data and the keys of a request to a terminal in one
+	// write, encoded for the terminal's modes. It parses every key name before
+	// it writes anything, so an unknown name refuses the whole request.
 	registerTerminalGuardedByID(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, dispatchPlain,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
+		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
-			if svc.WakeLock != nil {
-				svc.WakeLock.RecordActivity()
+			keys, err := terminput.ParseKeys(r.GetKeys())
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
 			}
 
-			if err := svc.Terminals.SendInput(terminalID, r.GetData()); err != nil {
-				slog.Error("failed to send input", "terminal_id", terminalID, "error", err)
-				sendInternalError(sender, fmt.Sprintf("send input: %v", err))
+			reqID := strings.TrimSpace(r.GetRequestId())
+			var fp [sha256.Size]byte
+			if reqID != "" {
+				fp = terminalSendInputFingerprint(r)
+				if outcome, settled := svc.sendInputReceipts.lookupCompleted(terminalID, reqID, fp); settled {
+					if outcome == sendInputConflict {
+						sendFailedPrecondition(sender, fmt.Sprintf("request_id %q was already used for a different terminal input payload", reqID))
+					} else {
+						sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
+					}
+					return
+				}
+			}
+
+			// Wait for any in-flight PTY startup before reserving an idempotency
+			// receipt so a caller whose ctx expires during startup wait does not
+			// leave an in-flight receipt blocking its own retry with the same
+			// request_id.
+			if err := svc.TerminalStartup.WaitForStartup(ctx, terminalID); err != nil {
+				switch {
+				case errors.Is(err, context.Canceled):
+					_ = sender.SendError(int32(codes.Canceled), err.Error())
+				case errors.Is(err, context.DeadlineExceeded):
+					_ = sender.SendError(int32(codes.DeadlineExceeded), err.Error())
+				case errors.Is(err, errStartupFailed),
+					errors.Is(err, errStartupWaitClosed),
+					errors.Is(err, errStartupWaitArchived),
+					errors.Is(err, errStartupWaitShutdown):
+					sendFailedPrecondition(sender, err.Error())
+				default:
+					slog.Error("failed to wait for terminal startup", "terminal_id", terminalID, "error", err)
+					sendInternalError(sender, fmt.Sprintf("send input: %v", err))
+				}
+				return
+			}
+
+			deliver := func() error {
+				if svc.WakeLock != nil {
+					svc.WakeLock.RecordActivity()
+				}
+				in := terminput.Input{Data: r.GetData(), Paste: r.GetPaste(), Keys: keys}
+				return svc.Terminals.SendInput(terminalID, in)
+			}
+
+			var sendErr error
+			if reqID != "" {
+				outcome, err := svc.sendInputReceipts.execute(ctx, terminalID, reqID, fp, deliver)
+				switch outcome {
+				case sendInputConflict:
+					sendFailedPrecondition(sender, fmt.Sprintf("request_id %q was already used for a different terminal input payload", reqID))
+					return
+				case sendInputDuplicate:
+					if err != nil {
+						switch {
+						case errors.Is(err, context.Canceled):
+							_ = sender.SendError(int32(codes.Canceled), err.Error())
+						case errors.Is(err, context.DeadlineExceeded):
+							_ = sender.SendError(int32(codes.DeadlineExceeded), err.Error())
+						default:
+							slog.Error("failed waiting on duplicate send input", "terminal_id", terminalID, "error", err)
+							sendInternalError(sender, fmt.Sprintf("send input: %v", err))
+						}
+						return
+					}
+					sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
+					return
+				case sendInputNew:
+					sendErr = err
+				}
+			} else {
+				sendErr = deliver()
+			}
+			if sendErr != nil {
+				if errors.Is(sendErr, terminal.ErrTerminalNotFound) || !svc.Terminals.IsRunning(terminalID) {
+					if row, getErr := svc.terminalCatalog().get(ctx, terminalID); getErr == nil && row.StartupError != "" {
+						sendFailedPrecondition(sender, fmt.Sprintf("terminal startup failed: %s", row.StartupError))
+						return
+					}
+					sendFailedPrecondition(sender, "terminal is not running")
+					return
+				}
+				slog.Error("failed to send input", "terminal_id", terminalID, "error", sendErr)
+				sendInternalError(sender, fmt.Sprintf("send input: %v", sendErr))
 				return
 			}
 
@@ -353,8 +626,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 
-			svc.Terminals.UpdateTitle(terminalID, title)
-			if err := svc.terminalCatalog().updateTitle(bgCtx(), term.ID, title); err != nil {
+			if err := svc.renameTerminalTitle(term.ID, title); err != nil {
 				slog.Error("failed to update terminal title", "terminal_id", terminalID, "error", err)
 				sendInternalError(sender, "failed to update terminal title")
 				return
@@ -493,6 +765,22 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 		// Collect from the in-memory manager and catalog-only rows. This is the read of
 		// the runtime state: see the note above the call to git.
+		//
+		// Both passes take the status from deriveTerminalStatus, the one
+		// statement of the rule, which also feeds the WatchEvents replay. It
+		// reads the registry first and the Manager last, so a startup that ends
+		// in between reads READY and running, and never READY and exited. A
+		// terminal can register in the Manager after the read of ListByIDs, and
+		// the catalog-only pass covers it the same way.
+		//
+		// The manager pass does not read the Exited flag of its entry, because
+		// that flag can disagree with the Manager when the status is read.
+		// ListByIDs took the flag BEFORE the registry read. A restart that ends
+		// in between pairs the flag of the old, exited shell with a registry that
+		// no longer holds the startup, so the reply would say EXITED over a shell
+		// that runs. A shell that exits in between disagrees the other way.
+		// The read of ShellStatus, last, states the terminal closest to the
+		// reply, and it gives the exit code of the same shell.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
@@ -502,21 +790,24 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if row == nil {
 				row = &terminalRecord{ID: e.ID}
 			}
-			status, startupError, startupMessage := svc.deriveTerminalStatus(row)
+			state := svc.deriveTerminalStatus(row)
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:      e.ID,
 				Cols:            e.Meta.Cols,
 				Rows:            e.Meta.Rows,
 				Screen:          e.Screen,
 				ScreenEndOffset: e.ScreenEndOffset,
+				ScreenTimeline:  terminalScreenTimelineProto(e.ScreenTimeline),
 				WorkingDir:      e.Meta.WorkingDir,
 				ShellStartDir:   e.Meta.ShellStartDir,
 				Title:           e.Meta.Title,
-				Status:          status,
-				StartupError:    startupError,
-				StartupMessage:  startupMessage,
+				Status:          state.status,
+				StartupError:    state.startupError,
+				StartupMessage:  state.startupMessage,
 				Quake:           row.IsQuake,
 				GitStatus:       gitStatuses[e.ID],
+				ExitCode:        state.exitCode,
+				ShellInstanceId: state.shellInstanceID,
 			}
 			terminals = append(terminals, ti)
 		}
@@ -526,7 +817,13 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				continue
 			}
 			seen[ts.ID] = true
-			status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
+			state := svc.deriveTerminalStatus(&ts)
+			// DB-persisted screen is just the bytes; the backend has no
+			// live ring for this terminal (PTY exited or worker
+			// restarted), so the "end offset" equals the screen
+			// length. The client's after_offset will be the same
+			// value, and WatchEvents will return nothing for a dead
+			// terminal — correct, since there are no new bytes.
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:      ts.ID,
 				Cols:            uint32(ts.Cols),
@@ -536,11 +833,13 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				WorkingDir:      ts.WorkingDir,
 				ShellStartDir:   ts.ShellStartDir,
 				Title:           ts.Title,
-				Status:          status,
-				StartupError:    startupError,
-				StartupMessage:  startupMessage,
+				Status:          state.status,
+				StartupError:    state.startupError,
+				StartupMessage:  state.startupMessage,
 				Quake:           ts.IsQuake,
 				GitStatus:       gitStatuses[ts.ID],
+				ExitCode:        state.exitCode,
+				ShellInstanceId: state.shellInstanceID,
 			}
 			terminals = append(terminals, ti)
 		}
@@ -734,13 +1033,14 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
-	closedDuringSpawn, archivedDuringSpawn, postSpawnTitle := svc.terminalCatalog().postSpawnState(bgCtx(), terminalID, spawnInfo.IsQuake)
+	closedDuringSpawn, archivedDuringSpawn := svc.readInitialTerminalMetadata(terminalID, spawnInfo.IsQuake, startErr == nil)
 	switch svc.TerminalStartup.interruptionOf(h, closedDuringSpawn, archivedDuringSpawn) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
 		}
+		svc.TerminalStartup.retireInterrupted(terminalID, h, true, false)
 		svc.finishStartupAfterClose(&svc.TerminalStartup.startupCore, h, terminalID, gm)
 		return
 	case interruptionArchived:
@@ -748,11 +1048,11 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 			svc.Terminals.StopTerminal(terminalID)
 			svc.Terminals.WaitForExit(terminalID)
 		}
-		// succeed, not fail: see the matching branch in runAgentStartup.
+		// retireInterrupted, not fail: see the matching branch in runAgentStartup.
 		if startErr != nil {
 			slog.Warn("terminal startup stopped by workspace archival", "terminal_id", terminalID, "error", startErr)
 		}
-		svc.TerminalStartup.succeed(terminalID, h)
+		svc.TerminalStartup.retireInterrupted(terminalID, h, false, true)
 		return
 	case interruptionNone:
 	}
@@ -760,10 +1060,6 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", startErr)
 		svc.failTerminalStartup(terminalID, gm, startErr, h)
 		return
-	}
-
-	if postSpawnTitle != "" {
-		svc.Terminals.UpdateTitle(terminalID, postSpawnTitle)
 	}
 
 	// Apply any ResizeTerminal that arrived after the pre-spawn wait
@@ -783,6 +1079,18 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// eventual CloseTab handler.
 	ownsIPCToken = false
 	svc.succeedTerminalStartup(terminalID, h)
+}
+
+// readInitialTerminalMetadata copies the saved title to the newly registered
+// shell. Hold the same lock as a rename from the read through the update.
+func (svc *Service) readInitialTerminalMetadata(terminalID string, isQuake, started bool) (closed, archived bool) {
+	svc.terminalTitleMu.Lock()
+	defer svc.terminalTitleMu.Unlock()
+	closed, archived, title := svc.terminalCatalog().postSpawnState(bgCtx(), terminalID, isQuake)
+	if started && !closed && !archived && title != "" {
+		svc.Terminals.UpdateTitle(terminalID, title)
+	}
+	return closed, archived
 }
 
 // runTerminalRestart is the async body of RestartTerminal: it spawns a
@@ -811,11 +1119,9 @@ func (svc *Service) runTerminalRestart(
 	// path; see its doc for what minting first cost.
 	//
 	// The previous spawn's token is retired on every exit from here, including
-	// the fatal-identity path. The old PTY has already exited by the time this
-	// runs -- RestartTerminal refuses synchronously while IsRunning -- so there
-	// is no live shell whose remote control needs preserving, and leaving the
-	// old cleanup registered would strand a listening unix socket plus an
-	// unrevoked per-user delegation bearer for a process that is gone.
+	// the fatal-identity path. The old PTY and its exit handler have finished.
+	// Leaving the old cleanup registered would leave its socket and bearer
+	// available after the process exited.
 	remoteEnvs, ownsIPCToken, ipcErr := svc.remintControlIPC(tabKindTerminal, terminalID, "restart", spawnInfo.UserID,
 		func() ([]string, func(), error) {
 			return svc.ControlIPC.TerminalSpawning(spawnInfo)
@@ -841,7 +1147,10 @@ func (svc *Service) runTerminalRestart(
 	svc.TerminalStartup.setMessage(terminalID, shellMsg)
 	svc.broadcastTerminalStarting(terminalID, shellMsg, gs)
 
-	startErr := svc.Terminals.RestartTerminal(ctx, opts, fallbackOffset, outputFn, exitFn)
+	startErr := svc.verifyTabWorktreeForLaunch(ctx, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, opts.WorkingDir)
+	if startErr == nil {
+		startErr = svc.Terminals.RestartTerminal(ctx, opts, fallbackOffset, outputFn, exitFn)
+	}
 
 	// Detect a CloseTab that landed during the PTY spawn: if
 	// closed_at is set we must neither broadcast READY nor leave a
@@ -857,18 +1166,18 @@ func (svc *Service) runTerminalRestart(
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
 		}
-		svc.TerminalStartup.succeed(terminalID, h)
+		svc.TerminalStartup.retireInterrupted(terminalID, h, true, false)
 		return
 	case interruptionArchived:
 		if startErr == nil {
 			svc.Terminals.StopTerminal(terminalID)
 			svc.Terminals.WaitForExit(terminalID)
 		}
-		// succeed, not fail: see the matching branch in runAgentStartup.
+		// retireInterrupted, not fail: see the matching branch in runAgentStartup.
 		if startErr != nil {
 			slog.Warn("terminal restart stopped by workspace archival", "terminal_id", terminalID, "error", startErr)
 		}
-		svc.TerminalStartup.succeed(terminalID, h)
+		svc.TerminalStartup.retireInterrupted(terminalID, h, false, true)
 		return
 	case interruptionNone:
 	}
@@ -1001,11 +1310,27 @@ func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows 
 	return byID
 }
 
-// deriveTerminalStatus computes (status, startupError, startupMessage)
-// for a terminal. It is the ONE statement of the terminal status rule:
-// ListTerminals, the WatchEvents replay and the status after a startup all read
-// it, so they cannot report different states for one terminal. The priority
-// order:
+// terminalState is the state of a terminal, as deriveTerminalStatus states it.
+// Each field beside status is set only for the status that it belongs to, so a
+// reader copies every field as it is and needs no case for a status.
+type terminalState struct {
+	status leapmuxv1.TerminalStatus
+	// startupError is set only for STARTUP_FAILED.
+	startupError string
+	// startupMessage is set only for STARTING.
+	startupMessage string
+	// shellInstanceID is set only for READY.
+	shellInstanceID string
+	// exitCode is set only for EXITED, and only when the Worker holds a record
+	// of the exit: the exit code of the shell that ended, as
+	// TerminalClosed.exit_code states it.
+	exitCode *int32
+}
+
+// deriveTerminalStatus computes the state of a terminal. It is the ONE
+// statement of the terminal status rule: ListTerminals, the WatchEvents replay
+// and the status after a startup all read it, so they cannot report different
+// states for one terminal. The priority order:
 //  1. in-memory startup registry — STARTING / STARTUP_FAILED while a
 //     startup is in flight or has just failed. The current phase
 //     message is surfaced so a WatchEvents subscriber that arrived
@@ -1016,47 +1341,72 @@ func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows 
 //     startup_error beside a running shell is therefore stale, such as a
 //     row read before the success cleared the column. deriveAgentStatus
 //     puts a running agent before its persisted error for the same reason.
-//     "Runs" is IsRunning, not HasTerminal: the manager keeps an exited
-//     terminal until RestartTerminal or RemoveTerminal, so holding the
-//     terminal does not mean its shell still runs.
+//     "Runs" is ShellStatus.Running, not ShellStatus.Held: the manager keeps
+//     an exited terminal until RestartTerminal or RemoveTerminal, so holding
+//     the terminal does not mean its shell still runs.
 //  3. persisted startup_error column — surfaces a prior failure across
 //     worker restarts (the in-memory registry is wiped on restart) and after
 //     the registry evicts a failure (failedEntryTTL). A failed restart keeps
 //     the stopped previous shell in the manager, so this case covers a
 //     terminal that the manager holds too.
 //  4. EXITED: no startup owns the status, no shell runs, and no failure is
-//     persisted.
+//     persisted. The exit code comes from the manager when it holds the
+//     terminal, because live terminal exit codes stay in memory. A terminal
+//     that the manager does not hold states no exit code.
 //
-// startupError is empty unless the status is STARTUP_FAILED, and
-// startupMessage is empty unless it is STARTING. derivedTerminalStatusEvent and
-// ListTerminals copy all three into the reply and rely on that.
-func (svc *Service) deriveTerminalStatus(t *terminalRecord) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
+// One read of the manager answers both "does the shell run?" and "with which
+// code did it end?", so the status and the exit code describe one shell even
+// while a restart replaces it.
+func (svc *Service) deriveTerminalStatus(t *terminalRecord) terminalState {
 	if sup, errStr, msg, ok := svc.TerminalStartup.status(t.ID); ok {
-		return sup, errStr, msg
+		return terminalState{status: sup, startupError: errStr, startupMessage: msg}
 	}
-	if svc.Terminals.IsRunning(t.ID) {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
+	shell := svc.Terminals.ShellStatus(t.ID)
+	if shell.Running {
+		return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, shellInstanceID: shell.InstanceID}
 	}
 	if t.StartupError != "" {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError, ""
+		return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, startupError: t.StartupError}
 	}
-	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, "", ""
+	// int32 as makeTerminalExitFn converts the code for TerminalClosed, so the
+	// two report one value for one exit. A terminal not held by the manager
+	// states no exit code.
+	var exitCode *int32
+	if shell.Held {
+		exitCode = ptrconv.Ptr(int32(shell.ExitCode))
+	}
+	return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, exitCode: exitCode}
 }
 
-// derivedTerminalStatusEvent builds the status change that deriveTerminalStatus
-// states for t. deriveTerminalStatus sets startupError only for STARTUP_FAILED
-// and startupMessage only for STARTING, so one status change carries all three
-// as they are, and a new status needs no case here.
-func (svc *Service) derivedTerminalStatusEvent(t *terminalRecord) *leapmuxv1.TerminalEvent {
-	status, startupError, startupMessage := svc.deriveTerminalStatus(t)
+// derivedTerminalStatusEvent reports the current shell state. Screen replay
+// can report a recorded exit with the same event as the live shell exit.
+func (svc *Service) derivedTerminalStatusEvent(t *terminalRecord, reportExit bool) *leapmuxv1.TerminalEvent {
+	state := svc.deriveTerminalStatus(t)
+	if reportExit && state.status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED {
+		return &leapmuxv1.TerminalEvent{
+			TerminalId: t.ID, Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: state.exitCode}},
+		}
+	}
 	return &leapmuxv1.TerminalEvent{
 		TerminalId: t.ID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{
-			Status:         status,
-			StartupError:   startupError,
-			StartupMessage: startupMessage,
+			Status:         state.status,
+			StartupError:   state.startupError,
+			StartupMessage: state.startupMessage,
+			ExitCode:       state.exitCode,
 		}},
 	}
+}
+
+func (svc *Service) renameTerminalTitle(terminalID, title string) error {
+	svc.terminalTitleMu.Lock()
+	defer svc.terminalTitleMu.Unlock()
+	// Update only the title. A concurrent close owns closed_at.
+	if err := svc.terminalCatalog().updateTitle(bgCtx(), terminalID, title); err != nil {
+		return err
+	}
+	svc.Terminals.UpdateTitle(terminalID, title)
+	return nil
 }
 
 // effectiveTerminalTitle returns the title a terminal tab shows right now.
@@ -1121,7 +1471,7 @@ func (svc *Service) broadcastTerminalFailed(terminalID, errMsg string) {
 func (svc *Service) broadcastTerminalStatusAfterStartup(terminalID string) {
 	row := terminalRecord{ID: terminalID}
 	svc.Watchers.PublishDerivedTerminalStatus(terminalID, func() *leapmuxv1.TerminalEvent {
-		return svc.derivedTerminalStatusEvent(&row)
+		return svc.derivedTerminalStatusEvent(&row, false)
 	})
 }
 
@@ -1142,23 +1492,29 @@ const notificationBodyByteLimit = 512
 // makeTerminalOutputFn builds the OutputHandler closure that broadcasts
 // data events to subscribers and pings the wake lock.
 func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandler {
-	return func(data []byte, endOffset int64, signals []terminal.Signal) {
-		if svc.WakeLock != nil {
-			svc.WakeLock.RecordActivity()
+	return func(output terminal.Output) {
+		if output.Resize != nil {
+			svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+				TerminalId: terminalID,
+				Event:      &leapmuxv1.TerminalEvent_ScreenGeometry{ScreenGeometry: terminalScreenGeometryProto(*output.Resize)},
+			})
 		}
-		// TerminalData is classContent, so BroadcastTerminalEvent restricts itself:
-		// when nobody watches this terminal in FULL it short-circuits before
-		// the snapshot/marshal, and NOTIFY-only watchers receive just signals.
-		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
-			TerminalId: terminalID,
-			Event: &leapmuxv1.TerminalEvent_Data{
-				Data: &leapmuxv1.TerminalData{
-					Data:      data,
-					EndOffset: endOffset,
+		if len(output.Data) != 0 {
+			if svc.WakeLock != nil {
+				svc.WakeLock.RecordActivity()
+			}
+			// A notification-only watcher receives no screen data.
+			svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+				TerminalId: terminalID,
+				Event: &leapmuxv1.TerminalEvent_Data{
+					Data: &leapmuxv1.TerminalData{
+						Data: output.Data, EndOffset: output.EndOffset,
+						ScreenEpoch: output.ScreenEpoch, GeometryRevision: output.GeometryRevision,
+					},
 				},
-			},
-		})
-		for _, sig := range signals {
+			})
+		}
+		for _, sig := range output.Signals {
 			svc.broadcastTerminalSignal(terminalID, sig)
 		}
 	}
@@ -1300,14 +1656,19 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
 		// A successful shutdown notice stays authoritative only when the
 		// hang-up request preceded the observed exit. Save the latest retained
-		// screen without another notice or a TerminalClosed event. A natural
-		// exit observed before that request keeps its own exit code.
+		// screen without broadcasting another notice. The journal records the
+		// shell exit without a code. A natural exit observed before that
+		// request keeps its own exit code.
 		if notices := svc.shutdownNotifiedTerminals.Load(); notices != nil {
 			if _, notified := (*notices)[tid]; notified && svc.Terminals.HangUpRequested(tid) {
 				if snapshot, ok := svc.captureTerminalExit(tid); ok {
 					svc.saveTerminalExit(tid, snapshot)
 				}
 				svc.clearTerminalBellCoalesce(tid)
+				svc.recordTerminalFact(tid, &leapmuxv1.TerminalEvent{
+					TerminalId: tid,
+					Event:      &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{}},
+				})
 				return
 			}
 		}
@@ -1318,7 +1679,7 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 			TerminalId: tid,
 			Event: &leapmuxv1.TerminalEvent_Closed{
 				Closed: &leapmuxv1.TerminalClosed{
-					ExitCode: int32(exitCode),
+					ExitCode: ptrconv.Ptr(int32(exitCode)),
 				},
 			},
 		})
@@ -1391,6 +1752,7 @@ func (svc *Service) adoptExistingQuakeTerminal(sender channel.ResponseWriter, wo
 	sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 		TerminalId: existing.ID,
 		Title:      existing.Title,
+		Adopted:    true,
 	})
 	return true
 }

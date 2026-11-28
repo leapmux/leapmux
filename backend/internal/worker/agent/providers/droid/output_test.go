@@ -825,7 +825,7 @@ func TestDroidFullOutputPreservesActualProgressAndResultShapes(t *testing.T) {
 	a, sink, stdin := newSteerAgent(t)
 	handshakeDone := make(chan error, 1)
 	go func() {
-		handshakeDone <- a.handshake(agent.Options{ResumeSessionID: droidAuditSessionID})
+		handshakeDone <- a.handshake(agent.Options{Session: agent.ResumeSession(droidAuditSessionID)})
 	}()
 	select {
 	case <-stdin.written:

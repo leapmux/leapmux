@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/spf13/pflag"
+
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -33,26 +34,48 @@ func (p *PreparedConfig) Role() lifecycle.Role { return p.role }
 
 // Prepare resolves the launch for cfg: the hub configuration and the
 // canonical containing identity, with no filesystem writes and no
-// component starts.
+// component starts. It parses cfg.Args as the flags of the launch.
 func Prepare(cfg Config) (*PreparedConfig, error) {
-	opts, modeName := soloLoadOptions(cfg)
-	hubCfg, showVersion, err := hubconfig.LoadWithOptions(cfg.Args, opts)
+	opts, _ := soloLoadOptions(cfg)
+	hubCfg, err := hubconfig.LoadWithOptions(cfg.Args, opts)
 	if err != nil {
 		return nil, fmt.Errorf("load hub config: %w", err)
 	}
-	if showVersion {
-		return nil, internalconfig.ErrVersionRequested
-	}
-	hubCfg.DevMode = cfg.DevMode
-	role, err := lifecycle.ParseRole(modeName)
+	return prepared(cfg, hubCfg)
+}
+
+// Flags declares the flags of the launch that cfg describes, for a command
+// that parses them itself. PrepareParsed loads the configuration from the
+// parsed set; cfg.Args plays no part.
+func Flags(cfg Config) *hubconfig.Flags {
+	opts, _ := soloLoadOptions(cfg)
+	return hubconfig.NewFlags(opts)
+}
+
+// PrepareParsed is Prepare for a command that registered flags, the result of
+// Flags(cfg), on fs and parsed its command line.
+func PrepareParsed(cfg Config, flags *hubconfig.Flags, fs *pflag.FlagSet) (*PreparedConfig, error) {
+	hubCfg, err := flags.Load(fs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load hub config: %w", err)
 	}
+	return prepared(cfg, hubCfg)
+}
+
+func soloRole(devMode bool) lifecycle.Role {
+	if devMode {
+		return lifecycle.RoleDev
+	}
+	return lifecycle.RoleSolo
+}
+
+func prepared(cfg Config, hubCfg *hubconfig.Config) (*PreparedConfig, error) {
+	hubCfg.DevMode = cfg.DevMode
 	canonical, err := lifecycle.CanonicalDir(hubCfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	return &PreparedConfig{hubCfg: hubCfg, role: role, dataDir: canonical, config: cfg}, nil
+	return &PreparedConfig{hubCfg: hubCfg, role: soloRole(cfg.DevMode), dataDir: canonical, config: cfg}, nil
 }
 
 // Start launches a Hub and Worker in-process, as one combined instance

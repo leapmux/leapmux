@@ -131,7 +131,7 @@ type Provider interface {
 	// the provider-neutral plan-mode operation the service layer should run.
 	// Unknown or non-plan controls return PlanModeControlNone.
 	PlanModeControl(toolName string) PlanModeControlKind
-	// ResolveControlResponse interprets a frontend control response against the
+	// ResolveControlResponse interprets a control response against the
 	// stored provider-native control request. It is pure: providers may normalize
 	// the response bytes and prune the request into the minimal render context
 	// persisted alongside it (plus plan-mode metadata), but the service owns
@@ -141,14 +141,35 @@ type Provider interface {
 	// without waiting into the input that the provider reads. It is pure: no I/O.
 	QuestionReply(requestPayload json.RawMessage, answer string) (string, error)
 	// ControlResponseRequestID extracts the stored-control-request lookup id from a raw
-	// frontend control response, so the service can find the pending control_request row to
+	// control response, so the service can find the pending control_request row to
 	// answer. Both wire shapes it reads -- the neutral approve/reject envelope
-	// ({response:{request_id, ...}}, emitted by buildAllowResponse/buildDenyResponse for EVERY
+	// ({response:{request_id, ...}}, emitted by AllowResponse/DenyResponse for EVERY
 	// provider) and a top-level JSON-RPC id (used by the ACP family and Codex) -- are
-	// cross-provider, so every provider delegates to defaultControlResponseRequestID. The method
+	// cross-provider, so every provider delegates to ProviderDefaults.ControlResponseRequestID. The method
 	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
 	// code; no provider narrows it, because narrowing to one shape would break the other's flows.
 	ControlResponseRequestID(content []byte) string
+	// ControlRequestKey derives the key that this provider publishes a control
+	// request under (ControlRequest.RequestID) from what the Worker stores
+	// beside that key: the request's payload, and the provider session that the
+	// request belongs to. The session decides the key only for a request whose
+	// payload states no key of its own, such as the workspace-trust question
+	// that LeapMux asks once for each session. ok is false for a payload that
+	// states no key.
+	//
+	// It must give the key that the provider's publication gives, for every
+	// payload that the provider publishes. The Worker refuses each answer to a
+	// stored request whose payload gives no key or another key
+	// (StoredControlRequestAgrees), with RefusalUnreadableRequest, before a
+	// provider reads the payload to answer it, because a disagreement means a
+	// corrupt store or a fault in the key's derivation. So no provider checks
+	// that agreement itself.
+	//
+	// It is pure: no I/O. The Worker calls it only with a payload that is a
+	// JSON object. The default (ProviderDefaults) reads the control_request
+	// envelope and a JSON-RPC request. A provider whose payload states its key in another way
+	// overrides it.
+	ControlRequestKey(payload []byte, agentSessionID string) (key string, ok bool)
 	// PlanApprovalOptions resolves live settings for an approved plan prompt or
 	// plan exit. An empty mode uses the provider's default exit mode.
 	// Bypass requires the preset's exact mode.
@@ -262,6 +283,55 @@ type Provider interface {
 	// needs; it costs a database read, so it is a function that only the parsers
 	// which need it call, and it returns nil when there is no such message.
 	ExtractTodoEvent(spanType string, content []byte, pairedToolUse func() []byte) (todoevents.Event, bool)
+	// ReplyText returns the text of the agent's reply that one native frame
+	// holds, exactly as the browser's transcript shows it, and ok=false for a
+	// frame that holds no reply text: a tool call, a reasoning block, a
+	// status frame.
+	//
+	// `message.Original` is the frame after ResolveMessageContent,
+	// `message.Supplemental` the provider section of the row's supplement,
+	// and `message.AgentSessionID` the row's session: the three inputs that
+	// the browser plugin reads. agent.ReplyText decides the LeapMux envelopes
+	// first: it refuses a notification thread and a row of the reasoning or
+	// plan kind, and it reads a valid assembled text row itself. An assembled
+	// envelope that the browser refuses as malformed still reaches this
+	// method, because the browser hands it to the plugin too. The default
+	// (ProviderDefaults) reads nothing, which is right for a provider whose
+	// text reaches the transcript only as assembled rows.
+	//
+	// This is the one stated exception to frontend-owns-message-extraction
+	// (AGENTS.md): a CLI that waits for an agent's reply must not carry the
+	// browser's plugins. testdata/reply_text_conformance.json pins each
+	// implementation to the browser's extraction.
+	ReplyText(message MessageContent) (text string, ok bool)
+	// ReadControlRequest reads one control request of this provider into
+	// the neutral prompt that a client draws: a permission with its options,
+	// a plan, questions, an MCP elicitation form, or an extension dialog. It
+	// never returns nil.
+	//
+	// A request that it does not recognize reads as GenericPermissionPrompt
+	// only when the provider answers that prompt's allow and deny in a form
+	// that its runtime reads. Otherwise it reads as UnrecognizedControlPrompt,
+	// which offers no answer: a prompt whose answer ResolveControlResponse
+	// refuses would fail only after the user chose it.
+	//
+	// A permission prompt always states its options. A runtime that states
+	// none gets LeapMux's own (AllowDenyOptions, or a provider's own once,
+	// session and deny), so every answer is the choice of one option.
+	ReadControlRequest(input ControlRequestInput) *leapmuxv1.ControlPrompt
+	// AnswerControlRequest builds this provider's answer to one decision
+	// about the prompt that ReadControlRequest read. The Worker claims and
+	// records the answer's content, and ResolveControlResponse then turns it
+	// into the runtime's own answer. A decision that does not answer the
+	// prompt fails with ErrInvalidControlDecision.
+	AnswerControlRequest(input ControlAnswerInput) (ControlAnswer, error)
+	// SupportsFork reports the provider's baseline native conversation-history
+	// fork support for inactive or unloaded tabs that have no running Agent.
+	// ACP providers whose upstream CLI advertises sessionCapabilities.fork
+	// return true here so unloaded tabs report fork support consistently, while
+	// a running Agent implementing ForkCapable overrides this baseline with its
+	// runtime capability. Defaults to false on ProviderDefaults.
+	SupportsFork() bool
 }
 
 // PlanExitModeDeferrer is a RUNNING provider that cannot apply the permission
@@ -282,6 +352,19 @@ type PlanExitModeDeferrer interface {
 	// other than the plan value, and the provider owns applying it at its own
 	// moment.
 	DeferPlanExitMode(mode string)
+}
+
+// ForkCapable is an optional interface for a RUNNING agent whose provider
+// discovers native conversation-history fork support dynamically (for example,
+// an ACP provider advertising sessionCapabilities.fork during initialize).
+//
+// The service type-asserts this on the live Agent before falling back to
+// Provider.SupportsFork(). A provider whose fork capability is purely static
+// does not need to implement this interface.
+type ForkCapable interface {
+	// SupportsNativeFork reports whether this running agent currently supports
+	// native conversation-history forking.
+	SupportsNativeFork() bool
 }
 
 type ProviderDefaults struct{}
@@ -305,6 +388,11 @@ func (ProviderDefaults) Classify(json.RawMessage) NotificationClassification {
 }
 
 func (ProviderDefaults) IsInterrupt(string) bool { return false }
+
+// ReplyText defaults to NO native reply text: a provider whose text reaches
+// the transcript only as assembled rows says nothing, and agent.ReplyText
+// reads those rows itself.
+func (ProviderDefaults) ReplyText(MessageContent) (string, bool) { return "", false }
 
 // ExtractTodoEvent defaults to NO to-do list. A provider whose CLI states one
 // overrides this with the shape that carries it.
@@ -376,6 +464,10 @@ func (ProviderDefaults) ChildCapabilities(optionmap.Map) ChildCapabilities {
 // concrete model ids only must keep the default badge on the entry its own
 // catalog designates, even when one of those ids happens to be "default".
 func (ProviderDefaults) ReportsDefaultModelSentinel() bool { return false }
+
+// SupportsFork defaults to false: a provider opts in by overriding this method
+// or by implementing ForkCapable on its live Agent.
+func (ProviderDefaults) SupportsFork() bool { return false }
 
 // DefaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
 // provider shipped today puts it there, but the decision stays behind the

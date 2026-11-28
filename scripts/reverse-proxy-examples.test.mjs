@@ -81,6 +81,14 @@ describe('PROXIES', () => {
       ])
     }
   })
+
+  it('blocks the unauthenticated /metrics endpoint in every proxy example', () => {
+    const missing = PROXIES.filter((proxy) => {
+      const combined = proxy.examples.map(name => readExample(name)).join('\n')
+      return !combined.includes('/metrics')
+    }).map(proxy => proxy.name)
+    expect(missing).toEqual([])
+  })
 })
 
 describe('the reverse proxy page', () => {

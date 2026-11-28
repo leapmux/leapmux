@@ -47,6 +47,7 @@ func publishedQuestions(t *testing.T, questions []map[string]any) []map[string]a
 
 	published := sink.PublishedControls()
 	require.Len(t, published, 1)
+	agenttest.AssertPublishedControlKeys(t, droidProvider{}, sink)
 	var payload struct {
 		Questions []map[string]any `json:"questions"`
 	}
@@ -124,4 +125,31 @@ func TestAskUserPublishesTheQuestionsInTheNativeOrder(t *testing.T) {
 	assert.Equal(t, "Seventh?", questions[0]["question"])
 	assert.Equal(t, float64(3), questions[1]["index"])
 	assert.Equal(t, "Third?", questions[1]["question"])
+}
+
+func TestControlRequestKeyBoundaryInputs(t *testing.T) {
+	t.Parallel()
+	provider := droidProvider{}
+	for name, payload := range map[string][]byte{
+		"nil":           nil,
+		"empty":         []byte(""),
+		"invalid json":  []byte("{invalid"),
+		"missing field": []byte(`{"type":"permission_request"}`),
+		"empty string":  []byte(`{"requestId":""}`),
+		"number":        []byte(`{"requestId":42}`),
+		"null":          []byte(`{"requestId":null}`),
+		"object":        []byte(`{"requestId":{"id":"x"}}`),
+		"json array":    []byte(`["droid-perm-1"]`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			key, ok := provider.ControlRequestKey(payload, "ignored")
+			assert.False(t, ok)
+			assert.Empty(t, key)
+		})
+	}
+
+	key, ok := provider.ControlRequestKey([]byte(`{"requestId":"droid-perm-1"}`), "")
+	assert.True(t, ok)
+	assert.Equal(t, "droid-perm-1", key)
 }

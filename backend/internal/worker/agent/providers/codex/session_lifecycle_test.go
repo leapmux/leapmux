@@ -116,8 +116,8 @@ func TestCodexTurnRetrySendsTheRetainedInputAfterRevert(t *testing.T) {
 			}
 		case "thread/revert":
 			// Inside the gap: the input queue must not drain into it.
-			gapRefusals <- a.SendInput("more", nil)
-			gapRefusals <- a.SteerInput("more", nil)
+			gapRefusals <- agenttest.SendInput(a, "more", nil)
+			gapRefusals <- agenttest.SteerInput(a, agent.SteerRequest{Content: "more"})
 		}
 		return agenttest.RPCReply{}, false
 	}))
@@ -127,7 +127,7 @@ func TestCodexTurnRetrySendsTheRetainedInputAfterRevert(t *testing.T) {
 	// The turn carries a message and one steer, so the retry sends both again.
 	require.NoError(t, a.sendTurnStart("main-thread", []map[string]interface{}{{"type": "text", "text": "Hello."}},
 		turnSettings{model: "gpt-5.4", effort: "high", collaborationMode: contracts.CodexOptionDefaultCollaborationMode}))
-	require.NoError(t, a.SteerInput("guide", nil))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "guide"}))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`)))
 	beforeRetry := len(sink.TurnKinds())
 
@@ -961,7 +961,7 @@ func TestCodexSteerOfATurnWithoutRetainedInputRetainsNothing(t *testing.T) {
 	// A goal continuation: Codex starts the turn, so LeapMux holds no input.
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)))
 
-	require.NoError(t, a.SteerInput("guide", nil))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "guide"}))
 
 	a.Mu.Lock()
 	retained := a.mainTurn.input
@@ -1019,7 +1019,7 @@ func TestCodexFailedTurnStartDropsItsPendingInput(t *testing.T) {
 			if tc.prepare != nil {
 				tc.prepare(a)
 			}
-			require.Error(t, a.SendInput("Hello.", nil))
+			require.Error(t, agenttest.SendInput(a, "Hello.", nil))
 			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-9"}}}`)))
 
 			a.Mu.Lock()
@@ -1046,7 +1046,9 @@ func TestCodexUnconfirmedTurnStartKeepsItsPendingInput(t *testing.T) {
 	a.turnRetrySupported = true
 
 	sent := make(chan error, 1)
-	go func() { sent <- a.SendInput("Hello.", nil) }()
+	go func() {
+		sent <- a.sendTurnStart("main-thread", []map[string]interface{}{{"type": "text", "text": "Hello."}}, turnSettings{})
+	}()
 	assert.Equal(t, turnStartAckTimeout, testutil.WaitForTimer(t, ctx, ackTimer))
 	clock.Advance(turnStartAckTimeout).MustWait(ctx)
 	require.ErrorIs(t, <-sent, agent.ErrDeliveryUncertain)

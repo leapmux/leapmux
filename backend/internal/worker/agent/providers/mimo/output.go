@@ -175,6 +175,15 @@ type mimoRootProgressSink struct {
 	owner *Agent
 }
 
+type mimoRootProgressPublication struct {
+	agent.TranscriptPublication
+	owner *Agent
+}
+
+func (p mimoRootProgressPublication) ReportProgress(update agent.ProgressUpdate) {
+	p.TranscriptPublication.ReportProgress(p.owner.adjustRootProgress(update))
+}
+
 func (a *Agent) fallbackChildModelScopesLocked() []string {
 	var scopes []string
 	for partID, state := range a.parts {
@@ -202,35 +211,49 @@ func (a *Agent) processExited() bool {
 	}
 }
 
-func (s mimoRootProgressSink) ReportProgress(update agent.ProgressUpdate) {
+func (a *Agent) adjustRootProgress(update agent.ProgressUpdate) agent.ProgressUpdate {
 	switch update.Operation {
 	case agent.ProgressModelReset:
 		if update.ScopeID == "" {
-			s.owner.Mu.Lock()
-			preserved := append(slices.Clone(update.PreserveModelScopes), s.owner.fallbackChildModelScopesLocked()...)
-			s.owner.Mu.Unlock()
+			a.Mu.Lock()
+			preserved := append(slices.Clone(update.PreserveModelScopes), a.fallbackChildModelScopesLocked()...)
+			a.Mu.Unlock()
 			update.PreserveModelScopes = preserved
 		}
 	case agent.ProgressReset:
-		s.owner.Mu.Lock()
+		a.Mu.Lock()
 		var preserved []string
 		hasFallbackTool := false
-		if !s.owner.StoppedLocked() && !s.owner.processExited() {
-			preserved = s.owner.fallbackChildModelScopesLocked()
-			for _, call := range s.owner.tools {
-				if call.actorID != mainActorID && call.progressTarget != nil && call.progressTarget.childID == "" && call.lastFrame != nil && call.sessionID == s.owner.sessionID {
+		if !a.StoppedLocked() && !a.processExited() {
+			preserved = a.fallbackChildModelScopesLocked()
+			for _, call := range a.tools {
+				if call.actorID != mainActorID && call.progressTarget != nil && call.progressTarget.childID == "" && call.lastFrame != nil && call.sessionID == a.sessionID {
 					hasFallbackTool = true
 					break
 				}
 			}
 		}
-		s.owner.Mu.Unlock()
+		a.Mu.Unlock()
 		if len(preserved) > 0 || hasFallbackTool {
 			update = agent.ResetModelProgressPreservingScopes(preserved)
 		}
 	default:
 	}
-	s.ProviderServices.ReportProgress(update)
+	return update
+}
+
+func (s mimoRootProgressSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	captured := s.ProviderServices.CaptureMessage(content, span)
+	if captured.Publication != nil {
+		if _, wrapped := captured.Publication.(mimoRootProgressPublication); !wrapped {
+			captured.Publication = mimoRootProgressPublication{TranscriptPublication: captured.Publication, owner: s.owner}
+		}
+	}
+	return captured
+}
+
+func (s mimoRootProgressSink) ReportProgress(update agent.ProgressUpdate) {
+	s.ProviderServices.ReportProgress(s.owner.adjustRootProgress(update))
 }
 
 // progressScope is the id of one part in the live progress counters.
@@ -769,7 +792,7 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 					err = a.persistUserInstruction(record, *state.final)
 				}
 			} else if state != nil && state.final != nil {
-				err = a.persistFinalText(sink, record, state)
+				err = a.persistFinalText(target, record, state)
 			} else {
 				err = fmt.Errorf("the retained MiMo text part is absent")
 			}
@@ -778,10 +801,15 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 			if state == nil || state.buffer == nil {
 				err = fmt.Errorf("the retained MiMo streamed scope is absent")
 			} else {
-				_, err = state.buffer.PersistScopeTo(progressScope(pending.partID), state.completion, sink, agent.MessageContent{
-					AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + pending.partID + ":text",
+				key := mimoTextKey(pending.partID)
+				var wrote bool
+				wrote, err = state.buffer.PersistScopeTo(progressScope(pending.partID), state.completion, sink, agent.MessageContent{
+					AgentSessionID: record.sessionID, IdempotencyKey: key,
 				}, agent.SpanInfo{})
 				if agent.OutputRetained(err) {
+					if wrote && state.kind == agent.AssembledMessageKindText {
+						a.recordInputReplyText(record, messageID, key, target.childID)
+					}
 					a.completeTextProgress(pending.partID, state, sink)
 				}
 			}
@@ -1063,7 +1091,8 @@ func (a *Agent) handleTextPart(sessionID string, part mimoPart) {
 }
 
 // persistFinalText writes the retained native final part with its resolved outcome.
-func (a *Agent) persistFinalText(sink agent.ProviderServices, record *mimoMessageRecord, state *mimoTextPart) error {
+func (a *Agent) persistFinalText(target *mimoTranscriptTarget, record *mimoMessageRecord, state *mimoTextPart) error {
+	sink := target.sink
 	part := state.final
 	text := part.Text
 	if strings.TrimSpace(text) == "" {
@@ -1074,18 +1103,23 @@ func (a *Agent) persistFinalText(sink agent.ProviderServices, record *mimoMessag
 	if err != nil {
 		return err
 	}
-	content := agent.MessageContent{Original: raw, AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + part.ID + ":text"}
+	content := agent.MessageContent{Original: raw, AgentSessionID: record.sessionID, IdempotencyKey: mimoTextKey(part.ID)}
 	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); !agent.OutputRetained(err) {
 		return err
 	}
-	if state.kind == agent.AssembledMessageKindText && record.actor != nil {
-		a.Mu.Lock()
-		record.actor.lastText = text
-		a.Mu.Unlock()
+	if state.kind == agent.AssembledMessageKindText {
+		a.recordInputReplyText(record, state.messageID, content.IdempotencyKey, target.childID)
+		if record.actor != nil {
+			a.Mu.Lock()
+			record.actor.lastText = text
+			a.Mu.Unlock()
+		}
 	}
 	a.completeTextProgress(part.ID, state, sink)
 	return nil
 }
+
+func mimoTextKey(partID string) string { return "mimo-part:" + partID + ":text" }
 
 func (a *Agent) handlePartDelta(event mimoEvent) {
 	var delta mimoPartDelta
@@ -1167,6 +1201,9 @@ func (a *Agent) handlePartRemoved(event mimoEvent) {
 		sessionID = a.sessionID
 	}
 	record := a.messages[removed.MessageID]
+	if record != nil && record.sessionID == sessionID {
+		a.retractReplyTextLocked(removed.MessageID, mimoTextKey(removed.PartID))
+	}
 	state, call := a.parts[removed.PartID], a.tools[removed.PartID]
 	if record == nil || record.sessionID != sessionID || state == nil && call == nil ||
 		state != nil && state.messageID != removed.MessageID ||
@@ -1616,6 +1653,7 @@ func (a *Agent) handleMessageRemoved(event mimoEvent) {
 		a.Mu.Unlock()
 		return
 	}
+	a.retractReplyTextLocked(payload.MessageID, "")
 	var ended []*mimoCompaction
 	for partID, state := range a.compactions {
 		if state.messageID != payload.MessageID || state.phase == compactionEnded {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -18,37 +17,6 @@ type droidChildConnection struct {
 	agent *Agent
 	err   error
 }
-
-// droidArchiveOnlySink keeps the native JSONL tail authoritative for child
-// transcript rows, spans, and live progress. The bound process still sends
-// controls, settings, and turn state to the child sink through the embedded
-// services.
-type droidArchiveOnlySink struct{ agent.ProviderServices }
-
-var _ agent.ProviderServices = droidArchiveOnlySink{}
-
-func (droidArchiveOnlySink) PersistMessage(leapmuxv1.MessageSource, agent.MessageContent, agent.SpanInfo) error {
-	return nil
-}
-
-func (droidArchiveOnlySink) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error {
-	return nil
-}
-
-func (droidArchiveOnlySink) PersistNotification(leapmuxv1.MessageSource, agent.MessageContent) (bool, error) {
-	return false, nil
-}
-
-func (droidArchiveOnlySink) PersistWorkerNotification(agent.MessageContent) (bool, error) {
-	return false, nil
-}
-
-func (droidArchiveOnlySink) OpenSpan(string, string)               {}
-func (droidArchiveOnlySink) CloseSpan(string)                      {}
-func (droidArchiveOnlySink) ResetSpans()                           {}
-func (droidArchiveOnlySink) SetSpanType(string, string)            {}
-func (droidArchiveOnlySink) ReserveSpanColor(string, string) int32 { return 0 }
-func (droidArchiveOnlySink) ReportProgress(agent.ProgressUpdate)   {}
 
 // registeredChildID rejects a key that the Worker's child registry cannot
 // resolve. A guessed native UUID is never enough to open another session.
@@ -89,9 +57,13 @@ func (a *Agent) childConnection(childKey, childAgentID string) (*Agent, error) {
 
 	childOpts := a.launchOpts
 	childOpts.AgentID = childAgentID
-	childOpts.ResumeSessionID = childKey
-	childSink := droidArchiveOnlySink{ProviderServices: a.sink.ChildSink(childAgentID)}
-	started, startErr := startProcess(a.Context(), childOpts, childSink, a.launch)
+	childOpts.Session = agent.ResumeSession(childKey)
+	childSink := a.sink.ChildSink(childAgentID)
+	childLaunch := a.launch
+	childLaunch.onTurnEnd = func(status bgtask.Status) {
+		a.closeBoundChildTurn(childKey, status)
+	}
+	started, startErr := startProcess(a.Context(), childOpts, childSink, childLaunch)
 	var child *Agent
 	if startErr == nil {
 		child = started.(*Agent)
@@ -160,6 +132,38 @@ func (a *Agent) finishExitedChild(childKey string, child *Agent) {
 		final = bgtask.StatusInterrupted
 	}
 	providerkit.LogRegistryRefusal("droid", "close exited child", a.sink.CloseBackgroundTask(childKey, final))
+}
+
+// closeBoundChildTurn closes the child background task row when the bound
+// process completes a turn.
+func (a *Agent) closeBoundChildTurn(childKey string, status bgtask.Status) {
+	if childKey == "" {
+		return
+	}
+	providerkit.LogRegistryRefusal("droid", "finish child", a.sink.CloseBackgroundTask(childKey, status))
+}
+
+// childHasActiveBoundConnection reports whether a bound child process has
+// already started a follow-up turn for childKey.
+func (a *Agent) childHasActiveBoundConnection(childKey string) bool {
+	a.childConnMu.Lock()
+	connection := a.childConns[childKey]
+	a.childConnMu.Unlock()
+	if connection == nil {
+		return false
+	}
+	select {
+	case <-connection.ready:
+		if connection.agent == nil {
+			return false
+		}
+		connection.agent.Mu.Lock()
+		active := connection.agent.turnActive
+		connection.agent.Mu.Unlock()
+		return active
+	default:
+		return false
+	}
 }
 
 func (a *Agent) stopChildConnections() {

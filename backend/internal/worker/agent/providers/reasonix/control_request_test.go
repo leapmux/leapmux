@@ -114,13 +114,17 @@ func TestReasonixControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testin
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, func(content []byte) {
 		a.HandleOutput(content)
 	}, contracts.MCPElicitationMethodACP)
+	agenttest.AssertPublishedControlKeys(t, reasonixProvider{}, sink)
 }
 
 func TestReasonixAnswersNativeMCPInteraction(t *testing.T) {
 	t.Parallel()
 	request := json.RawMessage(`{"jsonrpc":"2.0","id":"001","method":"elicitation/create","params":{"mode":"form"}}`)
-	response := json.RawMessage(`{"response":{"request_id":"001","response":{"action":"accept","content":{"count":0,"enabled":false}}}}`)
-	resolved := reasonixProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: request, ResponseContent: response})
+	// The Worker keys a request with the JSON-RPC id "001" as below, and the
+	// answer addresses that key.
+	const requestID = `jsonrpc:"001"`
+	response := json.RawMessage(`{"response":{"request_id":"jsonrpc:\"001\"","response":{"action":"accept","content":{"count":0,"enabled":false}}}}`)
+	resolved := agenttest.ResolveAnswer(reasonixProvider{}, request, requestID, agent.ControlAnswer{Content: response})
 	require.False(t, resolved.Withhold)
 	var reply struct {
 		ID     string `json:"id"`
@@ -135,16 +139,17 @@ func TestReasonixAnswersNativeMCPInteraction(t *testing.T) {
 	assert.Equal(t, map[string]any{"count": float64(0), "enabled": false}, reply.Result.Content)
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestReasonixWithholdsInvalidMCPAnswers(t *testing.T) {
 	t.Parallel()
 	request := json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"elicitation/create"}`)
 	for _, response := range []string{
-		`{}`,
-		`{"response":{"request_id":"other","response":{"action":"accept"}}}`,
-		`{"response":{"request_id":"7","response":{"action":"unknown"}}}`,
-		`{"response":{"request_id":"7","response":{"action":"accept","_meta":{"persist":"session"}}}}`,
+		`{"response":{"request_id":"jsonrpc:7","response":{"action":"unknown"}}}`,
+		`{"response":{"request_id":"jsonrpc:7","response":{}}}`,
+		`{"response":{"request_id":"jsonrpc:7","response":{"action":"accept","_meta":{"persist":"session"}}}}`,
 	} {
-		resolved := reasonixProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: request, ResponseContent: []byte(response)})
+		resolved := agenttest.ResolveAnswer(reasonixProvider{}, request, "jsonrpc:7", agent.ControlAnswer{Content: []byte(response)})
 		assert.True(t, resolved.Withhold, response)
 	}
 }
@@ -152,8 +157,8 @@ func TestReasonixWithholdsInvalidMCPAnswers(t *testing.T) {
 func TestReasonixDeclineRemovesFormContent(t *testing.T) {
 	t.Parallel()
 	request := json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"elicitation/create"}`)
-	response := json.RawMessage(`{"response":{"request_id":"7","response":{"action":"decline","content":{"count":0}}}}`)
-	resolved := reasonixProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: request, ResponseContent: response})
+	response := json.RawMessage(`{"response":{"request_id":"jsonrpc:7","response":{"action":"decline","content":{"count":0}}}}`)
+	resolved := agenttest.ResolveAnswer(reasonixProvider{}, request, "jsonrpc:7", agent.ControlAnswer{Content: response})
 	require.False(t, resolved.Withhold)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"action":"decline"}}`, string(resolved.Content))
 }

@@ -60,8 +60,8 @@ type readinessDispatcher struct {
 	calls chan string
 }
 
-func (dispatcher readinessDispatcher) SteerPolicy(string) agent.SteerPolicy {
-	return agent.SteerPolicy{}
+func (dispatcher readinessDispatcher) SteerPolicy(string) (agent.SteerPolicy, error) {
+	return agent.SteerPolicy{}, nil
 }
 func (dispatcher readinessDispatcher) Dispatch(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	dispatcher.calls <- item.AgentID

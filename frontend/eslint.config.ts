@@ -252,12 +252,9 @@ export default antfu({
   // remaining way in -- and `chatLayerStructure.test.ts` described this ban as
   // if it existed here long before it did.
   //
-  // `ignores` carries the whole allowlist, and every path in it is pinned by
-  // `src/test-support/chatLayerStructure.test.ts`:
-  //   - the three CONTROL SURFACES, which answer a provider's own permission or
-  //     plan prompt. Their markup is provider-specific by nature, so it lives
-  //     beside the provider that raises it rather than in a shared renderer
-  //     that would have to branch on the provider to draw it.
+  // `ignores` carries the whole allowlist. No module that ships draws: the
+  // Worker reads each control request into the neutral prompt that `controls/`
+  // draws, so no provider needs markup of its own.
   //   - the two `testUtils.tsx` helpers, which render a provider's component
   //     for that provider's own tests and ship in no bundle.
   //   - every `*.test.tsx`, for the same reason: a provider's own test renders
@@ -266,9 +263,6 @@ export default antfu({
   files: ['src/components/chat/providers/**/*.tsx'],
   ignores: [
     'src/components/chat/providers/**/*.test.tsx',
-    'src/components/chat/providers/codex/CodexControlActions.tsx',
-    'src/components/chat/providers/cursor/CursorControlActions.tsx',
-    'src/components/chat/providers/pi/PiPlanApprovalActions.tsx',
     'src/components/chat/providers/acp/testUtils.tsx',
     'src/components/chat/providers/zcode/testUtils.tsx',
   ],
@@ -281,7 +275,7 @@ export default antfu({
       ...BASE_RESTRICTED_SYNTAX,
       {
         selector: 'JSXElement',
-        message: 'Layer 1 draws nothing. A provider plugin returns the provider-neutral model from `../model/`, and `../results/` renders it. A control surface that must draw goes in its own `*Actions.tsx` and is listed in the allowlist in eslint.config.ts.',
+        message: 'Layer 1 draws nothing. A provider plugin returns the provider-neutral model from `../model/`, and `../results/` renders it. A control request needs no markup here either: the Worker reads it into the neutral prompt that `../controls/` draws.',
       },
     ],
   },

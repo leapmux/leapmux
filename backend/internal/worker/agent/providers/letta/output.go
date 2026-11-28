@@ -105,13 +105,18 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string, scope *runtimeS
 
 	switch delta.MessageType {
 	case contracts.LettaDeltaKindAssistantMessage:
-		a.appendModelText(target, subagentID, agent.AssembledMessageKindText, deltaText(delta.Content))
+		text := deltaText(delta.Content)
+		var receipt agent.NativeInputReceipt
+		if subagentID == "" && text != "" {
+			receipt = a.replyTextReceipt(scope, delta.RunID)
+		}
+		a.appendModelText(target, subagentID, agent.AssembledMessageKindText, text, receipt)
 	case contracts.LettaDeltaKindReasoningMessage:
 		text := delta.Reasoning
 		if text == "" {
 			text = deltaText(delta.Content)
 		}
-		a.appendModelText(target, subagentID, agent.AssembledMessageKindReasoning, text)
+		a.appendModelText(target, subagentID, agent.AssembledMessageKindReasoning, text, agent.NativeInputReceipt{})
 	case contracts.LettaDeltaKindToolReturnMessage:
 		if subagentID == "" && !isLettaToolProgress(&delta) {
 			a.rememberChildTaskReceipt(&delta)
@@ -423,7 +428,7 @@ func deltaText(content json.RawMessage) string {
 }
 
 // appendModelText buffers one native fragment and reports progress to its transcript.
-func (a *Agent) appendModelText(target agent.ProviderServices, subagentID string, kind agent.AssembledMessageKind, text string) {
+func (a *Agent) appendModelText(target agent.ProviderServices, subagentID string, kind agent.AssembledMessageKind, text string, receipt agent.NativeInputReceipt) {
 	if text == "" {
 		return
 	}
@@ -433,7 +438,7 @@ func (a *Agent) appendModelText(target agent.ProviderServices, subagentID string
 	if kind == agent.AssembledMessageKindReasoning {
 		scope += ":reasoning"
 	}
-	a.generation.Append(scope, kind, text, providerkit.JoinVerbatim)
+	a.generation.AppendForNativeTurn(scope, kind, text, providerkit.JoinVerbatim, providerkit.NativeTurnRef{SessionID: receipt.SessionID, TurnID: receipt.TurnID})
 	target.ReportProgress(agent.ModelTextProgress(scope, text))
 }
 
@@ -517,9 +522,11 @@ func (a *Agent) onToolReturn(payload []byte, delta *lettaDelta, target agent.Pro
 // lettaTurnFinished is the part of a `turn_finished` frame that states how the
 // turn ended. The tag is pinned to the `deltaFields` table of the contract.
 type lettaTurnFinished struct {
-	StopReason string `json:"stop_reason"`
-	Error      string `json:"error"`
-	TurnID     string `json:"turn_id"`
+	StopReason string        `json:"stop_reason"`
+	Error      string        `json:"error"`
+	TurnID     string        `json:"turn_id"`
+	RunID      string        `json:"run_id"`
+	Runtime    *runtimeScope `json:"runtime"`
 }
 
 // lettaTurnCompletion maps the native stop reason of a finished turn onto the
@@ -551,6 +558,10 @@ func (a *Agent) onTurnFinished(payload []byte) {
 	var finished lettaTurnFinished
 	if err := json.Unmarshal(payload, &finished); err != nil {
 		slog.Debug("letta could not decode all turn-end fields", "agent_id", a.AgentID(), "error", err)
+		finished.Runtime = nil
+	}
+	if a.isForeignInputRuntime(finished.Runtime) {
+		return
 	}
 	if finished.TurnID != "" {
 		if slices.Contains(a.finishedTurnIDs, finished.TurnID) {
@@ -576,11 +587,25 @@ func (a *Agent) onTurnFinished(payload []byte) {
 		a.closeToolScope("", a.sink, completion)
 	}
 	content := agent.MessageContent{Original: payload, Completion: completion}
-	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
+	reply, outcome := a.finishedInputReply(finished)
+	if reply != nil {
+		content.AgentSessionID = reply.receipt.SessionID
+		content.NativeTurnID = reply.receipt.TurnID
+		content.InputTurnOutcome = outcome
+	}
+	err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{})
+	if err != nil {
 		slog.Debug("letta: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
 	if completion == agent.MessageCompletionInterrupted {
 		providerkit.ResetSpansAndProgress(a.sink)
+	}
+	if reply != nil && agent.OutputRetained(err) {
+		a.Mu.Lock()
+		if a.inputReply == reply {
+			a.inputReply = nil
+		}
+		a.Mu.Unlock()
 	}
 	a.withdrawPermissions()
 	a.setTurnActive(false)
@@ -601,6 +626,23 @@ func (a *Agent) flushGenerationScope(subagentID string, reasoning bool, completi
 	scope := lettaGenerationScope(subagentID)
 	if reasoning {
 		scope += ":reasoning"
+	}
+	if subagentID == "" && !reasoning && a.tracksInput() {
+		found, err := a.generation.PersistScopeTo(scope, completion, target, agent.MessageContent{AgentSessionID: a.lettaSession()}, agent.SpanInfo{})
+		if found {
+			target.ReportProgress(agent.CompleteModelProgress(scope))
+		}
+		if err != nil {
+			if !agent.OutputRetained(err) {
+				a.Mu.Lock()
+				if reply := a.inputReply; reply != nil {
+					reply.incomplete = true
+				}
+				a.Mu.Unlock()
+			}
+			slog.Error("letta could not persist generated output", "agent_id", a.AgentID(), "error", err)
+		}
+		return
 	}
 	raw, ready, err := a.generation.Finish(scope, completion)
 	if err != nil {
@@ -624,13 +666,12 @@ func (a *Agent) flushGenerationScope(subagentID string, reasoning bool, completi
 }
 
 // onLoopStatus is the busy signal. Only the listed states move the turn flag.
-func (a *Agent) onLoopStatus(payload []byte) {
-	var n struct {
-		Status string `json:"status"`
-	}
+func (a *Agent) onLoopStatus(payload []byte, scope *runtimeScope) {
+	var n lettaLoopStatus
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
+	a.observeInputRuns(scope, n)
 	switch n.Status {
 	case contracts.LettaLoopStatusSendingAPIRequest, contracts.LettaLoopStatusWaitingForAPIResponse,
 		contracts.LettaLoopStatusProcessingAPIResponse:

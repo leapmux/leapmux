@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -17,15 +16,16 @@ func (a *Agent) promptParts(sessionID, content string, attachments []*leapmuxv1.
 		if attachment == nil {
 			return nil, fmt.Errorf("DeepSeek Harness received an absent attachment")
 		}
-		kind := agent.ClassifyAttachments([]*leapmuxv1.Attachment{attachment})[0]
+	}
+	for _, kind := range agent.ClassifyAttachments(attachments) {
 		if kind.Kind == contracts.AttachmentMediaKindImage {
-			parts = append(parts, map[string]any{"type": "image", "mediaType": kind.MIMEType, "data": base64.StdEncoding.EncodeToString(attachment.GetData()), "name": attachment.GetFilename()})
+			parts = append(parts, map[string]any{"type": "image", "mediaType": kind.MIMEType, "data": base64.StdEncoding.EncodeToString(kind.Data), "name": kind.Filename})
 			continue
 		}
 		var receipt struct {
 			ID string `json:"receiptId"`
 		}
-		err := a.rpc.call(a.Context(), "fileUploads/upload", map[string]any{"agentId": sessionID, "request": map[string]any{"data": base64.StdEncoding.EncodeToString(attachment.GetData()), "name": attachment.GetFilename()}}, &receipt)
+		err := a.rpc.call(a.Context(), "fileUploads/upload", map[string]any{"agentId": sessionID, "request": map[string]any{"data": base64.StdEncoding.EncodeToString(kind.Data), "name": kind.Filename}}, &receipt)
 		if err != nil {
 			return nil, err
 		}

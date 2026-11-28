@@ -1,8 +1,9 @@
 import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
+import { createComputed, createMemo, createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { clearSettingsLabelCache, collectSettingsLabelDependencies, getCachedSettingsGroupLabel, getCachedSettingsLabel, settingsLabelCacheRevision, settingsLabelDependencyRevision, updateSettingsLabelCache } from './settingsLabelCache'
+import { clearSettingsLabelCache, collectSettingsLabelDependencies, getCachedSettingsGroupLabel, getCachedSettingsLabel, isSettingsLabelReadCurrent, refreshSettingsLabelRead, settingsLabelCacheRevision, settingsLabelDependencyRevision, updateSettingsLabelCache } from './settingsLabelCache'
 
 const CLAUDE = AgentProvider.CLAUDE_CODE
 const CURSOR = AgentProvider.CURSOR
@@ -342,6 +343,149 @@ describe('settingsLabelCache', () => {
       const revision = settingsLabelCacheRevision()
       updateSettingsLabelCache(GOOSE, groups)
       expect(settingsLabelCacheRevision()).toBe(revision)
+    })
+  })
+})
+
+// The transcript draws a label inside a Solid computation, and the labels often arrive after
+// the first draw: a tab draws its saved rows before the agent's settings reach the browser.
+describe('the label catalog in a computation', () => {
+  beforeEach(() => clearSettingsLabelCache())
+
+  it('runs a computation again when the label that it read arrives', () => {
+    createRoot((dispose) => {
+      const label = createMemo(() => getCachedSettingsLabel(CLAUDE, 'model', 'sonnet'))
+      const groupLabel = createMemo(() => getCachedSettingsGroupLabel(CLAUDE, 'model'))
+      const revision = createMemo(() => settingsLabelDependencyRevision([
+        { provider: CLAUDE, groupId: 'model' },
+      ]))
+      expect(label()).toBeUndefined()
+      expect(groupLabel()).toBeUndefined()
+      const before = revision()
+
+      updateSettingsLabelCache(CLAUDE, [
+        group('model', 'Model', [
+          ['sonnet', 'Sonnet'],
+        ]),
+      ])
+      expect(label()).toBe('Sonnet')
+      expect(groupLabel()).toBe('Model')
+      expect(revision()).not.toBe(before)
+      dispose()
+    })
+  })
+
+  // A write is not a read: a computation that pushes a catalog must not run again for its
+  // own write, or for each later push of another agent.
+  it('leaves a computation that pushes a catalog unsubscribed from the catalog', () => {
+    createRoot((dispose) => {
+      let runs = 0
+      createComputed(() => {
+        runs++
+        updateSettingsLabelCache(CLAUDE, [
+          group('model', 'Model', [
+            ['sonnet', 'Sonnet'],
+          ]),
+        ])
+      })
+      expect(runs).toBe(1)
+      updateSettingsLabelCache(GOOSE, [
+        group('permissionMode', 'Mode', [
+          ['auto', 'Auto'],
+        ]),
+      ])
+      expect(runs).toBe(1)
+      dispose()
+    })
+  })
+})
+
+describe('refreshSettingsLabelRead', () => {
+  beforeEach(() => clearSettingsLabelCache())
+
+  /** The words of Claude's `sonnet` model: its label, or its id while the browser holds none. */
+  const sonnet = (): string => getCachedSettingsLabel(CLAUDE, 'model', 'sonnet') ?? 'sonnet'
+
+  const sonnetLabel = (name: string): AvailableOptionGroup[] => [
+    group('model', 'Model', [
+      ['sonnet', name],
+    ]),
+  ]
+
+  it('runs the read when no earlier read exists', () => {
+    const read = refreshSettingsLabelRead(undefined, sonnet)
+    expect(read.value).toBe('sonnet')
+    expect(read.dependencies).toEqual([
+      { provider: CLAUDE, groupId: 'model' },
+    ])
+    expect(isSettingsLabelReadCurrent(read)).toBe(true)
+  })
+
+  it('reuses a read while the label groups that it consulted are unchanged', () => {
+    const first = refreshSettingsLabelRead(undefined, sonnet)
+    // A change to a group that the read did not consult keeps the read.
+    updateSettingsLabelCache(CLAUDE, [
+      group('permissionMode', 'Mode', [
+        ['plan', 'Plan'],
+      ]),
+    ])
+    expect(isSettingsLabelReadCurrent(first)).toBe(true)
+    expect(refreshSettingsLabelRead(first, () => {
+      throw new Error('a current read must not run again')
+    })).toBe(first)
+  })
+
+  it('runs the read again when a label group that it consulted changes', () => {
+    const first = refreshSettingsLabelRead(undefined, sonnet)
+    updateSettingsLabelCache(CLAUDE, sonnetLabel('Sonnet'))
+    expect(isSettingsLabelReadCurrent(first)).toBe(false)
+    const second = refreshSettingsLabelRead(first, sonnet)
+    expect(second.value).toBe('Sonnet')
+    expect(isSettingsLabelReadCurrent(second)).toBe(true)
+
+    // A renamed option changes the group again.
+    updateSettingsLabelCache(CLAUDE, sonnetLabel('Sonnet 5'))
+    expect(refreshSettingsLabelRead(second, sonnet).value).toBe('Sonnet 5')
+  })
+
+  it('runs the read again when the cache drops the labels that it read', () => {
+    updateSettingsLabelCache(CLAUDE, sonnetLabel('Sonnet'))
+    const labelled = refreshSettingsLabelRead(undefined, sonnet)
+    expect(labelled.value).toBe('Sonnet')
+    clearSettingsLabelCache()
+    expect(refreshSettingsLabelRead(labelled, sonnet).value).toBe('sonnet')
+  })
+
+  it('keeps a read that consulted no label group through every change', () => {
+    const plain = refreshSettingsLabelRead(undefined, () => 'plain')
+    expect(plain.dependencies).toEqual([])
+    updateSettingsLabelCache(CLAUDE, sonnetLabel('Sonnet'))
+    clearSettingsLabelCache()
+    expect(refreshSettingsLabelRead(plain, () => 'again')).toBe(plain)
+  })
+
+  // One cache can store a read that another cache keeps (a header call inside a row
+  // extraction). The outer read must learn each group whether the inner read ran or not.
+  it('reports the groups of a reused read to an outer collector', () => {
+    const inner = refreshSettingsLabelRead(undefined, sonnet)
+    const outer = collectSettingsLabelDependencies(() => refreshSettingsLabelRead(inner, sonnet))
+    expect(outer.value).toBe(inner)
+    expect(outer.dependencies).toEqual([
+      { provider: CLAUDE, groupId: 'model' },
+    ])
+  })
+
+  it('runs a computation again that reused a read when its labels change', () => {
+    createRoot((dispose) => {
+      let cached = refreshSettingsLabelRead(undefined, sonnet)
+      const words = createMemo(() => {
+        cached = refreshSettingsLabelRead(cached, sonnet)
+        return cached.value
+      })
+      expect(words()).toBe('sonnet')
+      updateSettingsLabelCache(CLAUDE, sonnetLabel('Sonnet'))
+      expect(words()).toBe('Sonnet')
+      dispose()
     })
   })
 })

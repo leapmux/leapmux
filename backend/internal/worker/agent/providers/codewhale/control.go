@@ -21,9 +21,9 @@ import (
 // Manual answers pass through ResolveControlResponse and SendRawInput.
 //
 // The stored payload is a HYBRID. The Claude-shaped `{request:{tool_name,
-// tool_use_id, input}}` header is what the SHARED control surfaces read: the
-// service takes the tool name from it, and the shared permission row draws the
-// input. The runtime's own event rides beside it, whole, under the `event` key.
+// tool_use_id, input}}` header is what the SHARED readers read: the service
+// takes the tool name from it, and ReadControlRequest reads the input into the
+// prompt. The runtime's own event rides beside it, whole, under the `event` key.
 //
 // An approval states no tool arguments up to 0.10.0, only the tool name and the
 // call id, so the header takes the input from the call's own start event, which
@@ -45,8 +45,8 @@ import (
 // when the runtime answered, and a row states why: `approval.timeout` for an
 // approval, and the runtime's own status item for a question.
 
-// codewhaleControlType is the `type` of a stored control request, which the
-// shared control surfaces read.
+// codewhaleControlType is the `type` of a stored control request, as the
+// Claude-shaped envelope spells it.
 const codewhaleControlType = "control_request"
 
 // codewhalePendingControl is one control request LeapMux published and nothing
@@ -118,11 +118,7 @@ func buildControlPayload(requestID string, header codewhaleControlHeader, event 
 
 // storedControlEvent reads the runtime's event back out of a stored payload.
 func storedControlEvent(payload []byte) (codewhaleEnvelope, bool) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &fields); err != nil {
-		return codewhaleEnvelope{}, false
-	}
-	return parseEnvelope(fields[contracts.CodewhaleControlPayloadEvent])
+	return parseEnvelope(providerkit.RawFields(payload)[contracts.CodewhaleControlPayloadEvent])
 }
 
 // --- approvals ---
@@ -140,6 +136,14 @@ func (p approvalEventPayload) approvalID() string {
 		return p.ApprovalID
 	}
 	return p.ID
+}
+
+func parseApprovalEventPayload(raw json.RawMessage) (approvalEventPayload, bool) {
+	var payload approvalEventPayload
+	if json.Unmarshal(raw, &payload) != nil || payload.approvalID() == "" {
+		return approvalEventPayload{}, false
+	}
+	return payload, true
 }
 
 // handleApprovalRequired publishes an approval as a control request.
@@ -217,6 +221,14 @@ func (p userInputEventPayload) inputID() string {
 	return p.ID
 }
 
+func parseUserInputEventPayload(raw json.RawMessage) (userInputEventPayload, bool) {
+	var payload userInputEventPayload
+	if json.Unmarshal(raw, &payload) != nil || payload.inputID() == "" {
+		return userInputEventPayload{}, false
+	}
+	return payload, true
+}
+
 // handleUserInputRequired publishes a question as a control request.
 func (a *Agent) handleUserInputRequired(env codewhaleEnvelope) {
 	var payload userInputEventPayload
@@ -282,52 +294,65 @@ func userInputBody(answers []userInputAnswer) map[string]any {
 	return map[string]any{contracts.CodewhaleReplyFieldAnswers: answers}
 }
 
-// userInputRequest is the `request` of a user_input event: the questions the
-// model asked. contract_tags_test.go pins its tags, and those of the two types
-// below, to the contract, which the browser plugin reads the same names from.
-type userInputRequest struct {
-	Questions []questionRecord `json:"questions"`
-}
-
-// questionRecord is the part of one question that an answer addresses.
+// questionRecord is one question of a user_input request, decoded using the
+// contract field constants in requestQuestions.
 type questionRecord struct {
-	ID       string           `json:"id"`
-	Question string           `json:"question"`
-	Header   string           `json:"header"`
-	Options  []questionOption `json:"options"`
+	ID          string
+	Header      string
+	Question    string
+	Options     json.RawMessage
+	MultiSelect bool
 }
 
-// questionOption is one choice of a question.
-type questionOption struct {
-	Label string `json:"label"`
-}
-
-// answerLabel is the label an answer of this value carries: the option's own
-// label when the value is one, and the free-text label otherwise.
-func (q questionRecord) answerLabel(value string) string {
-	for _, option := range q.Options {
-		if option.Label == value {
-			return option.Label
+// requestQuestions reads the questions of one user_input request object, in
+// the runtime's order. ok reports whether the request carried a JSON array
+// under `questions` (including an empty array). Non-object entries are skipped.
+func requestQuestions(request json.RawMessage) ([]questionRecord, bool) {
+	elements, ok := providerkit.RawArray(providerkit.RawFields(request)[contracts.CodewhaleQuestionFieldQuestions])
+	if !ok {
+		return nil, false
+	}
+	questions := make([]questionRecord, 0, len(elements))
+	for _, element := range elements {
+		record, ok := providerkit.RawObject(element)
+		if !ok {
+			continue
 		}
+		questions = append(questions, questionRecord{
+			ID:          providerkit.ObjectString(record, contracts.CodewhaleQuestionFieldID),
+			Header:      providerkit.ObjectString(record, contracts.CodewhaleQuestionFieldHeader),
+			Question:    providerkit.ObjectString(record, contracts.CodewhaleQuestionFieldQuestion),
+			Options:     record[contracts.CodewhaleQuestionFieldOptions],
+			MultiSelect: providerkit.RawBool(record[contracts.CodewhaleQuestionFieldMultiSelect]),
+		})
 	}
-	return contracts.CodewhaleAnswerLabelOther
+	return questions, true
 }
 
-// requestQuestions reads the questions of a user_input request.
-func requestQuestions(request json.RawMessage) []questionRecord {
-	var body userInputRequest
-	if len(request) == 0 || json.Unmarshal(request, &body) != nil {
-		return nil
+// storedRequestQuestions reads the question records of a stored user_input
+// control request, in the runtime's order. The shared header's
+// `request.input.questions` wins whenever it holds a JSON array, even an empty
+// one; the stored event's `payload.request.questions` is the fallback.
+func storedRequestQuestions(payload []byte, eventRequest json.RawMessage) []questionRecord {
+	if questions, ok := requestQuestions(agent.ControlToolInput(payload)); ok {
+		return questions
 	}
-	return body.Questions
+	questions, _ := requestQuestions(eventRequest)
+	return questions
 }
 
-// declinedAnswers answers every question with the same free-text refusal.
+// declinedAnswers answers every question in request with the same free-text refusal.
 func declinedAnswers(request json.RawMessage, text string) []userInputAnswer {
-	questions := requestQuestions(request)
+	questions, _ := requestQuestions(request)
+	return declinedAnswersForQuestions(questions, text)
+}
+
+// declinedAnswersForQuestions answers every question with a non-blank ID using
+// the same free-text refusal.
+func declinedAnswersForQuestions(questions []questionRecord, text string) []userInputAnswer {
 	answers := make([]userInputAnswer, 0, len(questions))
 	for _, question := range questions {
-		if question.ID == "" {
+		if strings.TrimSpace(question.ID) == "" {
 			continue
 		}
 		answers = append(answers, userInputAnswer{ID: question.ID, Label: contracts.CodewhaleAnswerLabelOther, Value: text})
@@ -376,6 +401,7 @@ func (a *Agent) publishRegisteredControl(requestID string, control *codewhalePen
 		RequestID:      requestID,
 		Payload:        control.payload,
 		AgentSessionID: control.threadID,
+		NativeTurnID:   control.turnID,
 	})
 	a.Mu.Lock()
 	control.ready, control.published = true, err == nil
@@ -451,7 +477,8 @@ func (a *Agent) withdrawAllControls() {
 // ResolveControlResponse built the frame from the stored request, so the frame
 // carries every id its route needs. A frame whose request is no longer pending
 // is refused: the runtime settled it already, and its card is gone.
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	raw, stop := input.Data, input.Stop
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	a.Mu.Unlock()
@@ -612,26 +639,17 @@ func (a *Agent) controlPending(requestID string) bool {
 // --- resolution (pure) ---
 
 // resolveControlReply turns the reader's neutral answer into the reply frame
-// for the stored request. It reads nothing but its arguments.
+// for the stored request requestPayload. It reads nothing but its arguments.
+// The Worker resolves only a stored request that agrees with its key
+// (agent.StoredControlRequestAgrees), so the key needs no check here.
 //
 // feedback is a deny reason the runtime's approval route cannot carry. The
 // service queues it as the reader's next message instead. refusal is the reason
 // the reader sees when no reply can be built, empty when one can.
 func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyFrame, feedback string, refusal string) {
-	requestID, behavior, message, decoded := agent.DecodeControlBehavior(response)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	_, behavior, message, decoded := agent.DecodeControlBehavior(response)
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		return codewhaleReplyFrame{}, "", agent.RefusalNoDecision
-	}
-	var stored struct {
-		RequestID string                 `json:"request_id"`
-		Request   codewhaleControlHeader `json:"request"`
-	}
-	if err := json.Unmarshal(requestPayload, &stored); err != nil {
-		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
-	}
-	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
-		slog.Warn("codewhale control response addressed another request", "answered", requestID, "stored", stored.RequestID)
-		return codewhaleReplyFrame{}, "", agent.RefusalOtherRequest
 	}
 	env, found := storedControlEvent(requestPayload)
 	if !found {
@@ -639,12 +657,12 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 	}
 	switch env.Event {
 	case contracts.CodewhaleEventApprovalRequired:
-		var payload approvalEventPayload
-		if json.Unmarshal(env.Payload, &payload) != nil || payload.approvalID() == "" {
+		payload, ok := parseApprovalEventPayload(env.Payload)
+		if !ok {
 			return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 		}
 		frame = codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameApproval, ApprovalID: payload.approvalID()}
-		if behavior == agent.ControlBehaviorAllow {
+		if behavior == contracts.ControlAnswerBehaviorAllow {
 			frame.Decision = contracts.CodewhaleDecisionAllow
 			return frame, "", ""
 		}
@@ -660,12 +678,15 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 		}
 		return frame, feedback, ""
 	case contracts.CodewhaleEventUserInputRequired:
-		var payload userInputEventPayload
-		if json.Unmarshal(env.Payload, &payload) != nil || payload.inputID() == "" || env.ThreadID == "" {
+		if agent.ControlToolName(requestPayload) != contracts.CodewhaleToolRequestUserInput {
+			return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
+		}
+		payload, ok := parseUserInputEventPayload(env.Payload)
+		if !ok || env.ThreadID == "" {
 			return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 		}
 		frame = codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameUserInput, ThreadID: env.ThreadID, InputID: payload.inputID()}
-		if behavior == agent.ControlBehaviorDeny {
+		if behavior == contracts.ControlAnswerBehaviorDeny {
 			// The runtime has no decline route, so every question is answered with a
 			// free-text refusal the model can read and act on. The contract holds the
 			// default, which the browser reads back as a bare decline.
@@ -673,11 +694,11 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 			if message != "" {
 				text = message
 			}
-			frame.Answers = declinedAnswers(payload.Request, text)
+			frame.Answers = declinedAnswersForQuestions(storedRequestQuestions(requestPayload, payload.Request), text)
 			frame.Declined = true
 			return frame, "", ""
 		}
-		answers, valid := answersFromResponse(response, payload.Request)
+		answers, valid := answersFromResponse(response)
 		if !valid {
 			return codewhaleReplyFrame{}, "", agent.RefusalAnswersDoNotFit
 		}
@@ -688,56 +709,27 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 	}
 }
 
-// answersFromResponse reads the answers the reader chose.
-//
-// The browser plugin sends the runtime's own answer list under
-// `updatedInput.answers`. The shared question control's map, keyed by question
-// text, is read too, so an answer from either surface reaches the runtime. Each
-// value of that map becomes ONE answer: the map joins a multiple choice into one
-// string and cannot say which options it held, so only a value that equals an
-// option's label keeps that label, and anything else is free text.
-func answersFromResponse(response []byte, request json.RawMessage) ([]userInputAnswer, bool) {
-	var envelope struct {
-		Response struct {
-			Response struct {
-				UpdatedInput struct {
-					Answers json.RawMessage `json:"answers"`
-				} `json:"updatedInput"`
-			} `json:"response"`
-		} `json:"response"`
-	}
-	if err := json.Unmarshal(response, &envelope); err != nil {
-		return nil, false
-	}
-	raw := envelope.Response.Response.UpdatedInput.Answers
-	if len(raw) == 0 || string(raw) == "null" {
+// answersFromResponse reads the answers the reader chose: the runtime's own
+// answer list under `updatedInput.answers`, which codewhaleQuestionAnswer
+// builds. Any other shape fails, and so does an answer with no question id,
+// because the runtime matches an answer to its question by that id.
+func answersFromResponse(response []byte) ([]userInputAnswer, bool) {
+	inner := providerkit.RawFields(agent.DecodeControlInnerResponse(response))
+	updated := providerkit.RawFields(inner["updatedInput"])
+	raw := updated[codewhaleUpdatedInputAnswers]
+	if _, ok := providerkit.RawArray(raw); !ok {
 		return nil, false
 	}
 	var list []userInputAnswer
-	if json.Unmarshal(raw, &list) == nil {
-		answers := make([]userInputAnswer, 0, len(list))
-		for _, answer := range list {
-			if strings.TrimSpace(answer.ID) == "" {
-				return nil, false
-			}
-			answers = append(answers, answer)
-		}
-		return answers, true
-	}
-	var byText map[string]string
-	if json.Unmarshal(raw, &byText) != nil {
+	if json.Unmarshal(raw, &list) != nil {
 		return nil, false
 	}
-	var answers []userInputAnswer
-	for _, question := range requestQuestions(request) {
-		value, found := byText[question.Question]
-		if !found {
-			value, found = byText[question.Header]
+	answers := make([]userInputAnswer, 0, len(list))
+	for _, answer := range list {
+		if strings.TrimSpace(answer.ID) == "" {
+			return nil, false
 		}
-		if !found || question.ID == "" {
-			continue
-		}
-		answers = append(answers, userInputAnswer{ID: question.ID, Label: question.answerLabel(value), Value: value})
+		answers = append(answers, answer)
 	}
 	return answers, true
 }

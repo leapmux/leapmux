@@ -7,7 +7,7 @@
  * real handshake against two real worker processes and asserts that
  * the live frontend renders tabs hosted on either worker.
  *
- * The CLI runs `agent open --worker-id <B>`. Worker B publishes its canonical
+ * The CLI runs `agent open --worker <B>`. Worker B publishes its canonical
  * tab through the Hub. Both browsers project the delivered operations and render
  * the tab. LocateTab confirms its Worker B association.
  *
@@ -15,7 +15,7 @@
  * there is no `tab focus` CLI and the spec does not exercise remote
  * focus propagation.
  *
- * Negative test: `agent open` with no `--worker-id` and no
+ * Negative test: `agent open` with no `--worker` and no
  * `LEAPMUX_CONTROL_WORKER_ID` env var fails with a clear error pointing
  * the user at the recovery action.
  */
@@ -106,36 +106,50 @@ test.describe('control CLI cross-worker', () => {
         const tabBInfo = await fetchTab(harness, workspaceId, agentB)
         expect(tabBInfo.workerId).toBe(workerB.id)
         expect(tabBInfo.workerId).not.toBe(workerA.id)
+
+        // Confirm CLI agent queries filter and report Worker B accurately.
+        const workerBAgents = await runCLI(cli, [
+          'agent',
+          'list',
+          '--workspace',
+          workspaceId,
+          '--worker',
+          workerB.id,
+        ]) as { agents: Array<{ id: string }> }
+        expect(workerBAgents.agents.map(a => a.id)).toContain(agentB)
+        expect(workerBAgents.agents.map(a => a.id)).not.toContain(agentA)
+
+        const gotB = await runCLI(cli, ['agent', 'get', agentB]) as { id: string, worker_id: string }
+        expect(gotB.id).toBe(agentB)
+        expect(gotB.worker_id).toBe(workerB.id)
       })
     })
   })
 
-  test('tab open without a worker target produces a clear error', async ({ crossWorker }) => {
+  test('agent open without a worker target produces a clear error', async ({ crossWorker }) => {
     const { harness, cli } = crossWorker
     await withTestWorkspace(harness, 'xw-err', async ({ workspaceId }) => {
-      // Drive `tab open --type=agent` with neither --worker-id nor
-      // the `LEAPMUX_CONTROL_WORKER_ID` env var. The resolver must
-      // surface a descriptive `invalid_request` envelope listing
-      // the unmet ID slot — the message text is loose-matched so
-      // a small copy edit doesn't break the assertion.
+      // Drive `agent open` with neither --worker nor the
+      // `LEAPMUX_CONTROL_WORKER_ID` env var. The command must refuse with
+      // a usage envelope whose hint states the flag that supplies the
+      // worker -- the text is loose-matched so a small copy edit doesn't
+      // break the assertion.
       try {
         await runCLI(cli, [
-          'tab',
-          'open',
-          '--type',
           'agent',
-          '--workspace-id',
+          'open',
+          '--workspace',
           workspaceId,
         ], {
           env: { LEAPMUX_CONTROL_WORKER_ID: '' },
         })
-        throw new Error('expected tab open to fail')
+        throw new Error('expected agent open to fail')
       }
       catch (err) {
         if (!(err instanceof CLIError))
           throw err
-        expect(err.code).toBe('invalid_request')
-        expect(err.message).toMatch(/--worker-id/i)
+        expect(err.code).toBe('usage')
+        expect(err.hints.join('\n')).toMatch(/--worker/i)
       }
     })
   })

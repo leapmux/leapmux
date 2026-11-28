@@ -3,11 +3,24 @@ import type { ControlResponseSummary } from './controlResponse'
 import type { TurnEnd } from './divider'
 import type { NotificationThread } from './notification'
 import type { ToolCall } from './toolCall'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** One file a user attached to a message they sent. */
 export interface UserMessageAttachment {
   filename?: string
   mimeType?: string
+}
+
+/**
+ * The agent tab that sent a message, when another agent sent it rather than the
+ * user. The Worker states it from the credentials of the sending tab, so no
+ * process can claim to be another agent or hide that it sent the message.
+ */
+export interface AgentMessageSender {
+  /** The tab of the sending agent, which the reader resolves to its title. */
+  tabId: string
+  /** The provider of the sending agent, for its icon and its name. */
+  provider: AgentProvider
 }
 
 /** Where one row sits in its tool span. */
@@ -107,16 +120,20 @@ export type ChatRow
     | { kind: 'assistant-text', text: string, segments?: AssistantTextSegment[] }
     | { kind: 'assistant-thinking', text: string }
     | { kind: 'assistant-plan', text: string }
-    | { kind: 'user', text: string, attachments: UserMessageAttachment[] }
+    /**
+     * A message to the agent. `sender` states the agent that sent it, and is
+     * absent for the user's own message.
+     */
+    | { kind: 'user', text: string, attachments: UserMessageAttachment[], sender?: AgentMessageSender }
     | { kind: 'plan-execution', text: string }
     /**
      * A saved answer to a control request, already reduced to the words a reader
      * sees.
      *
-     * The native request and response objects stop here. Layer 1 runs the provider's
-     * own `controlResponseDisplay` and keeps only its answer, so the transcript row
-     * and the scroll-rail dot draw ONE derivation rather than each running the
-     * provider hook again -- and no reader of a row holds a provider's wire bytes.
+     * The native request and response objects stop here. Layer 1 words the answer
+     * once, from the prompt and the decision that the Worker recorded with it, so the
+     * transcript row and the scroll-rail dot draw ONE derivation -- and no reader of a
+     * row holds a provider's wire bytes.
      */
     | { kind: 'control-response', display: ControlResponseSummary }
     | { kind: 'hidden' }

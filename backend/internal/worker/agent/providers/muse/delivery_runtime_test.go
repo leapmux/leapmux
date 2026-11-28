@@ -16,6 +16,130 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestHostExitRetiresChildInputsWithoutProvedDelivery(t *testing.T) {
+	t.Parallel()
+	a, _ := testAgent(t)
+	sink := &agenttest.Sink{}
+	a.sessions["child-session"] = &sessionState{
+		childID: "child-tab", parentSessionID: "session", sink: agent.NewProviderServices(sink),
+		childInputCommands: map[string]*museChildInputCommand{
+			"followup": {inputID: "ordinary-input"},
+			"steer":    {inputID: "steered-input", steerAttemptID: "dispatch"},
+		},
+	}
+
+	a.retireHost(agent.MessageCompletionInterrupted)
+	a.retireHost(agent.MessageCompletionInterrupted)
+
+	assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+		{SessionID: "child-session", InputID: "followup"}: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+	}, sink.NativeReplyRetirements())
+	assert.Equal(t, []agent.SteerResolution{
+		{InputID: "steered-input", AttemptID: "dispatch", Outcome: agent.SteerOutcomeUncertain},
+	}, sink.SteerResolutions())
+}
+
+func TestRetireChildInputCommandsProcessesSteersInDeterministicKeyOrder(t *testing.T) {
+	t.Parallel()
+	want := []agent.SteerResolution{
+		{InputID: "in-a", AttemptID: "att-a", Outcome: agent.SteerOutcomeUncertain},
+		{InputID: "in-b", AttemptID: "att-b", Outcome: agent.SteerOutcomeUncertain},
+		{InputID: "in-c", AttemptID: "att-c", Outcome: agent.SteerOutcomeUncertain},
+		{InputID: "in-d", AttemptID: "att-d", Outcome: agent.SteerOutcomeUncertain},
+		{InputID: "in-e", AttemptID: "att-e", Outcome: agent.SteerOutcomeUncertain},
+	}
+	for range 20 {
+		a, _ := testAgent(t)
+		sink := &agenttest.Sink{}
+		state := &sessionState{
+			childID: "child-tab", parentSessionID: "session", sink: agent.NewProviderServices(sink),
+			childInputCommands: map[string]*museChildInputCommand{
+				"cmd-d":   {inputID: "in-d", steerAttemptID: "att-d"},
+				"cmd-b":   {inputID: "in-b", steerAttemptID: "att-b"},
+				"cmd-e":   {inputID: "in-e", steerAttemptID: "att-e"},
+				"cmd-a":   {inputID: "in-a", steerAttemptID: "att-a"},
+				"cmd-c":   {inputID: "in-c", steerAttemptID: "att-c"},
+				"cmd-nil": nil,
+			},
+		}
+		a.retireChildInputCommands("child-session", state)
+		require.Equal(t, want, sink.SteerResolutions())
+	}
+}
+
+type childProofRetentionRefusalSink struct {
+	agent.ProviderServices
+	err error
+}
+
+func (s *childProofRetentionRefusalSink) OutputQueue() *agent.OutputQueue {
+	return nil
+}
+
+func (s *childProofRetentionRefusalSink) BindNativeInputTurn(agent.NativeInputReceipt, string) error {
+	return s.err
+}
+
+func (s *childProofRetentionRefusalSink) CaptureSteerResolution(agent.SteerResolution) func() error {
+	return func() error { return s.err }
+}
+
+func TestRetainProvedChildInputHandlesRetiredUntrackedAndRefusedSink(t *testing.T) {
+	t.Parallel()
+
+	t.Run("retired session reports route not ready", func(t *testing.T) {
+		t.Parallel()
+		a, _ := testAgent(t)
+		state := &sessionState{
+			childID: "child-tab", parentSessionID: "session", retired: true,
+			sink:               agent.NewProviderServices(&agenttest.Sink{}),
+			childInputCommands: map[string]*museChildInputCommand{"cmd-1": {inputID: "in-1"}},
+		}
+		a.sessions["child-session"] = state
+		err := a.retainProvedChildInput("child-session", state, agent.NativeInputReceipt{SessionID: "child-session", InputID: "cmd-1", TurnID: "run-1"})
+		require.ErrorIs(t, err, agent.ErrChildRouteNotReady)
+		assert.False(t, state.childInputCommands["cmd-1"].proved)
+	})
+
+	t.Run("untracked command returns nil", func(t *testing.T) {
+		t.Parallel()
+		a, _ := testAgent(t)
+		state := &sessionState{
+			childID: "child-tab", parentSessionID: "session",
+			sink:               agent.NewProviderServices(&agenttest.Sink{}),
+			childInputCommands: map[string]*museChildInputCommand{},
+		}
+		a.sessions["child-session"] = state
+		require.NoError(t, a.retainProvedChildInput("child-session", state, agent.NativeInputReceipt{SessionID: "child-session", InputID: "missing", TurnID: "run-1"}))
+	})
+
+	for _, steer := range []bool{false, true} {
+		name := "refused followup keeps entry unproved"
+		if steer {
+			name = "refused steer keeps entry unproved"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, _ := testAgent(t)
+			tracked := &museChildInputCommand{inputID: "in-1"}
+			if steer {
+				tracked.steerAttemptID = "att-1"
+			}
+			state := &sessionState{
+				childID: "child-tab", parentSessionID: "session",
+				sink:               &childProofRetentionRefusalSink{ProviderServices: agent.NewProviderServices(&agenttest.Sink{}), err: assert.AnError},
+				childInputCommands: map[string]*museChildInputCommand{"cmd-1": tracked},
+			}
+			a.sessions["child-session"] = state
+			err := a.retainProvedChildInput("child-session", state, agent.NativeInputReceipt{SessionID: "child-session", InputID: "cmd-1", TurnID: "run-1"})
+			require.ErrorIs(t, err, assert.AnError)
+			assert.False(t, tracked.proved)
+			assert.Empty(t, tracked.provedReceipt)
+			assert.Same(t, tracked, state.childInputCommands["cmd-1"])
+		})
+	}
+}
+
 func requireFailedParentInputProjection(t *testing.T, a *Agent, root *agenttest.Sink, childID string, scenario nativeParentInputCase) {
 	t.Helper()
 	state := a.sessions[scenario.ChildSessionID]

@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -23,6 +22,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
@@ -44,6 +44,8 @@ type fakeAdminHub struct {
 	leapmuxv1connect.UnimplementedAdminWorkerServiceHandler
 
 	mu sync.Mutex
+	// versionHandler serves the public build endpoint when a test needs it.
+	versionHandler http.HandlerFunc
 
 	// values and descriptors answer ListSettings.
 	values      []*leapmuxv1.SettingValue
@@ -146,8 +148,12 @@ func (h *fakeAdminHub) ListUsers(
 	_ context.Context, req *leapmuxv1.ListUsersRequest,
 ) (*leapmuxv1.ListUsersResponse, error) {
 	h.recordList(req)
+	users := []*leapmuxv1.AdminUser{{Id: "u-1", Username: "amy"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(users[0].GetId(), prefix) {
+		users = nil
+	}
 	return &leapmuxv1.ListUsersResponse{
-		Users: []*leapmuxv1.AdminUser{{Id: "u-1", Username: "amy"}},
+		Users: users,
 		Page:  h.listPage,
 	}, nil
 }
@@ -156,8 +162,12 @@ func (h *fakeAdminHub) ListAPITokens(
 	_ context.Context, req *leapmuxv1.ListAPITokensRequest,
 ) (*leapmuxv1.ListAPITokensResponse, error) {
 	h.recordList(req)
+	tokens := []*leapmuxv1.AdminAPIToken{{Id: "t-1", UserId: "u-1"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(tokens[0].GetId(), prefix) {
+		tokens = nil
+	}
 	return &leapmuxv1.ListAPITokensResponse{
-		Tokens: []*leapmuxv1.AdminAPIToken{{Id: "t-1", UserId: "u-1"}},
+		Tokens: tokens,
 		Page:   h.listPage,
 	}, nil
 }
@@ -166,8 +176,12 @@ func (h *fakeAdminHub) ListDelegationTokens(
 	_ context.Context, req *leapmuxv1.ListDelegationTokensRequest,
 ) (*leapmuxv1.ListDelegationTokensResponse, error) {
 	h.recordList(req)
+	tokens := []*leapmuxv1.AdminDelegationToken{{Id: "d-1", UserId: "u-1"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(tokens[0].GetId(), prefix) {
+		tokens = nil
+	}
 	return &leapmuxv1.ListDelegationTokensResponse{
-		Tokens: []*leapmuxv1.AdminDelegationToken{{Id: "d-1", UserId: "u-1"}},
+		Tokens: tokens,
 		Page:   h.listPage,
 	}, nil
 }
@@ -176,9 +190,26 @@ func (h *fakeAdminHub) ListWorkers(
 	_ context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest,
 ) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
 	h.recordList(req)
+	workers := []*leapmuxv1.AdminWorker{{Id: "w-1", RegisteredBy: "u-1"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(workers[0].GetId(), prefix) {
+		workers = nil
+	}
 	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{
-		Workers: []*leapmuxv1.AdminWorker{{Id: "w-1", RegisteredBy: "u-1"}},
+		Workers: workers,
 		Page:    h.listPage,
+	}, nil
+}
+
+func (h *fakeAdminHub) ListOAuthProviders(
+	_ context.Context, req *leapmuxv1.ListOAuthProvidersRequest,
+) (*leapmuxv1.ListOAuthProvidersResponse, error) {
+	h.recordList(req)
+	providers := []*leapmuxv1.AdminOAuthProvider{{Id: "prov-1", ProviderType: "github", Enabled: true}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(providers[0].GetId(), prefix) {
+		providers = nil
+	}
+	return &leapmuxv1.ListOAuthProvidersResponse{
+		Providers: providers,
 	}, nil
 }
 
@@ -345,6 +376,9 @@ func startAdminHub(t *testing.T, hub *fakeAdminHub) string {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 
 	mux := http.NewServeMux()
+	if hub.versionHandler != nil {
+		mux.HandleFunc("/version", hub.versionHandler)
+	}
 	server := connect.NewServer()
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(server, hub)
 	leapmuxv1connect.RegisterAdminUserServiceHandler(server, hub)
@@ -402,9 +436,7 @@ func captchaHubValues(selected, altchaJSON string, rows ...*leapmuxv1.SettingVal
 // the cross-key rules once over the whole result.
 func captchaSetDoc(t *testing.T, hub *fakeAdminHub, url, key string, args ...string) map[string]any {
 	t.Helper()
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminCaptchaSet(fakeCmdCtx{}, append([]string{"--hub", url}, args...)))
-	})
+	runControl(t, append([]string{"admin", "captcha", "set", "--hub", url}, args...)...).ok(t)
 	writes := hub.takeUpdatesMany()
 	require.Len(t, writes, 1, "every key travels in ONE UpdateSettings")
 	return writeFor(t, writes[0], key)
@@ -414,8 +446,8 @@ func captchaSetDoc(t *testing.T, hub *fakeAdminHub, url, key string, args ...str
 func envelopeData(t *testing.T, out []byte) map[string]any {
 	t.Helper()
 	var env struct {
-		Data  map[string]any    `json:"data"`
-		Error map[string]string `json:"error"`
+		Data  map[string]any `json:"data"`
+		Error map[string]any `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(out, &env), "stdout: %s", out)
 	require.Empty(t, env.Error, "the verb reported an error")
@@ -426,10 +458,10 @@ func envelopeData(t *testing.T, out []byte) map[string]any {
 // envelopeData: a refused verb states a stable CODE that an operator's
 // script branches on, so a test reads that field rather than searching the
 // whole envelope for the text.
-func envelopeError(t *testing.T, out []byte) map[string]string {
+func envelopeError(t *testing.T, out []byte) map[string]any {
 	t.Helper()
 	var env struct {
-		Error map[string]string `json:"error"`
+		Error map[string]any `json:"error"`
 	}
 	// Decoding the WHOLE buffer also pins that the verb wrote exactly one
 	// envelope: a second concatenated object fails here.
@@ -460,9 +492,7 @@ func TestAdminSettingsSet_ReportsThePropagationWithoutASecondRead(t *testing.T) 
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsSet(fakeCmdCtx{}, []string{"--hub", url, "theme", `"dark"`}))
-	})
+	out := runControl(t, "admin", "settings", "set", "--hub", url, "theme", `"dark"`).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "hot", data["propagation"])
@@ -483,9 +513,7 @@ func TestAdminSettingsSet_ReportsARestartClassKey(t *testing.T) {
 	hub := &fakeAdminHub{restart: true}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsSet(fakeCmdCtx{}, []string{"--hub", url, "listen_addr", `":8080"`}))
-	})
+	out := runControl(t, "admin", "settings", "set", "--hub", url, "listen_addr", `":8080"`).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "restart", data["propagation"])
@@ -501,9 +529,7 @@ func TestAdminSettingsSet_IgnoresTheRestartClassOfAnotherKey(t *testing.T) {
 	hub := &fakeAdminHub{restartKeys: []string{"listen_addr"}}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsSet(fakeCmdCtx{}, []string{"--hub", url, "theme", `"dark"`}))
-	})
+	out := runControl(t, "admin", "settings", "set", "--hub", url, "theme", `"dark"`).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "hot", data["propagation"], "only the written key's own class counts")
@@ -519,10 +545,7 @@ func TestAdminSettingsSetSecret_SendsTheDocumentInTheSecretHalf(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsSetSecret(fakeCmdCtx{},
-			[]string{"--hub", url, "smtp", `{"password":"hunter2"}`}))
-	})
+	out := runControl(t, "admin", "settings", "set-secret", "--hub", url, "smtp", `{"password":"hunter2"}`).ok(t)
 
 	updates := hub.takeUpdatesMany()
 	require.Len(t, updates, 1)
@@ -542,9 +565,7 @@ func TestAdminSettingsReset_ResetsTheOneKey(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsReset(fakeCmdCtx{}, []string{"--hub", url, "theme"}))
-	})
+	out := runControl(t, "admin", "settings", "reset", "--hub", url, "theme").ok(t)
 
 	assert.Equal(t, [][]string{{"theme"}}, hub.takeResets())
 	data := envelopeData(t, out)
@@ -561,9 +582,7 @@ func TestAdminSettingsReset_ReportsARestartClassKey(t *testing.T) {
 	hub := &fakeAdminHub{restart: true}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsReset(fakeCmdCtx{}, []string{"--hub", url, "queue_budget"}))
-	})
+	out := runControl(t, "admin", "settings", "reset", "--hub", url, "queue_budget").ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "restart", data["propagation"])
@@ -577,16 +596,14 @@ func TestAdminSettingsReset_IgnoresTheRestartClassOfAnotherKey(t *testing.T) {
 	hub := &fakeAdminHub{restartKeys: []string{"queue_budget"}}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsReset(fakeCmdCtx{}, []string{"--hub", url, "theme"}))
-	})
+	out := runControl(t, "admin", "settings", "reset", "--hub", url, "theme").ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "hot", data["propagation"], "only the reset key's own class counts")
 	assert.NotContains(t, data, "note_restart")
 }
 
-// `rate-limit reset --operation X` resets the settings key of that operation
+// `rate-limit reset <operation>` resets the settings key of that operation
 // alone, and prints the value that the hub answers for it.
 func TestAdminRateLimitReset_ResetsTheKeyOfTheOperation(t *testing.T) {
 	key, err := rateLimitOperation("elevation")
@@ -594,9 +611,7 @@ func TestAdminRateLimitReset_ResetsTheKeyOfTheOperation(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminRateLimitReset(fakeCmdCtx{}, []string{"--hub", url, "--operation", "elevation"}))
-	})
+	out := runControl(t, "admin", "rate-limit", "reset", "elevation", "--hub", url).ok(t)
 
 	assert.Equal(t, [][]string{{key}}, hub.takeResets())
 	assert.Equal(t, key, envelopeData(t, out)["key"])
@@ -604,20 +619,18 @@ func TestAdminRateLimitReset_ResetsTheKeyOfTheOperation(t *testing.T) {
 
 // The hub answers one value for each key that a request lists, so a reply
 // with any other count is a hub fault. Every verb that writes or resets ONE
-// key must report that fault under its own code. It must not print a value
-// for the wrong key, and it must not panic on an empty reply.
+// key must report that fault as an internal failure. It must not print a
+// value for the wrong key, and it must not panic on an empty reply.
 func TestAdminSingleKeyVerbs_RefuseAReplyWithTheWrongValueCount(t *testing.T) {
 	verbs := []struct {
 		name string
 		args []string
-		run  func(any, []string) error
-		code string
 	}{
-		{"settings set", []string{"theme", `"dark"`}, RunAdminSettingsSet, "update_failed"},
-		{"settings set-secret", []string{"smtp", `{"password":"x"}`}, RunAdminSettingsSetSecret, "update_failed"},
-		{"settings reset", []string{"theme"}, RunAdminSettingsReset, "reset_failed"},
-		{"rate-limit set", []string{"--operation", "elevation", "--window", "120"}, RunAdminRateLimitSet, "rate_limit_set_failed"},
-		{"rate-limit reset", []string{"--operation", "elevation"}, RunAdminRateLimitReset, "reset_failed"},
+		{"settings set", []string{"admin", "settings", "set", "theme", `"dark"`}},
+		{"settings set-secret", []string{"admin", "settings", "set-secret", "smtp", `{"password":"x"}`}},
+		{"settings reset", []string{"admin", "settings", "reset", "theme"}},
+		{"rate-limit set", []string{"admin", "rate-limit", "set", "elevation", "--window", "120"}},
+		{"rate-limit reset", []string{"admin", "rate-limit", "reset", "elevation"}},
 	}
 	replies := []struct {
 		name    string
@@ -635,14 +648,10 @@ func TestAdminSingleKeyVerbs_RefuseAReplyWithTheWrongValueCount(t *testing.T) {
 				hub := &fakeAdminHub{rewriteValues: reply.rewrite}
 				url := startAdminHub(t, hub)
 
-				out := withCapturedStdout(t, func() {
-					err := verb.run(fakeCmdCtx{}, append([]string{"--hub", url}, verb.args...))
-					require.Error(t, err)
-					assert.True(t, control.IsEmitted(err))
-				})
+				out := runControl(t, append(verb.args, "--hub", url)...).failed(t)
 
 				envErr := envelopeError(t, out)
-				assert.Equal(t, verb.code, envErr["code"])
+				assert.Equal(t, "internal", envErr["code"])
 				assert.Contains(t, envErr["message"],
 					fmt.Sprintf("the hub answered %d setting values for one key", reply.count))
 				assert.NotContains(t, string(out), "another_key", "a value for another key must never print")
@@ -659,10 +668,7 @@ func TestAdminUserList_SendsThePageAndPrintsTheNextCursor(t *testing.T) {
 	hub := &fakeAdminHub{listPage: &leapmuxv1.PageResponse{NextCursor: "c2"}}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminUserList(fakeCmdCtx{},
-			[]string{"--hub", url, "--limit", "7", "--cursor", "c1", "--query", "am"}))
-	})
+	out := runControl(t, "admin", "user", "list", "--hub", url, "--limit", "7", "--cursor", "c1", "--query", "am").ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "c2", data["next_cursor"])
@@ -686,9 +692,7 @@ func TestAdminUserList_PrintsAnEmptyCursorAfterTheLastPage(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminUserList(fakeCmdCtx{}, []string{"--hub", url}))
-	})
+	out := runControl(t, "admin", "user", "list", "--hub", url).ok(t)
 
 	data := envelopeData(t, out)
 	require.Contains(t, data, "next_cursor", "an absent key reads as a verb that does not page")
@@ -713,11 +717,11 @@ func TestAdminOwnerFilteredLists_SendTheOwnerSelector(t *testing.T) {
 	}
 	verbs := []struct {
 		name string
-		run  func(any, []string) error
+		path []string
 	}{
-		{"api-token list", RunAdminAPITokenList},
-		{"delegation-token list", RunAdminDelegationTokenList},
-		{"worker list", RunAdminWorkerList},
+		{"api-token list", []string{"admin", "api-token", "list"}},
+		{"delegation-token list", []string{"admin", "delegation-token", "list"}},
+		{"worker list", []string{"admin", "worker", "list"}},
 	}
 	filters := []struct {
 		name     string
@@ -726,8 +730,8 @@ func TestAdminOwnerFilteredLists_SendTheOwnerSelector(t *testing.T) {
 		username string
 	}{
 		{"neither flag", nil, "", ""},
-		{"user id", []string{"--user-id", "usr_1"}, "usr_1", ""},
-		{"username", []string{"--username", "amy"}, "", "amy"},
+		{"user id", []string{"--user", "id:usr_1"}, "usr_1", ""},
+		{"username", []string{"--user", "amy"}, "", "amy"},
 	}
 	for _, verb := range verbs {
 		for _, filter := range filters {
@@ -735,9 +739,8 @@ func TestAdminOwnerFilteredLists_SendTheOwnerSelector(t *testing.T) {
 				hub := &fakeAdminHub{listPage: &leapmuxv1.PageResponse{NextCursor: "next"}}
 				url := startAdminHub(t, hub)
 
-				out := withCapturedStdout(t, func() {
-					require.NoError(t, verb.run(fakeCmdCtx{}, append([]string{"--hub", url}, filter.args...)))
-				})
+				args := append(append(verb.path[:len(verb.path):len(verb.path)], "--hub", url), filter.args...)
+				out := runControl(t, args...).ok(t)
 				assert.Equal(t, "next", envelopeData(t, out)["next_cursor"])
 
 				requests := hub.takeListRequests()
@@ -775,18 +778,18 @@ func TestAdminSettingsList_DescribesAKeyWithItsDomainVerb(t *testing.T) {
 	}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsList(fakeCmdCtx{}, []string{"--hub", url}))
-	})
+	out := runControl(t, "admin", "settings", "list", "--hub", url).ok(t)
 
 	var env struct {
-		Data []map[string]any `json:"data"`
+		Data struct {
+			Settings []map[string]any `json:"settings"`
+		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(out, &env))
-	require.Len(t, env.Data, 2)
-	assert.Equal(t, "the active captcha provider alias (prefer `leapmux control admin captcha ...`)",
-		env.Data[0]["description"])
-	assert.Equal(t, "the public origin", env.Data[1]["description"],
+	require.Len(t, env.Data.Settings, 2)
+	assert.Equal(t, "the active captcha provider alias (prefer `leapmux admin captcha ...`)",
+		env.Data.Settings[0]["description"])
+	assert.Equal(t, "the public origin", env.Data.Settings[1]["description"],
 		"a key with no domain verb keeps the hub's own summary")
 }
 
@@ -799,11 +802,7 @@ func TestAdminCaptchaSet_RefusesAProviderWithNoStoredCredentials(t *testing.T) {
 		settingValue(captcha.TurnstileKey.Name(), "{}", nil))}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		err := RunAdminCaptchaSet(fakeCmdCtx{}, []string{"--hub", url, "--provider", "turnstile"})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
+	out := runControl(t, "admin", "captcha", "set", "--hub", url, "--provider", "turnstile").failed(t)
 
 	assert.Contains(t, string(out), "turnstile has no stored site key and secret")
 	assert.Contains(t, string(out), "--site-key and --secret")
@@ -817,10 +816,7 @@ func TestAdminCaptchaSet_NamesOnlyTheMissingHalf(t *testing.T) {
 		settingValue(captcha.TurnstileKey.Name(), `{"site_key":"stored"}`, nil))}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		err := RunAdminCaptchaSet(fakeCmdCtx{}, []string{"--hub", url, "--provider", "turnstile"})
-		require.Error(t, err)
-	})
+	out := runControl(t, "admin", "captcha", "set", "--hub", url, "--provider", "turnstile").failed(t)
 	assert.Contains(t, string(out), "turnstile has no stored secret; pass --secret")
 	assert.NotContains(t, string(out), "site key", "the stored half must not appear in the refusal")
 }
@@ -832,9 +828,7 @@ func TestAdminCaptchaSet_ActivatesAProviderWhoseRowIsComplete(t *testing.T) {
 		settingValue(captcha.TurnstileKey.Name(), `{"site_key":"stored"}`, map[string]bool{"secret_key": true}))}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminCaptchaSet(fakeCmdCtx{}, []string{"--hub", url, "--provider", "turnstile"}))
-	})
+	out := runControl(t, "admin", "captcha", "set", "--hub", url, "--provider", "turnstile").ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "turnstile", data["provider"])
@@ -853,7 +847,7 @@ func TestReadCaptchaState_ReportsEachProvidersOwnSecretField(t *testing.T) {
 
 	c, err := control.NewClientOrAnonymous(url)
 	require.NoError(t, err)
-	state, err := readCaptchaState(c)
+	state, err := readCaptchaState(t.Context(), c)
 	require.NoError(t, err)
 
 	assert.True(t, state.secretSet[captcha.AltchaKey.Name()], "ALTCHA stores its signing key as hmac_key")
@@ -907,7 +901,7 @@ func TestAdminCaptchaSet_KeepsANonZeroTuningValue(t *testing.T) {
 // (DefaultAltchaSettings) rather than the default of the family the
 // invocation leaves in place. That is only correct while no family sets an
 // expiry of its own, so the loop states that condition. A family that ever
-// does makes the fixed lookup in RunAdminCaptchaSet wrong, and this fails
+// does makes the fixed lookup in newAdminCaptchaSet wrong, and this fails
 // then rather than storing another family's expiry in silence.
 //
 // The substitution itself is not decoration: the key refuses anything
@@ -984,10 +978,7 @@ func TestAdminCaptchaSet_RefusesAForeignFlagAgainstTheResolvedTarget(t *testing.
 		settingValue(captcha.TurnstileKey.Name(), `{"site_key":"k"}`, map[string]bool{"secret_key": true}))}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		err := RunAdminCaptchaSet(fakeCmdCtx{}, []string{"--hub", url, "--cost", "5"})
-		require.Error(t, err)
-	})
+	out := runControl(t, "admin", "captcha", "set", "--hub", url, "--cost", "5").failed(t)
 
 	assert.Contains(t, string(out), "--cost applies only to altcha")
 	assert.Contains(t, string(out), "the target provider is turnstile")
@@ -1001,9 +992,7 @@ func TestAdminCaptchaReset_ClearsEveryKeyInOneCall(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminCaptchaReset(fakeCmdCtx{}, []string{"--hub", url}))
-	})
+	out := runControl(t, "admin", "captcha", "reset", "--hub", url).ok(t)
 
 	data := envelopeData(t, out)
 	assert.ElementsMatch(t, captchaSettingKeys(), data["reset"])
@@ -1022,17 +1011,13 @@ func TestAdminCaptchaReset_OneProviderCarriesTheSelectionWhenItIsSelected(t *tes
 		settingValue(captcha.TurnstileKey.Name(), `{"site_key":"k"}`, map[string]bool{"secret_key": true}))}
 	url := startAdminHub(t, hub)
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminCaptchaReset(fakeCmdCtx{}, []string{"--hub", url, "--provider", "turnstile"}))
-	})
+	runControl(t, "admin", "captcha", "reset", "--hub", url, "--provider", "turnstile").ok(t)
 	resets := hub.takeResets()
 	require.Len(t, resets, 1)
 	assert.ElementsMatch(t,
 		[]string{captcha.CaptchaSelectedKey.Name(), captcha.TurnstileKey.Name()}, resets[0])
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminCaptchaReset(fakeCmdCtx{}, []string{"--hub", url, "--provider", "recaptcha_v3"}))
-	})
+	runControl(t, "admin", "captcha", "reset", "--hub", url, "--provider", "recaptcha_v3").ok(t)
 	resets = hub.takeResets()
 	require.Len(t, resets, 1)
 	assert.Equal(t, []string{captcha.RecaptchaV3Key.Name()}, resets[0],
@@ -1046,14 +1031,10 @@ func TestAdminCaptchaReset_ARefusalClearsNothing(t *testing.T) {
 	hub := &fakeAdminHub{resetErr: errors.New("cross rule refused")}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		err := RunAdminCaptchaReset(fakeCmdCtx{}, []string{"--hub", url})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
+	out := runControl(t, "admin", "captcha", "reset", "--hub", url).failed(t)
 
 	envErr := envelopeError(t, out)
-	assert.Equal(t, "reset_failed", envErr["code"])
+	assert.Equal(t, "invalid_argument", envErr["code"], "the hub's own code reaches the operator")
 	assert.Contains(t, envErr["message"], "cross rule refused")
 	assert.Len(t, hub.takeResets(), 1, "a refusal must not fall back to a per-key sequence")
 }
@@ -1064,10 +1045,7 @@ func TestAdminRateLimitSet_SubstitutesTheCatalogueDefaultForAPassedZero(t *testi
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminRateLimitSet(fakeCmdCtx{},
-			[]string{"--hub", url, "--operation", "elevation", "--max-attempts", "0", "--window", "0"}))
-	})
+	runControl(t, "admin", "rate-limit", "set", "elevation", "--hub", url, "--max-attempts", "0", "--window", "0").ok(t)
 
 	def, ok := ratelimit.DefaultLimits(ratelimit.OpElevation)
 	require.True(t, ok)
@@ -1087,12 +1065,8 @@ func TestAdminUserSetAdmin_CarriesForceToTheHub(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminUserSetAdmin(fakeCmdCtx{},
-			[]string{"--hub", url, "--username", "amy", "--force"}, false))
-		require.NoError(t, RunAdminUserSetAdmin(fakeCmdCtx{},
-			[]string{"--hub", url, "--username", "amy"}, false))
-	})
+	runControl(t, "admin", "user", "revoke-admin", "amy", "--hub", url, "--force").ok(t)
+	runControl(t, "admin", "user", "revoke-admin", "amy", "--hub", url).ok(t)
 
 	calls := hub.takeSetAdmin()
 	require.Len(t, calls, 2)
@@ -1100,26 +1074,24 @@ func TestAdminUserSetAdmin_CarriesForceToTheHub(t *testing.T) {
 	assert.False(t, calls[1].GetForce(), "the flag is not set by default")
 }
 
-// `user update` runs its selector check LAST, after it builds the request, so
-// the selector must still reach that request. A verb that read the selector
-// before the check would send none, and the hub would refuse every update.
+// `user update` reads its <user> argument LAST, after it builds the request,
+// so the selector must still reach that request. A verb that read the
+// selector before the check would send none, and the hub would refuse every
+// update.
 func TestAdminUserUpdate_CarriesTheSelectorToTheHub(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		args []string
+		user string
 		want *leapmuxv1.UserSelector
 	}{
-		{"by id", []string{"--id", "u-7"}, service.SelectUserByID("u-7")},
-		{"by username", []string{"--username", "amy"}, service.SelectUserByUsername("amy")},
+		{"by id", "id:u-7", service.SelectUserByID("u-7")},
+		{"by username", "amy", service.SelectUserByUsername("amy")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hub := &fakeAdminHub{}
 			url := startAdminHub(t, hub)
 
-			withCapturedStdout(t, func() {
-				require.NoError(t, RunAdminUserUpdate(fakeCmdCtx{},
-					append([]string{"--hub", url, "--display-name", "Amy"}, tc.args...)))
-			})
+			runControl(t, "admin", "user", "update", tc.user, "--hub", url, "--display-name", "Amy").ok(t)
 
 			calls := hub.takeUpdatedUsers()
 			require.Len(t, calls, 1)
@@ -1139,10 +1111,7 @@ func TestAdminUserResetPassword_ReportsTheSubjectAndTheRevokedCounts(t *testing.
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminUserResetPassword(fakeCmdCtx{},
-			[]string{"--hub", url, "--id", "u-7", "--password", "s3cr3t"}))
-	})
+	out := runControl(t, "admin", "user", "reset-password", "id:u-7", "--hub", url, "--password", "s3cr3t").ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "u-7", data["user_id"])
@@ -1167,10 +1136,7 @@ func TestAdminUserResetPassword_ReportsTheUserIDWhenAddressedByUsername(t *testi
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminUserResetPassword(fakeCmdCtx{},
-			[]string{"--hub", url, "--username", "amy", "--password", "s3cr3t"}))
-	})
+	out := runControl(t, "admin", "user", "reset-password", "amy", "--hub", url, "--password", "s3cr3t").ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "u-7", data["user_id"],
@@ -1183,31 +1149,27 @@ func TestAdminUserResetPassword_ReportsTheUserIDWhenAddressedByUsername(t *testi
 	assert.Empty(t, calls[0].GetUser().GetId())
 }
 
-// A hub that refuses the reset must reach the operator under this verb's
-// own code. `reset_failed` separates it from `rpc_failed`, which says the
-// call never landed -- and the two demand different next steps.
-func TestAdminUserResetPassword_ARefusalRendersTheResetFailedCode(t *testing.T) {
+// A hub that refuses the reset must reach the operator with the hub's own
+// code and reason. invalid_argument says that the call landed and the hub
+// refused the value; unavailable would say that the call never landed. The
+// two demand different next steps.
+func TestAdminUserResetPassword_ARefusalCarriesTheHubsCode(t *testing.T) {
 	hub := &fakeAdminHub{resetPasswordErr: errors.New("password does not meet the policy")}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		err := RunAdminUserResetPassword(fakeCmdCtx{},
-			[]string{"--hub", url, "--id", "u-7", "--password", "short"})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
+	out := runControl(t, "admin", "user", "reset-password", "id:u-7", "--hub", url, "--password", "short").failed(t)
 
 	envErr := envelopeError(t, out)
-	assert.Equal(t, "reset_failed", envErr["code"])
+	assert.Equal(t, "invalid_argument", envErr["code"])
 	assert.Contains(t, envErr["message"], "password does not meet the policy",
 		"the hub's reason is the actionable half; the CLI only frames it")
 	require.Len(t, hub.takeResetPasswords(), 1, "the refusal came from the hub, so the call travelled")
 }
 
-// The pre-dial half of this verb -- the selector check that must answer
+// The pre-dial half of this verb -- the <user> check that must answer
 // before the password prompt -- is pinned by
-// TestAdminUserResetPassword_RefusesAMissingSelectorBeforeItPrompts, which
-// needs no hub because BeforeDial runs before the dial.
+// TestAdminUserResetPassword_RefusesAnEmptyUserBeforeItPrompts, which needs
+// no hub because the <user> check runs before requireAdminClient.
 
 // Removing a provider that is the last login method of an account needs
 // --force, and the hub can enforce that only when the flag reaches the
@@ -1217,12 +1179,8 @@ func TestAdminOAuthProviderRemove_CarriesForceToTheHub(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminOAuthProviderRemove(fakeCmdCtx{},
-			[]string{"--hub", url, "--id", "prov-1", "--force"}))
-		require.NoError(t, RunAdminOAuthProviderRemove(fakeCmdCtx{},
-			[]string{"--hub", url, "--id", "prov-1"}))
-	})
+	runControl(t, "admin", "idp", "remove", "prov-1", "--hub", url, "--force").ok(t)
+	runControl(t, "admin", "idp", "remove", "prov-1", "--hub", url).ok(t)
 
 	calls := hub.takeRemovedProviders()
 	require.Len(t, calls, 2)
@@ -1237,10 +1195,7 @@ func TestAdminOAuthProviderRemove_ReportsTheLockedOutCount(t *testing.T) {
 	hub := &fakeAdminHub{lockedOutUsers: 3}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminOAuthProviderRemove(fakeCmdCtx{},
-			[]string{"--hub", url, "--id", "prov-1", "--force"}))
-	})
+	out := runControl(t, "admin", "idp", "remove", "prov-1", "--hub", url, "--force").ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "prov-1", data["removed"])
@@ -1255,33 +1210,50 @@ func TestAdminOAuthProviderRemove_ReportsZeroWhenNobodyIsLockedOut(t *testing.T)
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminOAuthProviderRemove(fakeCmdCtx{},
-			[]string{"--hub", url, "--id", "prov-1"}))
-	})
+	out := runControl(t, "admin", "idp", "remove", "prov-1", "--hub", url).ok(t)
 
 	data := envelopeData(t, out)
 	require.Contains(t, data, "locked_out_users")
 	assert.EqualValues(t, 0, data["locked_out_users"])
 }
 
-// `api-token issue` takes the SAME (user-id | username) selector as every
-// other user-addressing verb, so the one verb that MINTS a credential lets
-// an operator name the owner the way the rest of the surface does.
-func TestAdminAPITokenIssue_AddressesTheOwnerByUsername(t *testing.T) {
-	hub := &fakeAdminHub{}
-	url := startAdminHub(t, hub)
+// `api-token issue` takes the SAME <user> argument as every other
+// user-addressing verb, so the one verb that MINTS a credential lets an
+// operator give the owner the way the rest of the surface does.
+func TestAdminAPITokenIssue_AddressesTheOwnerByEitherHandle(t *testing.T) {
+	for _, tc := range []struct {
+		user string
+		want *leapmuxv1.UserSelector
+	}{
+		{"amy", service.SelectUserByUsername("amy")},
+		{"id:u-7", service.SelectUserByID("u-7")},
+	} {
+		t.Run(tc.user, func(t *testing.T) {
+			hub := &fakeAdminHub{}
+			url := startAdminHub(t, hub)
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminAPITokenIssue(fakeCmdCtx{},
-			[]string{"--hub", url, "--username", "amy", "--installation-name", "ci-bot"}))
-	})
+			out := runControl(t, "admin", "api-token", "issue", tc.user, "--hub", url, "--installation-name", "ci-bot").ok(t)
 
-	issued := hub.takeIssuedTokens()
-	require.Len(t, issued, 1)
-	assert.Equal(t, "amy", issued[0].GetUser().GetUsername())
-	assert.Empty(t, issued[0].GetUser().GetId())
-	assert.Equal(t, "ci-bot", issued[0].GetInstallationName())
+			data := envelopeData(t, out)
+			assert.Equal(t, []any{}, data["granted_scopes"], "empty granted_scopes must marshal as [], not null")
+
+			issued := hub.takeIssuedTokens()
+			require.Len(t, issued, 1)
+			assert.True(t, proto.Equal(tc.want, issued[0].GetUser()), "got %v", issued[0].GetUser())
+			assert.Equal(t, "ci-bot", issued[0].GetInstallationName())
+		})
+	}
+}
+
+// --installation-name is required, and an empty value is refused before the
+// dial: the hub would store a token that no operator can tell apart.
+func TestAdminAPITokenIssue_RequiresAnInstallationName(t *testing.T) {
+	isolateCLIEnv(t)
+	f := runControl(t, "admin", "api-token", "issue", "amy", "--hub", unreachableHub).requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "missing required flag --installation-name", f.Message)
+
+	f = runControl(t, "admin", "api-token", "issue", "amy", "--hub", unreachableHub, "--installation-name", " ").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "--installation-name is empty", f.Message)
 }
 
 // An admin verb never touches a TOFU pin, so a pins.json that cannot be
@@ -1299,56 +1271,528 @@ func TestAdminVerb_RunsWithACorruptPinsFile(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, host), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, host, "pins.json"), []byte("{ not json"), 0o644))
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAdminSettingsList(fakeCmdCtx{}, []string{"--hub", url}))
-	})
+	runControl(t, "admin", "settings", "list", "--hub", url).ok(t)
 	assert.Equal(t, 1, hub.listCallCount(), "the verb reached the hub")
 }
 
-// `settings set KEY VALUE --help` must print the positional form. The flag
-// package knows only the flags, so the help of a leaf that REQUIRES two
-// positionals said `[flags]` and nothing more; only a wrong count answered
-// with the form.
-func TestAdminPositionalLeaves_AllPrintTheirFormInHelp(t *testing.T) {
-	leaves := map[string]func(any, []string) error{
-		"settings get":        RunAdminSettingsGet,
-		"settings set":        RunAdminSettingsSet,
-		"settings set-secret": RunAdminSettingsSetSecret,
-		"settings reset":      RunAdminSettingsReset,
-	}
-	for name, run := range leaves {
-		t.Run(name, func(t *testing.T) {
-			out := captureOSStdout(t, func() {
-				err := run(fakeCmdCtx{}, []string{"--help"})
-				require.ErrorIs(t, err, flag.ErrHelp)
-			})
-			assert.Contains(t, out, "usage: leapmux control admin "+name+" ",
-				"--help must name the positional arguments the leaf requires")
-			assert.Contains(t, out, "-hub", "and the flags are still printed")
-		})
-	}
+// Every admin list prints under its plural noun, as every other list of the
+// CLI does: a script reads `.data.<noun>[]` everywhere.
+func TestAdminLists_PrintUnderTheirPluralNoun(t *testing.T) {
+	key, err := rateLimitOperation("elevation")
+	require.NoError(t, err)
+	hub := &fakeAdminHub{values: []*leapmuxv1.SettingValue{
+		settingValue(key, `{"max_attempts":5}`, nil),
+		settingValue("theme", `"dark"`, nil),
+	}}
+	url := startAdminHub(t, hub)
+
+	data := envelopeData(t, runControl(t, "admin", "rate-limit", "list", "--hub", url).ok(t))
+	limits, ok := data["rate_limits"].([]any)
+	require.True(t, ok, "rate limits print under rate_limits: %v", data)
+	require.Len(t, limits, 1, "only the rate_limit.* keys print")
+	assert.Equal(t, key, limits[0].(map[string]any)["key"])
+
+	data = envelopeData(t, runControl(t, "admin", "idp", "list", "--hub", url).ok(t))
+	providers, ok := data["providers"].([]any)
+	require.True(t, ok, "providers print under providers: %v", data)
+	require.Len(t, providers, 1)
+	assert.Equal(t, "prov-1", providers[0].(map[string]any)["id"])
 }
 
-// captureOSStdout captures what fn writes to the process's stdout.
-//
-// The help path writes THERE, not to control.Out: internalconfig.HasHelpArg
-// redirects the flag set to os.Stdout so `--help` reaches a terminal even
-// when the caller redirected the JSON envelope.
-func captureOSStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	prev := os.Stdout
-	os.Stdout = w
-	read := make(chan string, 1)
-	go func() {
-		b, _ := io.ReadAll(r)
-		read <- string(b)
-	}()
-	fn()
-	os.Stdout = prev
-	require.NoError(t, w.Close())
-	out := <-read
-	require.NoError(t, r.Close())
+// `user grant-admin` removes no access, so it takes no --force; only
+// `user revoke-admin` does, for the removal of your own access.
+func TestAdminUserGrantAdmin_TakesNoForce(t *testing.T) {
+	hub := &fakeAdminHub{}
+	url := startAdminHub(t, hub)
+
+	f := runControl(t, "admin", "user", "grant-admin", "amy", "--hub", url, "--force").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "unknown flag: --force")
+	assert.Empty(t, hub.takeSetAdmin(), "a refused command line sends nothing")
+
+	runControl(t, "admin", "user", "grant-admin", "amy", "--hub", url).ok(t)
+	calls := hub.takeSetAdmin()
+	require.Len(t, calls, 1)
+	assert.True(t, calls[0].GetIsAdmin())
+	assert.False(t, calls[0].GetForce())
+}
+
+// Passing --provider for the already-active provider with no tuning flags is
+// an idempotent no-op rather than a bogus "nothing to set" error.
+func TestAdminCaptchaSet_CurrentProviderWithoutTuningFlagsIsIdempotent(t *testing.T) {
+	hub := &fakeAdminHub{values: captchaHubValues("altcha", `{"algorithm":"SCRYPT"}`)}
+	url := startAdminHub(t, hub)
+
+	out := runControl(t, "admin", "captcha", "set", "--hub", url, "--provider", "altcha").ok(t)
+	data := envelopeData(t, out)
+	assert.Equal(t, false, data["updated"])
+	assert.Equal(t, "altcha", data["provider"])
+	assert.Equal(t, false, data["activated"])
+	assert.Empty(t, hub.takeUpdatesMany(), "an idempotent no-op writes nothing")
+}
+
+// Resetting ALTCHA alone never needs to inspect which provider is selected,
+// so it must skip ListSettings completely.
+func TestAdminCaptchaReset_AltchaSkipsStateRead(t *testing.T) {
+	hub := &fakeAdminHub{}
+	url := startAdminHub(t, hub)
+
+	runControl(t, "admin", "captcha", "reset", "--hub", url, "--provider", "altcha").ok(t)
+	assert.Equal(t, [][]string{{captcha.AltchaKey.Name()}}, hub.takeResets())
+	assert.Zero(t, hub.listCallCount(), "resetting altcha needs no ListSettings read")
+}
+
+type adminPrefixQuery struct {
+	idPrefix string
+	limit    int32
+}
+
+type adminPrefixTestHub struct {
+	leapmuxv1connect.UnimplementedAdminUserServiceHandler
+	leapmuxv1connect.UnimplementedAdminWorkerServiceHandler
+	leapmuxv1connect.UnimplementedAppServiceHandler
+	leapmuxv1connect.UnimplementedAdminIdPServiceHandler
+
+	mu                 sync.Mutex
+	usersPages         map[string]*leapmuxv1.ListUsersResponse
+	listUsersErr       error
+	listUsersLimits    []int32
+	listUsersQueries   []adminPrefixQuery
+	getUserErr         error
+	sessions           []*leapmuxv1.AdminSession
+	sessionQueries     []adminPrefixQuery
+	revokedSession     string
+	workers            []*leapmuxv1.AdminWorker
+	workerQueries      []adminPrefixQuery
+	getWorkerCalls     int
+	apiTokensLive      []*leapmuxv1.AdminAPIToken
+	apiTokensAll       []*leapmuxv1.AdminAPIToken
+	apiTokenListReqs   []bool
+	apiTokenQueries    []adminPrefixQuery
+	delegationLive     []*leapmuxv1.AdminDelegationToken
+	delegationAll      []*leapmuxv1.AdminDelegationToken
+	delegationListReqs []bool
+	delegationQueries  []adminPrefixQuery
+	regKeysLive        []*leapmuxv1.AdminRegistrationKey
+	regKeysAll         []*leapmuxv1.AdminRegistrationKey
+	regKeyListReqs     []bool
+	regKeyQueries      []adminPrefixQuery
+	apps               []*leapmuxv1.App
+	appQueries         []adminPrefixQuery
+	revokedApp         string
+	providers          []*leapmuxv1.AdminOAuthProvider
+	providerQueries    []string
+	removedProvider    string
+	nextCursorOnLists  string
+	revokedAPIToken    string
+	revokedDelegation  string
+	revokedRegKey      string
+}
+
+func (h *adminPrefixTestHub) GetUser(_ context.Context, req *leapmuxv1.GetUserRequest) (*leapmuxv1.GetUserResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.getUserErr != nil {
+		return nil, h.getUserErr
+	}
+	for _, page := range h.usersPages {
+		for _, u := range page.GetUsers() {
+			if u.GetId() == req.GetUser().GetId() || u.GetUsername() == req.GetUser().GetUsername() {
+				return &leapmuxv1.GetUserResponse{User: u}, nil
+			}
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, "user not found")
+}
+
+func (h *adminPrefixTestHub) ListUsers(_ context.Context, req *leapmuxv1.ListUsersRequest) (*leapmuxv1.ListUsersResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.listUsersLimits = append(h.listUsersLimits, req.GetPage().GetLimit())
+	h.listUsersQueries = append(h.listUsersQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	if h.listUsersErr != nil {
+		return nil, h.listUsersErr
+	}
+	if resp, ok := h.usersPages[req.GetPage().GetCursor()]; ok {
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			var filtered []*leapmuxv1.AdminUser
+			for _, u := range resp.GetUsers() {
+				if strings.HasPrefix(u.GetId(), prefix) {
+					filtered = append(filtered, u)
+				}
+			}
+			return &leapmuxv1.ListUsersResponse{Users: filtered, Page: resp.GetPage()}, nil
+		}
+		return resp, nil
+	}
+	return &leapmuxv1.ListUsersResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListSessions(_ context.Context, req *leapmuxv1.ListSessionsRequest) (*leapmuxv1.ListSessionsResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sessionQueries = append(h.sessionQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	out := filterByPrefix(h.sessions, req.GetIdPrefix(), (*leapmuxv1.AdminSession).GetId)
+	return &leapmuxv1.ListSessionsResponse{Sessions: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeSession(_ context.Context, req *leapmuxv1.RevokeSessionRequest) (*leapmuxv1.RevokeSessionResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedSession = req.GetId()
+	return &leapmuxv1.RevokeSessionResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListWorkers(_ context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.workerQueries = append(h.workerQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	out := filterByPrefix(h.workers, req.GetIdPrefix(), (*leapmuxv1.AdminWorker).GetId)
+	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) GetWorker(_ context.Context, req *leapmuxv1.AdminWorkerServiceGetWorkerRequest) (*leapmuxv1.AdminWorkerServiceGetWorkerResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.getWorkerCalls++
+	for _, w := range h.workers {
+		if w.GetId() == req.GetId() {
+			return &leapmuxv1.AdminWorkerServiceGetWorkerResponse{Worker: w}, nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeInternal, "unexpected GetWorker RPC after prefix listing")
+}
+
+func (h *adminPrefixTestHub) ListAPITokens(_ context.Context, req *leapmuxv1.ListAPITokensRequest) (*leapmuxv1.ListAPITokensResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.apiTokenListReqs = append(h.apiTokenListReqs, req.GetIncludeRevoked())
+	h.apiTokenQueries = append(h.apiTokenQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	src := h.apiTokensLive
+	if req.GetIncludeRevoked() {
+		src = h.apiTokensAll
+	}
+	out := filterByPrefix(src, req.GetIdPrefix(), (*leapmuxv1.AdminAPIToken).GetId)
+	return &leapmuxv1.ListAPITokensResponse{Tokens: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeAPIToken(_ context.Context, req *leapmuxv1.RevokeAPITokenRequest) (*leapmuxv1.RevokeAPITokenResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedAPIToken = req.GetId()
+	return &leapmuxv1.RevokeAPITokenResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListDelegationTokens(_ context.Context, req *leapmuxv1.ListDelegationTokensRequest) (*leapmuxv1.ListDelegationTokensResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.delegationListReqs = append(h.delegationListReqs, req.GetIncludeRevoked())
+	h.delegationQueries = append(h.delegationQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	src := h.delegationLive
+	if req.GetIncludeRevoked() {
+		src = h.delegationAll
+	}
+	out := filterByPrefix(src, req.GetIdPrefix(), (*leapmuxv1.AdminDelegationToken).GetId)
+	return &leapmuxv1.ListDelegationTokensResponse{Tokens: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeDelegationToken(_ context.Context, req *leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest) (*leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedDelegation = req.GetId()
+	return &leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListRegistrationKeys(_ context.Context, req *leapmuxv1.ListRegistrationKeysRequest) (*leapmuxv1.ListRegistrationKeysResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.regKeyListReqs = append(h.regKeyListReqs, req.GetIncludeExpired())
+	h.regKeyQueries = append(h.regKeyQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	src := h.regKeysLive
+	if req.GetIncludeExpired() {
+		src = h.regKeysAll
+	}
+	out := filterByPrefix(src, req.GetIdPrefix(), (*leapmuxv1.AdminRegistrationKey).GetId)
+	return &leapmuxv1.ListRegistrationKeysResponse{Keys: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeRegistrationKey(_ context.Context, req *leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest) (*leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedRegKey = req.GetId()
+	return &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListApps(_ context.Context, req *leapmuxv1.ListAppsRequest) (*leapmuxv1.ListAppsResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.appQueries = append(h.appQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	out := filterByPrefix(h.apps, req.GetIdPrefix(), (*leapmuxv1.App).GetClientId)
+	return &leapmuxv1.ListAppsResponse{Apps: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeApp(_ context.Context, req *leapmuxv1.RevokeAppRequest) (*leapmuxv1.RevokeAppResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedApp = req.GetClientId()
+	return &leapmuxv1.RevokeAppResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListOAuthProviders(_ context.Context, req *leapmuxv1.ListOAuthProvidersRequest) (*leapmuxv1.ListOAuthProvidersResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.providerQueries = append(h.providerQueries, req.GetIdPrefix())
+	out := filterByPrefix(h.providers, req.GetIdPrefix(), (*leapmuxv1.AdminOAuthProvider).GetId)
+	return &leapmuxv1.ListOAuthProvidersResponse{Providers: out}, nil
+}
+
+func (h *adminPrefixTestHub) RemoveOAuthProvider(_ context.Context, req *leapmuxv1.RemoveOAuthProviderRequest) (*leapmuxv1.RemoveOAuthProviderResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.removedProvider = req.GetId()
+	return &leapmuxv1.RemoveOAuthProviderResponse{}, nil
+}
+
+func filterByPrefix[T any](items []T, prefix string, idOf func(T) string) []T {
+	if prefix == "" {
+		return items
+	}
+	var out []T
+	for _, item := range items {
+		if strings.HasPrefix(idOf(item), prefix) {
+			out = append(out, item)
+		}
+	}
 	return out
+}
+
+func startAdminPrefixTestHub(t *testing.T, hub *adminPrefixTestHub) string {
+	t.Helper()
+	isolateCLIEnv(t)
+	mux := http.NewServeMux()
+	server := connect.NewServer()
+	leapmuxv1connect.RegisterAdminUserServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAppServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAdminIdPServiceHandler(server, hub)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	srv := hubtransporttest.NewServer(t, mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestAdminWorkerGet_PrefixSkipsRedundantGetWorkerRPC(t *testing.T) {
+	workerID := fullTestID("wrk-pref")
+	hub := &adminPrefixTestHub{
+		workers: []*leapmuxv1.AdminWorker{
+			{Id: workerID, OwnerUsername: "alice", Status: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE},
+		},
+	}
+	url := startAdminPrefixTestHub(t, hub)
+
+	data := envelopeData(t, runControl(t, "admin", "worker", "get", workerID[:8], "--hub", url).ok(t))
+	assert.Equal(t, workerID, data["id"])
+	assert.Equal(t, "alice", data["username"])
+	assert.Zero(t, hub.getWorkerCalls, "prefix resolution already fetched the worker row")
+}
+
+func TestAdminRevokeResolvers_QueryLiveFirstThenFallBackToHistorical(t *testing.T) {
+	liveAPI := fullTestID("apilive1")
+	deadAPI := fullTestID("apilive2")
+	onlyDeadAPI := fullTestID("apidead1")
+
+	liveDel := fullTestID("dellive1")
+	deadDel := fullTestID("dellive2")
+
+	liveKey := fullTestID("keylive1")
+	deadKey := fullTestID("keylive2")
+
+	hub := &adminPrefixTestHub{
+		apiTokensLive:  []*leapmuxv1.AdminAPIToken{{Id: liveAPI, InstallationName: "ci"}},
+		apiTokensAll:   []*leapmuxv1.AdminAPIToken{{Id: liveAPI, InstallationName: "ci"}, {Id: deadAPI}, {Id: onlyDeadAPI, InstallationName: "retired-runner"}},
+		delegationLive: []*leapmuxv1.AdminDelegationToken{{Id: liveDel, Username: "alice"}},
+		delegationAll:  []*leapmuxv1.AdminDelegationToken{{Id: liveDel, Username: "alice"}, {Id: deadDel, Username: "alice"}},
+		regKeysLive:    []*leapmuxv1.AdminRegistrationKey{{Id: liveKey, CreatorUsername: "alice"}},
+		regKeysAll:     []*leapmuxv1.AdminRegistrationKey{{Id: liveKey, CreatorUsername: "alice"}, {Id: deadKey, CreatorUsername: "alice"}},
+	}
+	url := startAdminPrefixTestHub(t, hub)
+
+	// Live API token matches on first pass without colliding with deadAPI.
+	runControl(t, "admin", "api-token", "revoke", liveAPI[:7], "--hub", url).ok(t)
+	assert.Equal(t, liveAPI, hub.revokedAPIToken)
+	assert.Equal(t, []bool{false}, hub.apiTokenListReqs)
+
+	// Historical-only API token falls back to IncludeRevoked=true.
+	hub.apiTokenListReqs = nil
+	runControl(t, "admin", "api-token", "revoke", onlyDeadAPI[:7], "--hub", url).ok(t)
+	assert.Equal(t, onlyDeadAPI, hub.revokedAPIToken)
+	assert.Equal(t, []bool{false, true}, hub.apiTokenListReqs)
+
+	// name: and title: selectors miss pass 1 without failing, fall back to
+	// pass 2, and revoke the historical-only token.
+	for _, selector := range []string{"name:retired-runner", "title:retired-runner"} {
+		hub.apiTokenListReqs = nil
+		hub.revokedAPIToken = ""
+		runControl(t, "admin", "api-token", "revoke", selector, "--hub", url).ok(t)
+		assert.Equal(t, onlyDeadAPI, hub.revokedAPIToken, "selector %q must revoke the historical token", selector)
+		assert.Equal(t, []bool{false, true}, hub.apiTokenListReqs, "selector %q must query live then historical", selector)
+	}
+
+	// Nonexistent name: and title: selectors run both passes and return
+	// not_found without calling RevokeAPIToken.
+	for _, selector := range []string{"name:nonexistent", "title:nonexistent"} {
+		hub.apiTokenListReqs = nil
+		hub.revokedAPIToken = ""
+		runControl(t, "admin", "api-token", "revoke", selector, "--hub", url).requireFailure(t, cli.CodeNotFound)
+		assert.Equal(t, []bool{false, true}, hub.apiTokenListReqs, "selector %q must query live then historical", selector)
+		assert.Empty(t, hub.revokedAPIToken, "selector %q must not call RevokeAPIToken", selector)
+	}
+
+	// Delegation token and registration key query live first too.
+	runControl(t, "admin", "delegation-token", "revoke", liveDel[:7], "--hub", url).ok(t)
+	assert.Equal(t, liveDel, hub.revokedDelegation)
+	assert.Equal(t, []bool{false}, hub.delegationListReqs)
+
+	runControl(t, "admin", "worker", "reg-key", "revoke", liveKey[:7], "--hub", url).ok(t)
+	assert.Equal(t, liveKey, hub.revokedRegKey)
+	assert.Equal(t, []bool{false}, hub.regKeyListReqs)
+}
+
+func TestMatchAdminUserIDPrefix_UsesServerSideIDPrefixSinglePageAndPropagatesErrors(t *testing.T) {
+	userID := fullTestID("usr-dup1")
+	t.Run("queries a single page with id_prefix and prefixResolutionLimit", func(t *testing.T) {
+		hub := &adminPrefixTestHub{
+			usersPages: map[string]*leapmuxv1.ListUsersResponse{
+				"": {
+					Users: []*leapmuxv1.AdminUser{{Id: userID, Username: "alice"}},
+					Page:  &leapmuxv1.PageResponse{NextCursor: "p2"},
+				},
+				"p2": {
+					Users: []*leapmuxv1.AdminUser{{Id: fullTestID("usr-other"), Username: "bob"}},
+				},
+			},
+		}
+		url := startAdminPrefixTestHub(t, hub)
+
+		data := envelopeData(t, runControl(t, "admin", "user", "get", userID[:8], "--hub", url).ok(t))
+		assert.Equal(t, userID, data["id"])
+		require.Equal(t, []adminPrefixQuery{{idPrefix: userID[:8], limit: prefixResolutionLimit}}, hub.listUsersQueries,
+			"prefix lookup must send one server-side id_prefix page with prefixResolutionLimit")
+	})
+
+	t.Run("propagates ListUsers errors instead of swallowing as not found", func(t *testing.T) {
+		hub := &adminPrefixTestHub{
+			listUsersErr: connect.NewError(connect.CodePermissionDenied, "missing admin:read"),
+		}
+		url := startAdminPrefixTestHub(t, hub)
+
+		f := runControl(t, "admin", "user", "get", "usr-pref", "--hub", url).requireFailure(t, cli.CodePermissionDenied)
+		assert.Contains(t, f.Message, "missing admin:read")
+	})
+}
+
+func TestAdminResolvers_SendServerSideIDPrefixInOnePage(t *testing.T) {
+	userID := fullTestID("usr-one1")
+	sessID := fullTestID("ses-one1")
+	apiID := fullTestID("api-one1")
+	delID := fullTestID("del-one1")
+	wrkID := fullTestID("wrk-one1")
+	keyID := fullTestID("key-one1")
+	appID := fullTestID("app-one1")
+	idpID := fullTestID("idp-one1")
+
+	hub := &adminPrefixTestHub{
+		usersPages: map[string]*leapmuxv1.ListUsersResponse{
+			"": {
+				Users: []*leapmuxv1.AdminUser{{Id: userID, Username: "alice"}},
+				Page:  &leapmuxv1.PageResponse{NextCursor: "p2"},
+			},
+		},
+		sessions:          []*leapmuxv1.AdminSession{{Id: sessID, Username: "alice"}},
+		apiTokensLive:     []*leapmuxv1.AdminAPIToken{{Id: apiID, InstallationName: "CI Runner"}},
+		apiTokensAll:      []*leapmuxv1.AdminAPIToken{{Id: apiID, InstallationName: "CI Runner"}},
+		delegationLive:    []*leapmuxv1.AdminDelegationToken{{Id: delID, Username: "alice"}},
+		delegationAll:     []*leapmuxv1.AdminDelegationToken{{Id: delID, Username: "alice"}},
+		workers:           []*leapmuxv1.AdminWorker{{Id: wrkID, OwnerUsername: "alice", Status: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE}},
+		regKeysLive:       []*leapmuxv1.AdminRegistrationKey{{Id: keyID, CreatorUsername: "alice"}},
+		regKeysAll:        []*leapmuxv1.AdminRegistrationKey{{Id: keyID, CreatorUsername: "alice"}},
+		apps:              []*leapmuxv1.App{{ClientId: appID, ClientName: "Deploy Bot"}},
+		providers:         []*leapmuxv1.AdminOAuthProvider{{Id: idpID, ProviderType: "github", Name: "GitHub SSO"}},
+		nextCursorOnLists: "page-2-must-not-be-fetched",
+	}
+	url := startAdminPrefixTestHub(t, hub)
+
+	// Prefix resolution sends IdPrefix + Limit=prefixResolutionLimit in 1 RPC per resource.
+	runControl(t, "admin", "user", "get", userID[:8], "--hub", url).ok(t)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: userID[:8], limit: prefixResolutionLimit}}, hub.listUsersQueries)
+
+	runControl(t, "admin", "session", "revoke", sessID[:8], "--hub", url).ok(t)
+	assert.Equal(t, sessID, hub.revokedSession)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: sessID[:8], limit: prefixResolutionLimit}}, hub.sessionQueries)
+
+	runControl(t, "admin", "api-token", "revoke", apiID[:8], "--hub", url).ok(t)
+	assert.Equal(t, apiID, hub.revokedAPIToken)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: apiID[:8], limit: prefixResolutionLimit}}, hub.apiTokenQueries)
+
+	runControl(t, "admin", "delegation-token", "revoke", delID[:8], "--hub", url).ok(t)
+	assert.Equal(t, delID, hub.revokedDelegation)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: delID[:8], limit: prefixResolutionLimit}}, hub.delegationQueries)
+
+	runControl(t, "admin", "worker", "get", wrkID[:8], "--hub", url).ok(t)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: wrkID[:8], limit: prefixResolutionLimit}}, hub.workerQueries)
+
+	runControl(t, "admin", "worker", "reg-key", "revoke", keyID[:8], "--hub", url).ok(t)
+	assert.Equal(t, keyID, hub.revokedRegKey)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: keyID[:8], limit: prefixResolutionLimit}}, hub.regKeyQueries)
+
+	runControl(t, "admin", "app", "revoke", appID[:8], "--hub", url).ok(t)
+	assert.Equal(t, appID, hub.revokedApp)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: appID[:8], limit: prefixResolutionLimit}}, hub.appQueries)
+
+	runControl(t, "admin", "idp", "remove", idpID[:8], "--hub", url).ok(t)
+	assert.Equal(t, idpID, hub.removedProvider)
+	assert.Equal(t, []string{idpID[:8]}, hub.providerQueries)
+
+	// Full 48-char generated IDs skip listing completely.
+	hub.listUsersQueries = nil
+	hub.sessionQueries = nil
+	hub.apiTokenQueries = nil
+	hub.delegationQueries = nil
+	hub.workerQueries = nil
+	hub.regKeyQueries = nil
+	hub.appQueries = nil
+	hub.providerQueries = nil
+
+	runControl(t, "admin", "user", "get", userID, "--hub", url).ok(t)
+	runControl(t, "admin", "session", "revoke", sessID, "--hub", url).ok(t)
+	runControl(t, "admin", "api-token", "revoke", apiID, "--hub", url).ok(t)
+	runControl(t, "admin", "delegation-token", "revoke", delID, "--hub", url).ok(t)
+	runControl(t, "admin", "worker", "get", wrkID, "--hub", url).ok(t)
+	runControl(t, "admin", "worker", "reg-key", "revoke", keyID, "--hub", url).ok(t)
+	runControl(t, "admin", "app", "revoke", appID, "--hub", url).ok(t)
+	runControl(t, "admin", "idp", "remove", idpID, "--hub", url).ok(t)
+
+	assert.Empty(t, hub.listUsersQueries)
+	assert.Empty(t, hub.sessionQueries)
+	assert.Empty(t, hub.apiTokenQueries)
+	assert.Empty(t, hub.delegationQueries)
+	assert.Empty(t, hub.workerQueries)
+	assert.Empty(t, hub.regKeyQueries)
+	assert.Empty(t, hub.appQueries)
+	assert.Empty(t, hub.providerQueries)
+	assert.Equal(t, 1, hub.getWorkerCalls, "full worker ID calls GetWorker directly")
+
+	// Bare title fallback still works cleanly when id_prefix returns 0 rows.
+	hub.nextCursorOnLists = ""
+	hub.appQueries = nil
+	hub.revokedApp = ""
+	runControl(t, "admin", "app", "revoke", "Deploy Bot", "--hub", url).ok(t)
+	assert.Equal(t, appID, hub.revokedApp)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: "", limit: listPageSize}}, hub.appQueries,
+		"multi-word bare title skips id_prefix query and goes straight to full listing")
+
+	hub.providerQueries = nil
+	hub.removedProvider = ""
+	runControl(t, "admin", "idp", "remove", "GitHub SSO", "--hub", url).ok(t)
+	assert.Equal(t, idpID, hub.removedProvider)
+	assert.Equal(t, []string{""}, hub.providerQueries)
 }

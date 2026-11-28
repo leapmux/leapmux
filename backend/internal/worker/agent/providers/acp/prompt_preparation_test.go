@@ -24,11 +24,11 @@ func TestPromptPreparationRefusesBeforeWritingAndAllowsRetry(t *testing.T) {
 		assert.Equal(t, "recording", blocks[0]["text"])
 		return failure
 	}
-	require.ErrorIs(t, b.SendInput("recording", nil), failure)
+	require.ErrorIs(t, agenttest.SendInput(b, "recording", nil), failure)
 	assert.False(t, b.PromptActive())
 	assert.Empty(t, []byte(out.String()))
 	b.hooks.PreparePrompt = nil
-	require.NoError(t, b.SendInput("retry", nil))
+	require.NoError(t, agenttest.SendInput(b, "retry", nil))
 	assert.NotEmpty(t, []byte(out.String()))
 }
 
@@ -64,6 +64,30 @@ func TestDetachedPromptRefusesAReplacedSession(t *testing.T) {
 	err := b.SendPromptDetached("old-session", "input", []*leapmuxv1.Attachment{}, func(json.RawMessage, error) {})
 	require.Error(t, err)
 	assert.Empty(t, []byte(out.String()))
+}
+
+func TestDetachedPromptPreparesTheInputForItsSelectedTransport(t *testing.T) {
+	t.Parallel()
+	stdin := &agenttest.Stdin{}
+	b, _ := newACPTurnBase(t, stdin)
+	b.hooks.PreparePrompt = func(_ string, _ []agent.ClassifiedAttachment, blocks []map[string]any) error {
+		blocks[0]["text"] = "prepared input"
+		return nil
+	}
+	b.hooks.PromptParams = func(params map[string]any) { params["ext"] = "prepared metadata" }
+	failure := errors.New("the selected transport refused submission")
+	var request json.RawMessage
+	send := func(prepared PreparedPrompt) error {
+		params, err := prepared.MarshalParams()
+		require.NoError(t, err)
+		request = params
+		return failure
+	}
+	require.Error(t, b.SendPromptDetachedUsing("old-session", "input", nil, send))
+	assert.Empty(t, request)
+	require.ErrorIs(t, b.SendPromptDetachedUsing("session-1", "input", nil, send), failure)
+	assert.JSONEq(t, `{"sessionId":"session-1","prompt":[{"type":"text","text":"prepared input"}],"ext":"prepared metadata"}`, string(request))
+	assert.Empty(t, stdin.String())
 }
 
 func TestChildPromptRefusesAnUnservedSessionBeforePreparation(t *testing.T) {
@@ -154,8 +178,31 @@ func TestPromptPreparationReceivesTheOriginalClassifiedAudio(t *testing.T) {
 				require.True(t, b.AttachChildSession(target))
 				require.NoError(t, b.SendChildPromptDetached(target, "listen", attachments, func(json.RawMessage, error) {}))
 			} else {
-				require.NoError(t, b.SendInput("listen", attachments))
+				require.NoError(t, agenttest.SendInput(b, "listen", attachments))
 			}
 		})
 	}
+}
+
+func TestRootPromptTransportReceivesTypedPreparedPromptLazily(t *testing.T) {
+	t.Parallel()
+	out := &agenttest.Stdin{}
+	b, _ := newACPTurnBase(t, out)
+
+	var seen PreparedPrompt
+	b.hooks.RootPromptTransport = func(_ agent.NativeInputReceipt, prepared PreparedPrompt) (func(func(json.RawMessage, error)) error, error) {
+		seen = prepared
+		return nil, nil // Fall back to ACP, exercising MarshalParams.
+	}
+
+	attachments := []*leapmuxv1.Attachment{{Filename: "pic.png", MimeType: "image/png", Data: []byte{1, 2, 3}}}
+	_, err := b.SendInput("describe", attachments)
+	require.NoError(t, err)
+
+	assert.Equal(t, "session-1", seen.SessionID)
+	assert.Nil(t, seen.params, "RootPromptTransport must receive typed blocks without eager JSON marshaling")
+	require.Len(t, seen.Blocks, 2)
+	assert.Equal(t, "text", seen.Blocks[0]["type"])
+	assert.Equal(t, "image", seen.Blocks[1]["type"])
+	assert.Contains(t, out.String(), `"method":"session/prompt"`, "returning nil sender falls back to ACP MarshalParams")
 }

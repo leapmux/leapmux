@@ -258,7 +258,7 @@ export const AccountConnectedApps: Component = () => {
           <p class={styles.credentialListEmpty}>
             No connected apps. Run
             {' '}
-            <code>leapmux control auth login</code>
+            <code>leapmux auth login</code>
             {' '}
             to connect the command-line tool, or authorize an app from its own sign-in screen.
           </p>

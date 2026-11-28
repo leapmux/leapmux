@@ -13,7 +13,8 @@ import (
 
 // supplementConformanceCase is one row of a shared corpus: the frame the agent sent,
 // the envelope the worker stored beside it, and the object BOTH implementations must
-// produce. The browser plugin replays the same file.
+// produce. The browser plugin replays the same file, except the Muse corpus: Muse's
+// resolve is the identity, and the browser has no copy of it.
 type supplementConformanceCase struct {
 	Name         string          `json:"name"`
 	Original     json.RawMessage `json:"original"`

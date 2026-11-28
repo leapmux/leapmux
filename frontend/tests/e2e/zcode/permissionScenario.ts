@@ -52,8 +52,8 @@ export async function exerciseZCodeRemovalPermission(context: ManagedNativeScena
     await waitForAgentIdle(context.page)
     expect(readFileSync(path, 'utf8')).toBe(content)
     await expectNoControlBanner(context.page)
-    // ZCode's deny option carries ZCode's own refusal to the model, and the saved row states it on a line of its own.
-    await expect(savedControlAnswer(context.page)).toHaveText(/^Deny\nThe user doesn't want to proceed with this tool use\./)
+    // The saved answer states the option that the decision chose.
+    await expect(savedControlAnswer(context.page)).toHaveText('Deny')
     return
   }
   const pills = context.page.getByRole('radiogroup', { name: 'Permissions' })
@@ -65,7 +65,7 @@ export async function exerciseZCodeRemovalPermission(context: ManagedNativeScena
   }
   await answerControl(context.page, 'allow')
   await waitForAgentIdle(context.page)
-  await expect(savedControlAnswer(context.page)).toHaveText('Allow')
+  await expect(savedControlAnswer(context.page)).toHaveText('Allow once')
   if (answer.bypass) {
     await expectSettingsChip(context.page, 'Yolo')
     await expectNativeOptionValue(context, 'permissionMode', ZCODE_MODE.Yolo)

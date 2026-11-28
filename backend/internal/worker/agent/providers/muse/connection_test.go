@@ -315,6 +315,7 @@ func TestMuseInitializeOptsOutOfTheCommandPlaneNoise(t *testing.T) {
 		"session/statusChanged", "session/started", "session/closed", "skill/changed",
 		"account/changed", "account/loginCompleted", "mcpServer/oauthLoginCompleted",
 		"session/branchChanged", "session/nameChanged", "session/permissionProfileChanged", "turn/foregroundCompleted",
+		"turn/modelAttemptStarted",
 	}, initialize.Capabilities.Methods)
 	for _, method := range initialize.Capabilities.Methods {
 		a, sink := testAgent(t)
@@ -323,4 +324,42 @@ func TestMuseInitializeOptsOutOfTheCommandPlaneNoise(t *testing.T) {
 		assert.Empty(t, sink.PersistedNotifications(), method)
 		assert.Empty(t, sink.TurnLifecycle(), method)
 	}
+}
+
+func TestChildBookkeepingRecognizesTurnModelAttemptStarted(t *testing.T) {
+	t.Parallel()
+	assert.True(t, childBookkeepingMethod(methodTurnModelAttemptStarted))
+	assert.False(t, childBookkeepingMethod("turn/unknownMethod"))
+
+	frame := []byte(`{"method":"` + methodTurnModelAttemptStarted + `","params":{"sessionId":"child","turnId":"turn-1"}}`)
+	p := newChildProjection()
+	p.frames = []childProjectionFrame{{raw: frame, serial: 1}}
+	p.bufferedBytes = len(frame)
+
+	segment, anchor, err := nextChildProjectionSegment(p)
+	require.NoError(t, err)
+	assert.Nil(t, anchor)
+	require.Len(t, segment, 1, "bookkeeping frame must be selected immediately without waiting for a source anchor")
+	assert.Equal(t, frame, segment[0].raw)
+
+	a, root := testAgent(t)
+	state, child := nativeHistoryChild(t, a, root)
+	a.viewWork.CloseAndWait()
+	state.childViewPrefix = childViewPrefixReady
+	state.projection = p
+
+	require.NoError(t, a.applyChildProjectionSegment("child", state, segment))
+	assert.Empty(t, p.frames)
+	assert.Nil(t, p.failed)
+	assert.Empty(t, root.Messages())
+	assert.Empty(t, root.LeapMuxNotifications())
+	assert.Empty(t, child.Messages())
+
+	// Contrast: an unanchored unknown method stalls instead of being treated as bookkeeping.
+	unknown := []byte(`{"method":"turn/unknownMethod","params":{"sessionId":"child"}}`)
+	p.frames = []childProjectionFrame{{raw: unknown, serial: 2}}
+	segment, anchor, err = nextChildProjectionSegment(p)
+	require.NoError(t, err)
+	assert.Nil(t, anchor)
+	assert.Empty(t, segment)
 }

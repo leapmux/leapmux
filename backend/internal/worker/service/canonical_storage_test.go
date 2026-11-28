@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -54,11 +55,23 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// agent_input_queue_items.scheduled_at is Go-bound on every scheduled
 	// enqueue, through the sqltime wrapper.
 	scheduled := now.Add(time.Hour)
-	_, err := inputqueue.NewStore(sqlDB, nil).Enqueue(ctx, inputqueue.NewItem{
+	queueClock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	queueClock.Set(now).MustWait(ctx)
+	queue := inputqueue.NewStore(sqlDB, queueClock)
+	_, err := queue.Enqueue(ctx, inputqueue.NewItem{
 		ID: "queue-1", AgentID: "agent-1",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "queued",
 		ScheduledAt: &scheduled,
 	})
+	require.NoError(t, err)
+	// agent_input_queue_removed.removed_at is Go-bound on every removal, from
+	// the queue's clock, which reads the non-UTC instant above.
+	_, err = queue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "queue-removed", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "removed",
+	})
+	require.NoError(t, err)
+	_, err = queue.Delete(ctx, "agent-1", "queue-removed")
 	require.NoError(t, err)
 	require.NoError(t, closeErr(queries.CloseAgent(ctx, "agent-1")))
 

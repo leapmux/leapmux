@@ -3,27 +3,91 @@ package service
 import (
 	"context"
 	"database/sql"
-
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 
-	"log/slog"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
-
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
-
 	"github.com/leapmux/leapmux/internal/worker/agent"
-
 	"github.com/leapmux/leapmux/internal/worker/channel"
-
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/util/validate"
 )
+
+type preparedForkSource struct {
+	source     db.Agent
+	sessionID  string
+	workingDir string
+	unlock     func()
+}
+
+// prepareForkSource acquires the source root's transcript mutation lock
+// unconditionally, reads and validates the source agent once under that lock,
+// and returns a consistent snapshot for both SQLite cloning and launch runtime
+// encoding. Callers must invoke unlock once persistence completes or fails.
+func (svc *Service) prepareForkSource(
+	ctx context.Context,
+	sourceAgentID string,
+	agentProvider leapmuxv1.AgentProvider,
+	sender channel.ResponseWriter,
+) (*preparedForkSource, bool) {
+	mutation := svc.Output.transcriptMutationMutex(sourceAgentID)
+	mutation.Lock()
+	unlock := sync.OnceFunc(mutation.Unlock)
+	ok := false
+	defer func() {
+		if !ok {
+			unlock()
+		}
+	}()
+
+	src, err := svc.getAgentByID(ctx, sourceAgentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		sendNotFoundError(sender, "source agent not found")
+		return nil, false
+	}
+	if err != nil {
+		slog.Error("failed to read fork source agent", "source_agent_id", sourceAgentID, "error", err)
+		sendInternalError(sender, "failed to read fork source agent")
+		return nil, false
+	}
+	if src.ParentAgentID.Valid {
+		sendFailedPrecondition(sender, "cannot fork a virtual child subagent transcript")
+		return nil, false
+	}
+	if src.AgentProvider != agentProvider {
+		sendInvalidArgument(sender, fmt.Sprintf("fork provider %s does not match source agent provider %s",
+			agentlabels.CLIAlias(agentProvider), agentlabels.CLIAlias(src.AgentProvider)))
+		return nil, false
+	}
+	if svc.isAgentBusyForFork(&src) {
+		sendFailedPrecondition(sender, fmt.Sprintf("agent %s is busy; wait for the current turn to finish before forking", src.ID))
+		return nil, false
+	}
+	sourceSessionID := storedSessionID(src)
+	if sourceSessionID == "" {
+		sendFailedPrecondition(sender, fmt.Sprintf("agent %s has no native session to fork yet", src.ID))
+		return nil, false
+	}
+	if !svc.providerSupportsFork(src.ID, agentProvider) {
+		sendFailedPrecondition(sender, fmt.Sprintf("provider %s does not support native conversation-history forking",
+			agentlabels.CLIAlias(agentProvider)))
+		return nil, false
+	}
+	ok = true
+	return &preparedForkSource{
+		source:     src,
+		sessionID:  sourceSessionID,
+		workingDir: src.WorkingDir,
+		unlock:     unlock,
+	}, true
+}
 
 func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter, op *creationOperation) {
 	if svc.refuseIfShuttingDown(sender) {
@@ -33,6 +97,25 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		svc.restoreAgentCreation(op, sender)
 		return
 	}
+	if r.InitialMessage == nil && strings.TrimSpace(r.GetInitialMessageId()) != "" {
+		sendInvalidArgument(sender, "initial_message_id requires initial_message")
+		return
+	}
+	spawner, err := svc.agentMessageSender(caller)
+	if err != nil {
+		slog.Error("failed to resolve calling agent", "error", err)
+		sendInternalError(sender, "failed to resolve calling agent")
+		return
+	}
+	var initialSender *inputqueue.AgentSender
+	if r.InitialMessage != nil {
+		initialSender = spawner
+	}
+	var spawnedByAgentID string
+	if spawner != nil {
+		spawnedByAgentID = spawner.TabID
+	}
+
 	// Through the PROVIDER, because a resume handle is not one shape.
 	// Claude, Codex and the ACP providers issue an opaque token, and
 	// the default rule refuses one that argv could read as a flag. Pi
@@ -43,11 +126,33 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 	// the pending claim and the provider's resume argument. The confirmed
 	// session column stays empty until the provider reports its identity.
 	agentProvider := agent.ProviderOrDefault(r.GetAgentProvider())
-	resumeSessionID, err := svc.Agents.Registry().Plugin(agentProvider).
-		ResolveResumeHandle(r.GetAgentSessionId(), svc.HomeDir)
-	if err != nil {
-		sendInvalidArgument(sender, err.Error())
-		return
+	var (
+		resumeSessionID   string
+		forkSourceAgentID string
+	)
+	switch src := r.GetSessionSource().(type) {
+	case *leapmuxv1.OpenAgentRequest_ForkSource:
+		forkSourceAgentID = strings.TrimSpace(src.ForkSource.GetSourceAgentId())
+		if forkSourceAgentID == "" {
+			sendInvalidArgument(sender, "fork_source.source_agent_id is required")
+			return
+		}
+	case *leapmuxv1.OpenAgentRequest_ResumeSessionId:
+		if strings.TrimSpace(src.ResumeSessionId) == "" {
+			sendInvalidArgument(sender, "resume_session_id is required")
+			return
+		}
+		var resolveErr error
+		resumeSessionID, resolveErr = svc.Agents.Registry().Plugin(agentProvider).
+			ResolveResumeHandle(src.ResumeSessionId, svc.HomeDir)
+		if resolveErr != nil {
+			sendInvalidArgument(sender, resolveErr.Error())
+			return
+		}
+		if resumeSessionID == "" {
+			sendInvalidArgument(sender, "resume_session_id is required")
+			return
+		}
 	}
 
 	// A client-set title is CLEANED, never refused, with the rule
@@ -83,9 +188,9 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 	agentID := r.GetCreation().GetTabId()
 	agent.TraceStartupPhase(agentID, "handler_begin")
 
-	workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
+	workingDir, err := svc.openGitWorkingDir(r.GetWorkingDir(), r.GetGitSetup(), caller)
 	if err != nil {
-		sendInvalidArgument(sender, err.Error())
+		sendValidationError(sender, err)
 		return
 	}
 
@@ -103,7 +208,8 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 	// (model/effort/permissionMode/provider options), filled with provider
 	// defaults for any missing well-known and provider-specific ids.
 	requested := mergeOptions(nil, r.GetOptions())
-	launch := resolveLaunchOptions(svc.Agents.Registry(), requested, agentProvider, resumeSessionID != "")
+	hasExistingSession := resumeSessionID != "" || forkSourceAgentID != ""
+	launch := resolveLaunchOptions(svc.Agents.Registry(), requested, agentProvider, hasExistingSession)
 	options := launch.Options
 	// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
 	// typo'd --permission-mode fails fast with a clear error instead of reaching the provider and
@@ -116,8 +222,11 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		return
 	}
 
-	// Track whether this agent was created via session resume.
-	resumed := ptrconv.BoolToInt64(resumeSessionID != "")
+	// Track whether this agent was created via session resume or fork.
+	// Marking a forked agent resumed ensures resolveResumeSessionID resumes its
+	// newly minted native session after a Worker restart even before a new
+	// user message is sent.
+	resumed := ptrconv.BoolToInt64(hasExistingSession)
 
 	agent.TraceStartupPhase(agentID, "gitmode_validated")
 
@@ -154,9 +263,36 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		sendFailedPrecondition(sender, intentErr.Error())
 		return
 	}
-	runtime := &agentCreationRuntime{Startup: intent, ResumeSessionID: resumeSessionID, Options: options, DefaultedIDs: launch.DefaultedIDs}
-	if err := op.persist(runtime, func(ctx context.Context, q *db.Queries) error {
-		return svc.createAgentRecordWithTranscriptUsing(ctx, q, db.CreateAgentParams{
+	// Hold the source root's transcript mutation lock across validation, runtime
+	// encoding, and the snapshot transaction (acquired before op.persist opens
+	// its SQLite transaction to preserve the transcriptMutationMutex -> SQLite
+	// lock order) so no live message, session update, or child write lands
+	// mid-clone and both runtime and SQLite derive from the same locked snapshot.
+	var forkPrep *preparedForkSource
+	if forkSourceAgentID != "" {
+		var ok bool
+		forkPrep, ok = svc.prepareForkSource(ctx, forkSourceAgentID, agentProvider, sender)
+		if !ok {
+			return
+		}
+		defer forkPrep.unlock()
+	}
+
+	var sessionInit agent.SessionInit
+	if forkPrep != nil {
+		sessionInit = agent.ForkSession(forkPrep.sessionID, forkPrep.workingDir)
+	} else if resumeSessionID != "" {
+		sessionInit = agent.ResumeSession(resumeSessionID)
+	}
+	runtime := &agentCreationRuntime{
+		Startup:      intent,
+		Session:      sessionInit,
+		Options:      options,
+		DefaultedIDs: launch.DefaultedIDs,
+	}
+
+	if err := op.persist(runtime, func(ctx context.Context, q *db.Queries, tx *sql.Tx) error {
+		params := db.CreateAgentParams{
 			ID:                 agentID,
 			WorkingDir:         plan.PlannedWorkingDir,
 			Title:              title,
@@ -164,16 +300,37 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 			Options:            marshalOptions(options),
 			AgentProvider:      agentProvider,
 			Resumed:            resumed,
-		}, resumeSessionID)
+			SpawnedByAgentID:   spawnedByAgentID,
+		}
+		if forkPrep != nil {
+			if err := svc.createAgentRecordForForkUsing(ctx, q, params, forkPrep.source); err != nil {
+				return err
+			}
+		} else {
+			if err := svc.createAgentRecordWithTranscriptUsing(ctx, q, params, resumeSessionID); err != nil {
+				return err
+			}
+		}
+		if r.InitialMessage == nil {
+			return nil
+		}
+		return svc.InputQueue.StageInitialMessage(ctx, tx, agentID, r.GetInitialMessageId(), r.GetInitialMessage(), initialSender)
 	}); err != nil {
 		// The row does not exist, so no startup will ever run for it.
 		if errors.Is(err, errNativeSessionAlreadyOpen) {
 			sendFailedPrecondition(sender, err.Error())
 			return
 		}
+		if errors.Is(err, inputqueue.ErrInvalidInput) || errors.Is(err, inputqueue.ErrItemTooLarge) {
+			sendInvalidArgument(sender, err.Error())
+			return
+		}
 		slog.Error("failed to create agent", "error", err)
 		sendInternalError(sender, "failed to create agent")
 		return
+	}
+	if forkPrep != nil {
+		forkPrep.unlock()
 	}
 
 	// The row is durable, so a reap can now find it -- but its cleanup is
@@ -196,10 +353,10 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 
 // agentCreationRuntime contains resolved launch intent while publication is pending.
 type agentCreationRuntime struct {
-	Startup         creationStartupIntent
-	ResumeSessionID string
-	Options         OptionMap
-	DefaultedIDs    map[string]bool
+	Startup      creationStartupIntent
+	Session      agent.SessionInit
+	Options      OptionMap
+	DefaultedIDs map[string]bool
 }
 
 func (svc *Service) handleOpenAgent(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
@@ -234,8 +391,16 @@ func (svc *Service) restoreAgentCreation(op *creationOperation, sender channel.R
 	}
 	op.runtime = &runtime
 	// The row owns the current selection, including a pending or cleared ID.
-	// The saved runtime contains the original launch intent.
-	runtime.ResumeSessionID = storedSessionID(row)
+	// The saved runtime contains the original launch intent. When a fork already
+	// confirmed a new session ID on the row, resume that confirmed ID instead of
+	// forking the source session a second time. When the row has no stored
+	// session yet, preserve an unconfirmed fork intent and clear any stale
+	// resume intent.
+	if confirmedID := storedSessionID(row); confirmedID != "" {
+		runtime.Session = agent.ResumeSession(confirmedID)
+	} else if !runtime.Session.IsFork() {
+		runtime.Session = agent.FreshSession()
+	}
 	ctx, handle, claimErr := op.acquireStartupAdmission(&svc.AgentStartup.startupCore, "")
 	if claimErr != nil {
 		sendFailedPrecondition(sender, claimErr.Error())
@@ -290,7 +455,7 @@ func (svc *Service) finishAgentCreation(op *creationOperation, sender channel.Re
 		return
 	}
 	opts := svc.baseAgentOptions(row.ID, runtime.Startup.Plan.PlannedWorkingDir, row.AgentProvider)
-	opts.ResumeSessionID = runtime.ResumeSessionID
+	opts.Session = runtime.Session
 	opts.Options = runtime.Options
 	opts.NewSessionDefaultOptionIDs = runtime.DefaultedIDs
 	opts.ExtraEnv = remoteEnvs

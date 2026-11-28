@@ -35,7 +35,7 @@ junieTest.describe('Junie control requests', () => {
       viewProof: async () => {
         await expect(messageBubbles(page).filter({ hasText: 'junie-42' }).first()).toBeVisible()
         // Junie names each option after its own ID, so the saved row reads the word of the kind.
-        await expect(savedControlAnswer(page)).toHaveText('Allow once')
+        await expect(savedControlAnswer(page)).toHaveText('Allow')
       },
     })
   })
@@ -60,7 +60,7 @@ junieTest.describe('Junie control requests', () => {
         expect(existsSync(output)).toBe(false)
         expect(JSON.stringify(request.body)).toContain('Human rejected execution')
       },
-      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Reject'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Deny'),
     })
   })
 
@@ -82,7 +82,7 @@ junieTest.describe('Junie control requests', () => {
       toolCall: bashToolCall(context.provider, 'junie-reason', `echo "junie-should-not-run" | tee ${output}`),
       route: 'next-message',
       expectNotRun: () => expect(existsSync(output)).toBe(false),
-      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Reject'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Deny'),
     })
   })
 })

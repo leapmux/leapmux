@@ -3,8 +3,8 @@ package ohmypi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
-	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -13,13 +13,23 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+// ControlRequestKey reads the key that the agent publishes a request under:
+// the `id` that omp's dialog states (publishRegisteredDialog), which the
+// bridge's question request repeats (routeAskDialog), exactly as omp states
+// it. It is no JSON-RPC id, so it takes no canonical form.
+func (ompProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	id := providerkit.StringField(payload, "id")
+	return id, id != ""
+}
 
 // dialogHeader takes the routing fields of an extension_ui_request frame.
 //
 // Every dialog blocks omp until the host answers it with an extension_ui_response
-// that echoes `id`. The whole frame is what the control request publishes, so the
-// browser can read every method-specific field.
+// that echoes `id`. The whole frame is what the control request publishes, so
+// ReadControlRequest can read every method-specific field.
 type dialogHeader struct {
 	ID       string   `json:"id"`
 	Method   string   `json:"method"`
@@ -34,6 +44,7 @@ type dialogHeader struct {
 type pendingDialog struct {
 	header          dialogHeader
 	raw             []byte
+	replyReceipt    agent.NativeInputReceipt
 	ready           bool
 	published       bool
 	answering       bool
@@ -55,18 +66,10 @@ func (h dialogHeader) isToolApproval() bool {
 		slices.Contains(h.Options, contracts.OhMyPiApprovalDialogDeny)
 }
 
-// maxDialogTimeoutMillis is the largest timeout that a time.Duration holds. A
-// larger one states no limit in practice, and a float conversion past it has no
-// defined result.
-const maxDialogTimeoutMillis = float64(math.MaxInt64 / int64(time.Millisecond))
-
 // deadline returns the wait after which omp answers the dialog itself, or zero
 // when omp waits with no limit.
 func (h dialogHeader) deadline() time.Duration {
-	if h.Timeout <= 0 || h.Timeout >= maxDialogTimeoutMillis {
-		return 0
-	}
-	return time.Duration(h.Timeout * float64(time.Millisecond))
+	return providerkit.DialogTimeoutDuration(h.Timeout)
 }
 
 // handleExtensionUIRequest routes one extension_ui_request frame.
@@ -137,6 +140,9 @@ func (a *Agent) publishDialog(head dialogHeader, raw []byte) {
 	}
 	bypass := a.approvalMode == contracts.OhMyPiApprovalModeYolo && head.isToolApproval()
 	pending := &pendingDialog{header: head, raw: append([]byte(nil), raw...), ready: bypass, publicationDone: make(chan struct{})}
+	if reply := a.replyOutputLocked(); reply != nil {
+		pending.replyReceipt = reply.receipt
+	}
 	a.openDialogs[head.ID] = pending
 	a.Mu.Unlock()
 	if bypass {
@@ -160,9 +166,11 @@ func (a *Agent) publishRegisteredDialog(pending *pendingDialog) {
 	a.Mu.Unlock()
 	a.dialogDeadlines.Arm(a.Clock(), head.ID, head.deadline(), func() { a.withdrawDialog(head.ID) })
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
-		RequestID: head.ID,
-		Payload:   pending.raw,
-		SourceSeq: a.approvalSourceSeq(head),
+		RequestID:      head.ID,
+		Payload:        pending.raw,
+		SourceSeq:      a.approvalSourceSeq(head),
+		AgentSessionID: pending.replyReceipt.SessionID,
+		NativeTurnID:   pending.replyReceipt.TurnID,
 	})
 	a.Mu.Lock()
 	pending.ready = true
@@ -305,16 +313,12 @@ func (a *Agent) settleOpenDialogs() {
 
 // cancelDialog answers one dialog with a cancellation.
 func (a *Agent) cancelDialog(id string) {
-	response, err := json.Marshal(map[string]any{
-		contracts.OhMyPiDialogResponseType:      contracts.OhMyPiEventExtensionUIResponse,
-		contracts.OhMyPiDialogResponseID:        id,
-		contracts.OhMyPiDialogResponseCancelled: true,
-	})
+	answer, err := cancelResponse(id)
 	if err != nil {
 		slog.Error("omp encode dialog cancellation", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if err := a.Process.SendRawInput(response, agent.StopContext{}); err != nil {
+	if err := a.Process.SendRawInput(answer.Content, agent.StopContext{}); err != nil {
 		slog.Warn("omp send dialog cancellation", "agent_id", a.AgentID(), "request_id", id, "error", err)
 	}
 }
@@ -322,15 +326,11 @@ func (a *Agent) cancelDialog(id string) {
 // answerDialog answers one dialog with a value, as the question bridge does for
 // each dialog after the first.
 func (a *Agent) answerDialog(id, value string) error {
-	response, err := json.Marshal(map[string]any{
-		contracts.OhMyPiDialogResponseType:  contracts.OhMyPiEventExtensionUIResponse,
-		contracts.OhMyPiDialogResponseID:    id,
-		contracts.OhMyPiDialogResponseValue: value,
-	})
+	answer, err := valueResponse(id, value)
 	if err != nil {
 		return err
 	}
-	return a.Process.SendRawInput(response, agent.StopContext{})
+	return a.Process.SendRawInput(answer.Content, agent.StopContext{})
 }
 
 // withdrawDialog cancels the control request of a dialog omp no longer waits for.
@@ -353,8 +353,8 @@ func (a *Agent) withdrawDialog(targetID string) {
 // omp's approval dialog states the tool NAME in its title ("Allow tool: bash") and
 // no call id. omp sends it after the call's tool_execution_start, so the call is
 // one of the calls in progress: when exactly one call of that name runs, it is the
-// one, and the control request carries its row so the browser can show the call's
-// arguments. With two or more, no row is stated rather than a wrong one.
+// one, and the control request carries its row so the prompt can show the call's
+// arguments (approvalArgs). With two or more, no row is stated rather than a wrong one.
 func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 	name := head.approvalTool()
 	if name == "" {
@@ -394,7 +394,8 @@ func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 // turns it into the dialog chain omp waits on (see answerAsk). Every other frame
 // reaches omp unchanged, and a cancellation of the bridge's request also ends the
 // bridge's state for that call.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var head struct {
 		Type      string `json:"type"`
 		ID        string `json:"id"`
@@ -415,7 +416,7 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 			unpublished := pending != nil && pending.ready && !pending.published
 			a.Mu.Unlock()
 			if pending == nil || unpublished {
-				return errors.New("the omp dialog no longer waits for a manual answer")
+				return fmt.Errorf("%w: the omp dialog no longer waits for a manual answer", agent.ErrControlRequestNotPending)
 			}
 			select {
 			case <-pending.publicationDone:
@@ -425,7 +426,7 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 			a.Mu.Lock()
 			if a.openDialogs[head.ID] != pending || pending.answering || !pending.published {
 				a.Mu.Unlock()
-				return errors.New("the omp dialog no longer waits for a manual answer")
+				return fmt.Errorf("%w: the omp dialog no longer waits for a manual answer", agent.ErrControlRequestNotPending)
 			}
 			pending.answering = true
 			a.Mu.Unlock()

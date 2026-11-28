@@ -27,12 +27,6 @@ func (s *cleanupStore) HardDeleteWorkersBefore(ctx context.Context, cutoff time.
 	return rowsAffected(s.conn.q.HardDeleteWorkersBefore(ctx, pgtime.NullOf(cutoff)))
 }
 
-// CompleteStaleDeregistrations deletes the workers deregistering since before
-// cutoff; see the query's doc for what it recovers.
-func (s *cleanupStore) CompleteStaleDeregistrations(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.CompleteStaleDeregistrations(ctx, pgtime.NullOf(cutoff)))
-}
-
 func (s *cleanupStore) HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.HardDeleteExpiredRegistrationKeysBefore(ctx, pgtime.New(cutoff)))
 }

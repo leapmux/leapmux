@@ -106,7 +106,7 @@ describe('startSuiteServer', () => {
     expect(socketPath.length, `socket path is ${socketPath.length} bytes: ${socketPath}`).toBeLessThan(104)
     expect(socketPath.endsWith('/hub.sock')).toBe(true)
     // The IPC socket must use its separate path.
-    const dataDirIndex = record.argv.indexOf('-data-dir')
+    const dataDirIndex = record.argv.indexOf('--data-dir')
     expect(dataDirIndex).toBeGreaterThanOrEqual(0)
     expect(socketPath.startsWith(record.argv[dataDirIndex + 1] ?? '')).toBe(false)
     // The short path comes from the flag, not from an environment variable.
@@ -141,19 +141,22 @@ function writeRecordingFakeBinary(root: string): { binary: string, recorded: str
   const binary = join(root, 'record-dev')
   const recorded = join(root, 'recorded.json')
   writeFileSync(binary, `#!/bin/sh
-if [ "$1" = "dev" ]; then
+if [ "$1" = "daemon" ] && [ "$2" = "dev" ]; then
   node -e '
     const fs = require("fs"), path = require("path");
     const recorded = process.argv[1];
     const args = process.argv.slice(2);
-    const dataDir = args[args.indexOf("-data-dir") + 1];
+    const dataDir = args[args.indexOf("--data-dir") + 1];
     const unixEntry = args.find(a => a.startsWith("unix:")) ?? null;
     const stateDir = path.join(dataDir, "hub");
     fs.mkdirSync(stateDir, { recursive: true });
     // The state file is the ready signal the suite waits for, so the record
     // lands first: a reader that wakes on the state file must find the record.
     fs.writeFileSync(recorded, JSON.stringify({ argv: args, listenEnv: process.env.LEAPMUX_HUB_LISTEN ?? null, localListenEnv: process.env.LEAPMUX_HUB_LOCAL_LISTEN ?? null }));
-    fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
+    const statePath = path.join(stateDir, "state.json");
+    const pendingState = statePath + ".tmp";
+    fs.writeFileSync(pendingState, JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
+    fs.renameSync(pendingState, statePath);
   ' ${JSON.stringify(recorded)} "$@"
   exit 1
 fi

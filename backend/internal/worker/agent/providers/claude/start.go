@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 
 	"github.com/google/uuid"
-	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -17,24 +18,43 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// claudeSessionArgs creates a session ID or validates the stored ID before it enters argv.
+// claudeSessionArgs creates a session ID or validates the stored resume/fork ID before it enters argv.
 // Claude's --resume takes an optional value. A leading hyphen can become another flag,
 // even when shell quoting keeps the value in one argv element.
 // Validate here because session IDs from other providers can contain file paths.
-// A corrupt resume ID fails startup. It never starts a new session instead.
-func claudeSessionArgs(resumeSessionID string) ([]string, error) {
-	if resumeSessionID == "" {
+// A corrupt resume or fork ID fails startup. It never starts a new session instead.
+// It returns both the CLI flags and the active session ID that the process will own.
+func claudeSessionArgs(session agent.SessionInit) ([]string, string, error) {
+	if err := session.Validate(); err != nil {
+		return nil, "", err
+	}
+	switch session.Kind {
+	case agent.SessionInitFork:
+		forkFromSessionID := session.ForkID()
+		if err := validate.ValidateSessionID(forkFromSessionID); err != nil {
+			return nil, "", fmt.Errorf("cannot fork Claude session %q: the source session ID is not a valid token: %w", forkFromSessionID, err)
+		}
+		newSessionID, err := uuid.NewRandom()
+		if err != nil {
+			return nil, "", fmt.Errorf("create forked Claude session ID: %w", err)
+		}
+		id := newSessionID.String()
+		return []string{"--resume", forkFromSessionID, "--fork-session", "--session-id", id}, id, nil
+	case agent.SessionInitResume:
+		resumeSessionID := session.ResumeID()
+		if err := validate.ValidateSessionID(resumeSessionID); err != nil {
+			return nil, "", providerkit.ResumeFailedError(resumeSessionID,
+				fmt.Errorf("the stored session ID is not a valid token: %w", err))
+		}
+		return []string{"--resume", resumeSessionID}, resumeSessionID, nil
+	default:
 		sessionID, err := uuid.NewRandom()
 		if err != nil {
-			return nil, fmt.Errorf("create Claude session ID: %w", err)
+			return nil, "", fmt.Errorf("create Claude session ID: %w", err)
 		}
-		return []string{"--session-id", sessionID.String()}, nil
+		id := sessionID.String()
+		return []string{"--session-id", id}, id, nil
 	}
-	if err := validate.ValidateSessionID(resumeSessionID); err != nil {
-		return nil, providerkit.ResumeFailedError(resumeSessionID,
-			fmt.Errorf("the stored session ID is not a valid token: %w", err))
-	}
-	return []string{"--resume", resumeSessionID}, nil
 }
 
 // claudeSessionStateEnv makes Claude Code publish its own turn state on the
@@ -110,6 +130,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	baseArgs := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
+		"--replay-user-messages",
 		"--verbose",
 		"--dangerously-skip-permissions",
 		"--permission-prompt-tool", "stdio",
@@ -125,7 +146,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		"--forward-subagent-text",
 	}
 
-	sessionArgs, err := claudeSessionArgs(opts.ResumeSessionID)
+	if err := opts.ValidateSessionSource(); err != nil {
+		cancel()
+		return nil, err
+	}
+	sessionArgs, activeSessionID, err := claudeSessionArgs(opts.Session)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -184,10 +209,34 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	cmd.Env = claudeAgentEnv(cmd.Environ(), opts.LoginShell)
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Env, opts)
 
+	var stagedTranscriptPath string
+	if opts.Session.IsFork() && opts.Session.ForkSourceWorkingDir() != "" {
+		var stageErr error
+		stagedTranscriptPath, stageErr = stageClaudeForkTranscript(
+			providerkit.StoredSessionQueryForLaunch(opts.HomeDir, cmd.Env),
+			opts.Session.ForkSourceWorkingDir(),
+			opts.WorkingDir,
+			opts.Session.ForkID(),
+		)
+		if stageErr != nil {
+			slog.Warn("staging Claude fork transcript across working directories failed; continuing best-effort",
+				"agent_id", opts.AgentID,
+				"fork_from_session_id", opts.Session.ForkID(),
+				"error", stageErr,
+			)
+		}
+	}
+	removeStagedTranscript := func() {
+		if stagedTranscriptPath != "" {
+			_ = os.Remove(stagedTranscriptPath)
+		}
+	}
+
 	// providerkit.SetupProcessPipes configures SIGTERM cancel, WaitDelay, and opens
 	// stdin/stdout/stderr pipes.
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
+		removeStagedTranscript()
 		return nil, err
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
@@ -195,7 +244,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a := &Agent{
 		Process:                providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "claude", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel),
 		model:                  launchModel,
-		sessionID:              sessionArgs[1],
+		sessionID:              activeSessionID,
 		effort:                 opts.Effort(),
 		workingDir:             opts.WorkingDir,
 		homeDir:                opts.HomeDir,
@@ -206,6 +255,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 	agent.TraceStartupPhase(opts.AgentID, "before_exec_start")
 	if err := a.StartCmd(); err != nil {
+		removeStagedTranscript()
 		return nil, err
 	}
 	agent.TraceStartupPhase(opts.AgentID, "after_exec_start")
@@ -231,9 +281,16 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// tear down the just-spawned process so no orphan process or goroutine survives.
 	if err := a.runStartupHandshake(ctx, opts); err != nil {
 		cleanup()
+		removeStagedTranscript()
 		return nil, a.FormatStartupError("", err)
 	}
-	a.sink.UpdateSessionID(a.sessionID)
+	// A forked Claude session launched with --resume <src> --fork-session --session-id <new>
+	// does not write <new>.jsonl during initialize; Claude creates the forked transcript only
+	// when turn 1 executes and emits system/init. Skip persisting the unmaterialized UUID here
+	// so pre-turn-1 relaunches keep the fork session origin instead of failing --resume <new>.
+	if !opts.Session.IsFork() {
+		a.sink.UpdateSessionID(a.sessionID)
+	}
 
 	return a, nil
 }

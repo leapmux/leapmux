@@ -2,14 +2,17 @@ package copilot
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/jsonfield"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -56,10 +59,27 @@ var copilotControlSpecs = []copilotControlSpec{
 	},
 }
 
+func copilotControlSpecForRequest(eventType string) *copilotControlSpec {
+	for index := range copilotControlSpecs {
+		if copilotControlSpecs[index].requestEvent == eventType {
+			return &copilotControlSpecs[index]
+		}
+	}
+	return nil
+}
+
 type copilotPendingControl struct {
+	order           uint64
 	spec            copilotControlSpec
+	sink            agent.ProviderServices
+	nativeAgentID   string
 	sessionID       string
 	nativeRequestID string
+	// instanceID identifies this publication of the request
+	// (agent.ControlRequest.InstanceID). An announcement with other data under
+	// the same request ID replaces the pending control, and the replacement
+	// gets a new instance.
+	instanceID      string
 	payload         []byte
 	data            json.RawMessage
 	ready           chan struct{}
@@ -131,6 +151,31 @@ func (a *Agent) releaseNativeInterests(handles []string) {
 	}
 }
 
+// ControlRequestKey reads the key that the agent publishes a Copilot request
+// under (copilotControlID): the session of the request's event, the kind of
+// the event, and the runtime's own requestId. The agent reads an event only in
+// the session that the event states (decodeCopilotSessionEvent), and keys its
+// request by that session. LeapMux's workspace-trust question states no key,
+// so the session that the Worker stores with it gives the key
+// (providerkit.WorkspaceTrustRequestKey).
+func (copilotProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	if providerkit.IsWorkspaceTrustQuestion(payload) {
+		return providerkit.WorkspaceTrustRequestKey(payload, agentSessionID)
+	}
+	var frame copilotSessionEventFrame
+	if json.Unmarshal(payload, &frame) != nil || frame.Method != copilotMethodSessionEvent || frame.Params.SessionID == "" {
+		return "", false
+	}
+	spec := copilotControlSpecForRequest(frame.Params.Event.Type)
+	var data struct {
+		RequestID string `json:"requestId"`
+	}
+	if spec == nil || json.Unmarshal(frame.Params.Event.Data, &data) != nil || data.RequestID == "" {
+		return "", false
+	}
+	return copilotControlID(frame.Params.SessionID, spec.kind, data.RequestID), true
+}
+
 // copilotControlID separates native request kinds and sessions without changing the provider payload.
 func copilotControlID(sessionID, kind, requestID string) string {
 	identity, _ := json.Marshal([]string{sessionID, kind, requestID})
@@ -138,7 +183,7 @@ func copilotControlID(sessionID, kind, requestID string) string {
 	return "copilot-" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
+func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) (bool, string) {
 	var spec *copilotControlSpec
 	completed := false
 	for index := range copilotControlSpecs {
@@ -150,11 +195,17 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 		}
 	}
 	if spec == nil {
-		return false
+		return false, ""
 	}
-	a.persistNativeFrameTo(a.sinkFor(a.childForEvent(event)), raw, agent.SpanInfo{})
+	child := a.childForEvent(event)
+	sink := a.sinkFor(child)
+	nativeAgentID := ""
+	if child != nil {
+		nativeAgentID = child.nativeAgentID
+	}
+	a.persistNativeFrameTo(sink, raw, agent.SpanInfo{})
 	if a.closing {
-		return true
+		return true, ""
 	}
 	var data struct {
 		RequestID      string `json:"requestId"`
@@ -162,29 +213,41 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil || data.RequestID == "" {
 		slog.Warn("Read Copilot control request", "event", event.Type, "error", err)
-		return true
+		return true, ""
 	}
 	sessionID := a.currentNativeSessionID()
 	identifier := copilotControlID(sessionID, spec.kind, data.RequestID)
 	if completed || data.ResolvedByHook {
 		a.removeNativeControl(identifier)
-		return true
+		return true, ""
 	}
 	a.controlMu.Lock()
 	if a.controls == nil {
 		a.controls = make(map[string]*copilotPendingControl)
 	}
 	pending := a.controls[identifier]
-	fresh := pending == nil || !bytes.Equal(pending.data, event.Data)
+	fresh := pending == nil || !bytes.Equal(pending.data, event.Data) || pending.nativeAgentID != nativeAgentID
+	// An announcement with other data replaces the waiting request. The card of
+	// the replaced instance goes, and an answer to it reaches nothing
+	// (SendRawInput), because Copilot would apply it to the replacement.
+	var replaced *copilotPendingControl
 	if fresh {
+		if pending != nil && pending.published {
+			replaced = pending
+		}
+		a.nextControlOrder++
 		pending = &copilotPendingControl{
-			spec: *spec, sessionID: sessionID, nativeRequestID: data.RequestID,
+			order: a.nextControlOrder,
+			spec:  *spec, sink: sink, nativeAgentID: nativeAgentID, sessionID: sessionID, nativeRequestID: data.RequestID, instanceID: id.Generate(),
 			payload: append([]byte(nil), raw...), data: append(json.RawMessage(nil), event.Data...),
 			ready: make(chan struct{}),
 		}
 		a.controls[identifier] = pending
 	}
 	a.controlMu.Unlock()
+	if replaced != nil {
+		a.controlSink(replaced).CancelControlRequestInstance(identifier, replaced.instanceID)
+	}
 	a.stateMu.Lock()
 	bypass := spec.kind == "permission" && a.options[agent.OptionIDPermissionMode] == contracts.CopilotPermissionModeAllowAll
 	a.stateMu.Unlock()
@@ -215,12 +278,22 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	if err == nil && spec.kind == "permission" {
 		a.offReader(copilotApprovePermissions, a.approvePendingPermissions)
 	}
-	return true
+	return true, identifier
+}
+
+func (a *Agent) controlSink(pending *copilotPendingControl) agent.ProviderServices {
+	if pending != nil && pending.sink != nil {
+		return pending.sink
+	}
+	return a.sink
 }
 
 // publishNativeControl also retires a card whose native completion raced publication.
+// It retires the card of its own instance, so a replacement that arrived meanwhile
+// keeps its card.
 func (a *Agent) publishNativeControl(identifier string, pending *copilotPendingControl) error {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: identifier, Payload: pending.payload, AgentSessionID: pending.sessionID})
+	sink := a.controlSink(pending)
+	err := sink.PublishControlRequest(agent.ControlRequest{RequestID: identifier, InstanceID: pending.instanceID, Payload: pending.payload, AgentSessionID: pending.sessionID})
 	if err != nil {
 		return err
 	}
@@ -229,35 +302,89 @@ func (a *Agent) publishNativeControl(identifier string, pending *copilotPendingC
 	current := a.controls[identifier] == pending
 	a.controlMu.Unlock()
 	if !current {
-		a.sink.CancelControlRequest(identifier)
+		sink.CancelControlRequestInstance(identifier, pending.instanceID)
 	}
 	return nil
 }
 
+// removeNativeControl forgets the request that Copilot settled under identifier,
+// whichever instance shows it, and withdraws that instance's card.
 func (a *Agent) removeNativeControl(identifier string) {
 	a.controlMu.Lock()
 	pending := a.controls[identifier]
 	delete(a.controls, identifier)
-	published := pending != nil && pending.published
+	a.controlMu.Unlock()
+	a.withdrawNativeControlCard(identifier, pending)
+}
+
+// withdrawNativeControl forgets pending while it is still the request under
+// identifier, withdraws its card, and reports whether it did. A replacement
+// keeps its own card.
+func (a *Agent) withdrawNativeControl(identifier string, pending *copilotPendingControl) bool {
+	a.controlMu.Lock()
+	if a.controls[identifier] != pending {
+		a.controlMu.Unlock()
+		return false
+	}
+	delete(a.controls, identifier)
+	a.controlMu.Unlock()
+	a.withdrawNativeControlCard(identifier, pending)
+	return true
+}
+
+// withdrawNativeControlCard withdraws the card of one published instance. A nil or
+// unpublished instance has no card.
+func (a *Agent) withdrawNativeControlCard(identifier string, pending *copilotPendingControl) {
+	if pending == nil {
+		return
+	}
+	a.controlMu.Lock()
+	published := pending.published
 	a.controlMu.Unlock()
 	if published {
-		a.sink.CancelControlRequest(identifier)
+		a.controlSink(pending).CancelControlRequestInstance(identifier, pending.instanceID)
 	}
 }
 
-func (a *Agent) clearNativeControls() {
+func (a *Agent) clearNativeControlsMatching(match func(*copilotPendingControl) bool) {
+	type withdrawn struct {
+		order                  uint64
+		identifier, instanceID string
+		sink                   agent.ProviderServices
+	}
+	var canceled []withdrawn
 	a.controlMu.Lock()
-	identifiers := make([]string, 0, len(a.controls))
 	for identifier, pending := range a.controls {
-		if pending.published {
-			identifiers = append(identifiers, identifier)
+		if !match(pending) {
+			continue
 		}
+		if pending.published {
+			canceled = append(canceled, withdrawn{
+				order: pending.order, identifier: identifier, instanceID: pending.instanceID, sink: a.controlSink(pending),
+			})
+		}
+		delete(a.controls, identifier)
 	}
-	clear(a.controls)
 	a.controlMu.Unlock()
-	for _, identifier := range identifiers {
-		a.sink.CancelControlRequest(identifier)
+	slices.SortFunc(canceled, func(left, right withdrawn) int {
+		return cmp.Compare(left.order, right.order)
+	})
+	for _, item := range canceled {
+		item.sink.CancelControlRequestInstance(item.identifier, item.instanceID)
 	}
+}
+
+func (a *Agent) clearNativeChildControls(nativeAgentID string) {
+	if nativeAgentID == "" {
+		return
+	}
+	a.clearNativeControlsMatching(func(pending *copilotPendingControl) bool {
+		return pending.nativeAgentID == nativeAgentID
+	})
+}
+
+func (a *Agent) clearNativeControls() {
+	a.clearNativeControlsMatching(func(*copilotPendingControl) bool { return true })
 	// The folder-trust question belongs to the session too.
 	a.workspaceTrust.Retire(a.sink)
 }
@@ -273,7 +400,8 @@ func (a *Agent) abortNativeControlSession(sessionID string) {
 }
 
 // SendRawInput accepts the shared control envelope and forwards the exact native response value.
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	raw := input.Data
 	var envelope struct {
 		Response struct {
 			RequestID string          `json:"request_id"`
@@ -285,13 +413,13 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	}
 	identifier := envelope.Response.RequestID
 	if identifier == "" {
-		return a.copilotConnection.SendRawInput(raw, stop)
+		return a.copilotConnection.SendRawInput(input)
 	}
 	if providerkit.IsWorkspaceTrustRequestID(identifier) {
 		// LeapMux asked this question, so no runtime request waits for the answer.
 		a.sessionMu.RLock()
 		defer a.sessionMu.RUnlock()
-		_, err := a.workspaceTrust.Answer(a.sink, copilotWorkspaceTrustHost{a}, raw)
+		_, err := a.workspaceTrust.Answer(a.sink, copilotWorkspaceTrustHost{a}, input)
 		return err
 	}
 	a.controlMu.Lock()
@@ -299,6 +427,12 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	a.controlMu.Unlock()
 	if pending == nil {
 		return fmt.Errorf("the Copilot control request is no longer pending")
+	}
+	// Copilot applies an answer to the request ID, and an announcement with other
+	// data replaces the request under it (handleNativeControlEvent). So the answer
+	// goes only to the instance that it states.
+	if err := agent.ControlInstanceRefusal(pending.instanceID, input.ControlInstanceID); err != nil {
+		return err
 	}
 	// Publication must finish before this answer can hold the session in place.
 	select {
@@ -337,7 +471,15 @@ func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingCo
 		a.stateMu.Unlock()
 		return pending.publicationErr
 	}
-	if a.controls[identifier] != pending || pending.responding {
+	if current := a.controls[identifier]; current != pending {
+		a.controlMu.Unlock()
+		a.stateMu.Unlock()
+		if current != nil && current.instanceID != pending.instanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return fmt.Errorf("the Copilot control request is no longer pending")
+	}
+	if pending.responding {
 		a.controlMu.Unlock()
 		a.stateMu.Unlock()
 		return fmt.Errorf("the Copilot control request is no longer pending")
@@ -365,9 +507,12 @@ func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingCo
 			return err
 		}
 		a.controlMu.Lock()
-		current := a.controls[identifier] == pending
+		current := a.controls[identifier]
 		a.controlMu.Unlock()
-		if !current {
+		if current != pending {
+			if current != nil && current.instanceID != pending.instanceID {
+				return agent.ErrControlInstanceReplaced
+			}
 			return fmt.Errorf("the Copilot sampling request is no longer pending")
 		}
 	}
@@ -394,20 +539,28 @@ func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingCo
 // approvePendingPermissions runs under sessionMu, outside the event reader.
 // The existing delivery path checks native receipts and excludes competing answers.
 func (a *Agent) approvePendingPermissions() {
+	type pendingApproval struct {
+		identifier string
+		pending    *copilotPendingControl
+	}
 	a.controlMu.Lock()
-	permissions := make(map[string]*copilotPendingControl)
+	var permissions []pendingApproval
 	for identifier, pending := range a.controls {
 		if pending.spec.kind == "permission" && !pending.responding && !pending.automaticFailed {
 			select {
 			case <-pending.ready:
-				permissions[identifier] = pending
+				permissions = append(permissions, pendingApproval{identifier: identifier, pending: pending})
 			default:
 			}
 		}
 	}
 	a.controlMu.Unlock()
+	slices.SortFunc(permissions, func(left, right pendingApproval) int {
+		return cmp.Compare(left.pending.order, right.pending.order)
+	})
 	response, _ := json.Marshal(map[string]string{"kind": contracts.CopilotDecisionApproveOnce})
-	for identifier, pending := range permissions {
+	for _, entry := range permissions {
+		identifier, pending := entry.identifier, entry.pending
 		err := a.answerNativeControl(identifier, pending, response, true)
 		a.controlMu.Lock()
 		current := a.controls[identifier] == pending
@@ -420,7 +573,7 @@ func (a *Agent) approvePendingPermissions() {
 		}
 		a.controlMu.Unlock()
 		if retire && published {
-			a.sink.CancelControlRequest(identifier)
+			a.controlSink(pending).CancelControlRequestInstance(identifier, pending.instanceID)
 		}
 		if err == nil || !current || retire {
 			continue
@@ -432,8 +585,12 @@ func (a *Agent) approvePendingPermissions() {
 		if !published {
 			if publishErr := a.publishNativeControl(identifier, pending); publishErr != nil {
 				slog.Error("Publish Copilot permission after failed approval", "request_id", identifier, "error", publishErr)
-				a.removeNativeControl(identifier)
-				a.abortNativeControlSession(pending.sessionID)
+				// Only the current request leaves the turn waiting for an answer that no
+				// reader can give. A replacement that arrived meanwhile has its own card,
+				// so the turn that waits for it goes on.
+				if a.withdrawNativeControl(identifier, pending) {
+					a.abortNativeControlSession(pending.sessionID)
+				}
 			}
 		}
 	}

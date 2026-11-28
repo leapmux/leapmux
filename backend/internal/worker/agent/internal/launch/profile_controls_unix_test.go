@@ -3,14 +3,17 @@
 package launch
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -224,19 +227,150 @@ func TestProfileCandidateNushellIgnoresShadowedCommandLookup(t *testing.T) {
 	const candidate = "leapmux-nu-native-peer"
 	path := filepath.Join(dir, candidate)
 	testutil.WriteExecutable(t, path, "#!/bin/sh\nprintf 'native peer\\n'\n")
-	require.Equal(t, ProbeYes, CheckBinary(t.Context(), shell, true, candidate))
-	result, status := ProgramPath(t.Context(), shell, true, candidate)
-	require.Equal(t, ProbeYes, status)
 	canonical, err := filepath.EvalSymlinks(path)
 	require.NoError(t, err)
-	assert.Equal(t, canonical, result)
-	cmd, marker, _ := wrapTestCommand(t, testutil.DeadlineContext(t), WrapSpec{
-		Shell: shell, LoginShell: true, WorkingDir: dir, Launch: ShellCommands(candidate),
-	})
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-	assert.Equal(t, "\n"+marker+"\nnative peer\n", string(output))
+	alias := filepath.Join(t.TempDir(), "nushell")
+	require.NoError(t, os.Symlink(shell, alias))
+	for _, executable := range []string{shell, alias} {
+		t.Run(filepath.Base(executable), func(t *testing.T) {
+			require.Equal(t, ProbeYes, CheckBinary(t.Context(), executable, true, candidate))
+			result, status := ProgramPath(t.Context(), executable, true, candidate)
+			require.Equal(t, ProbeYes, status)
+			assert.Equal(t, canonical, result)
+			cmd, marker, _ := wrapTestCommand(t, testutil.DeadlineContext(t), WrapSpec{
+				Shell: executable, LoginShell: true, WorkingDir: dir, Launch: ShellCommands(candidate),
+			})
+			output, err := cmd.CombinedOutput()
+			require.NoError(t, err, "%s", output)
+			assert.Equal(t, "\n"+marker+"\nnative peer\n", string(output))
+		})
+	}
 }
+
+// A Nushell profile can define a command with the name of a builtin, and a
+// bare call to that name runs the profile's command. The env gate reads each
+// variable through get and default. The launch strips each key, and removes
+// the private variable of each pin, through hide-env. Each calls the builtin
+// through the `%` sigil, on both launch paths:
+//
+//   - The gate answers from the environment.
+//   - The strip removes the key.
+//   - The program receives the pin and no private pin variable.
+func TestWrapNushellCallsTheBuiltinsPastProfileCommands(t *testing.T) {
+	t.Parallel()
+	shell := requireProfileShell(t, "nu", "nu")
+	home := t.TempDir()
+	writeShellProfiles(t, home, shellProfiles{nu: "def get [--optional (-o), ...rest] { 'profile-get' }\n" +
+		"def default [...rest] { 'profile-default' }\n" +
+		"def hide-env [--ignore-errors (-i), ...rest] { }\n"})
+	for _, launch := range []struct {
+		name string
+		spec Spec
+	}{
+		{"program", Spec{Program: "/bin/sh"}},
+		{"candidates", ShellCommands("leapmux-nu-missing", "sh")},
+	} {
+		for _, tc := range []struct {
+			gate     string
+			wantMeta string
+			wantArg  string
+		}{
+			{"", "test_gate_open=true", "gated"},
+			{"on", "test_gate_open=false", ""},
+		} {
+			t.Run(launch.name+"/gate="+tc.gate, func(t *testing.T) {
+				t.Parallel()
+				// The program prints the stripped variable, the pin, whether its
+				// environment holds a private pin variable, and the conditional
+				// argument.
+				report := `printf '%s|%s|' "${LEAPMUX_TEST_STRIP-unset}" "${LEAPMUX_TEST_PIN-unset}"; ` +
+					`case "$(env)" in *` + environmentPinPrefix + `*) printf leaked;; *) printf clean;; esac; ` +
+					`printf '|%s\n' "$1"`
+				cmd, delimiter, meta := wrapTestCommand(t, testutil.DeadlineContext(t), WrapSpec{
+					Shell: shell, LoginShell: true, Launch: launch.spec,
+					BaseArgs:     []string{"-c", report, "sh"},
+					StripEnvKeys: []string{"LEAPMUX_TEST_STRIP"}, SetEnv: []string{"LEAPMUX_TEST_PIN=pinned"},
+					EnvGated: testEnvGate("gated"), WorkingDir: home,
+				})
+				cmd.Env = envutil.PinEnv(cmd.Environ(), append(homeEnv(home),
+					"LEAPMUX_TEST_STRIP=inherited", "LEAPMUX_TEST_GATE_A="+tc.gate, "LEAPMUX_TEST_GATE_B=")...)
+				output, err := cmd.CombinedOutput()
+				require.NoError(t, err, "%s", output)
+				preamble, program, found := strings.Cut(string(output), delimiter+"\n")
+				require.True(t, found, "the wrapper prints its delimiter: %s", output)
+				assert.Contains(t, preamble, meta+tc.wantMeta)
+				assert.Equal(t, "unset|pinned|clean|"+tc.wantArg+"\n", program,
+					"the launch strips the variable, sets the pin, and removes the private pin variable")
+			})
+		}
+	}
+}
+
+// A csh profile can alias a builtin, and the alias replaces the builtin at the
+// start of a line: set, setenv, unsetenv, exec, else, foreach and break. The
+// launch and the probe remove those aliases before they call any of them, so
+// the control CLI step, the strip, the pins, the env gate, the candidate
+// selection and the probe act past such aliases.
+func TestCshCallsTheBuiltinsPastProfileAliases(t *testing.T) {
+	const peer = "leapmux-csh-builtin-peer"
+	for _, name := range []string{"csh", "tcsh"} {
+		t.Run(name, func(t *testing.T) {
+			shell := requireProfileShell(t, name, name)
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			bin := t.TempDir()
+			program := filepath.Join(bin, peer)
+			testutil.WriteExecutable(t, program, "#!/bin/sh\n"+
+				"printf '%s|%s|%s|%s\\n' \"${LEAPMUX_TEST_STRIP-unset}\" \"${LEAPMUX_TEST_PIN-unset}\" \"${PATH%%:*}\" \"$*\"\nexit 37\n")
+			t.Setenv("PATH", bin+":/usr/bin:/bin")
+			var aliases strings.Builder
+			for _, builtin := range cshAliasableBuiltinsForTest {
+				fmt.Fprintf(&aliases, "alias %s '/bin/echo hijacked-%s'\n", builtin, builtin)
+			}
+			for _, rc := range []string{".cshrc", ".tcshrc"} {
+				require.NoError(t, os.WriteFile(filepath.Join(home, rc), []byte(aliases.String()), 0o600))
+			}
+			fixture := newControlCLIFixture(t)
+
+			for _, launch := range []struct {
+				name string
+				spec Spec
+			}{
+				{"program", Spec{Program: program}},
+				{"candidates", ShellCommands("leapmux-csh-missing", peer)},
+			} {
+				t.Run(launch.name, func(t *testing.T) {
+					cmd, delimiter, meta := wrapTestCommand(t, testutil.DeadlineContext(t), WrapSpec{
+						Shell: shell, LoginShell: true, Launch: launch.spec, BaseArgs: []string{"base"},
+						StripEnvKeys: []string{"LEAPMUX_TEST_STRIP"}, SetEnv: []string{"LEAPMUX_TEST_PIN=pinned"},
+						EnvGated: testEnvGate("gated"), WorkingDir: home,
+					})
+					cmd.Env = controlenv.Apply(envutil.PinEnv(cmd.Environ(),
+						"LEAPMUX_TEST_STRIP=inherited", "LEAPMUX_TEST_GATE_A=", "LEAPMUX_TEST_GATE_B="),
+						[]string{controlenv.CLIVariable + "=" + fixture.cli})
+					var stderr strings.Builder
+					cmd.Stderr = &stderr
+					output, err := cmd.Output()
+					var exit *exec.ExitError
+					require.ErrorAs(t, err, &exit, "%s\nstderr: %s", output, stderr.String())
+					assert.Equal(t, 37, exit.ExitCode(), "%s\nstderr: %s", output, stderr.String())
+					assert.Equal(t, "\n"+meta+"test_gate_open=true\n"+delimiter+"\nunset|pinned|"+fixture.linkDir+"|base gated\n", string(output))
+					assert.NotContains(t, stderr.String(), "hijacked-")
+				})
+			}
+
+			assert.Equal(t, ProbeYes, CheckBinary(t.Context(), shell, true, peer))
+			path, result := ProgramPath(t.Context(), shell, true, peer)
+			assert.Equal(t, ProbeYes, result)
+			assert.Equal(t, program, path)
+		})
+	}
+}
+
+// cshAliasableBuiltinsForTest are the builtins that the generated csh calls
+// and that an alias replaces on real tcsh and csh. The test states them
+// apart from the production list, so it fails when the list loses one.
+var cshAliasableBuiltinsForTest = []string{"set", "setenv", "unsetenv", "exec", "else", "foreach", "break"}
 
 func TestProfileCommandUsesTheSelectedZshDispatch(t *testing.T) {
 	shell := requireProfileShell(t, "zsh", "zsh")

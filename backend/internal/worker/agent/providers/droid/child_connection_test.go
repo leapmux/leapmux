@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +16,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -41,6 +45,7 @@ func TestDroidChildProcessHelper(t *testing.T) {
 		}
 		var params struct {
 			SessionID string `json:"sessionId"`
+			TurnID    string `json:"turnId"`
 		}
 		_ = json.Unmarshal(request.Params, &params)
 		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -54,6 +59,45 @@ func TestDroidChildProcessHelper(t *testing.T) {
 		}
 		if request.Method == "droid.test_release_exit" && pendingExit {
 			os.Exit(7)
+		}
+		if request.Method == "droid.test_emit_turn_completed" {
+			notif, err := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "type": droidTypeNotification, "method": droidMethodSessionNotif,
+				"params": map[string]any{
+					"sessionId": params.SessionID,
+					"notification": map[string]any{
+						"type":   contracts.DroidNotificationAgentTurnCompleted,
+						"turnId": params.TurnID,
+						"reason": contracts.DroidTurnEndReasonCompleted,
+					},
+				},
+			})
+			if err != nil {
+				os.Exit(2)
+			}
+			if _, err := fmt.Fprintln(os.Stdout, string(notif)); err != nil {
+				os.Exit(2)
+			}
+			continue
+		}
+		if request.Method == "droid.test_emit_error" {
+			notif, err := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "type": droidTypeNotification, "method": droidMethodSessionNotif,
+				"params": map[string]any{
+					"sessionId": params.SessionID,
+					"notification": map[string]any{
+						"type":    contracts.DroidNotificationError,
+						"message": "child turn boom",
+					},
+				},
+			})
+			if err != nil {
+				os.Exit(2)
+			}
+			if _, err := fmt.Fprintln(os.Stdout, string(notif)); err != nil {
+				os.Exit(2)
+			}
+			continue
 		}
 		if request.Method == droidMethodAddUserMessage {
 			// Droid acknowledges enqueueing before the process can exit during the turn.
@@ -73,6 +117,16 @@ func TestDroidChildProcessHelper(t *testing.T) {
 				os.Exit(2)
 			}
 			continue
+		}
+		if request.Method == droidMethodLoadSession {
+			if gateAddr := os.Getenv("LEAPMUX_DROID_CHILD_LOAD_GATE_ADDR"); gateAddr != "" {
+				conn, err := net.Dial("tcp", gateAddr)
+				if err != nil {
+					os.Exit(2)
+				}
+				_, _ = io.ReadAll(conn)
+				_ = conn.Close()
+			}
 		}
 		if request.Method != droidMethodInitializeSession && request.Method != droidMethodLoadSession {
 			continue
@@ -204,39 +258,46 @@ func TestChildSendLoadsItsOwnStreamSession(t *testing.T) {
 	assert.NotEqual(t, rootPID, childPID)
 }
 
-func TestChildProcessSinkLeavesChatRowsToTheArchive(t *testing.T) {
+func TestChildSendSucceedsOnForkedRootAgent(t *testing.T) {
+	fixture := newDroidProcessFixture(t, "")
+	a, logPath := fixture.root, fixture.logPath
+	// Simulate a root agent launched via fork so childConnection inherits Fork* options.
+	a.launchOpts.Session = agent.ForkSession("source-session-id", filepath.Join(fixture.home, "source-work"))
+
+	require.NoError(t, agenttest.SendChildInput(a, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"}))
+	require.Eventually(t, func() bool {
+		for _, call := range readDroidProcessCalls(logPath) {
+			if call.method == droidMethodAddUserMessage {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 10*time.Millisecond, "a native add_user_message request must reach the child process")
+	calls := readDroidProcessCalls(logPath)
+	assert.Zero(t, countDroidProcessCalls(calls, droidMethodForkSession), "a bound child must load its session, not fork")
+	assert.Equal(t, 1, countDroidProcessCalls(calls, droidMethodLoadSession))
+	assert.Equal(t, 1, countDroidProcessCalls(calls, droidMethodAddUserMessage))
+}
+
+func TestChildProcessSinkWritesDirectlyWithoutArchiveDrop(t *testing.T) {
 	t.Parallel()
 	recorder := &agenttest.Sink{}
-	recorder.OpenSpan("archive-tool", "")
-	recorder.SetSpanType("archive-tool", "Read")
-	recorder.ReportProgress(agent.ModelTextProgress("archive-scope", "archive thinking"))
-
-	sink := droidArchiveOnlySink{ProviderServices: agent.NewProviderServices(recorder)}
-	sink.UpdateSessionID(steerChildID)
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		agent.MessageContent{Original: []byte(`{"type":"assembled","text":"duplicate"}`)}, agent.SpanInfo{}))
-	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"agent_turn_completed"}`)}, agent.SpanInfo{}))
-	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"error","message":"duplicate"}`)})
+	root := agent.NewModelProgressResetSink(agent.NewProviderServices(recorder))
+	childSink := agent.NewModelProgressResetSink(root.ChildSink("child-1"))
+	childSink.UpdateSessionID(steerChildID)
+	childSink.OpenSpan("proc-tool", "")
+	childSink.SetSpanType("proc-tool", "Execute")
+	childSink.ReportProgress(agent.OutputTailProgress("proc-tool", "running", false))
+	require.NoError(t, childSink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"type":"assembled","text":"direct"}`), IdempotencyKey: droidMessageWriteKey("m1", 0)}, agent.SpanInfo{}))
+	require.NoError(t, childSink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"agent_turn_completed"}`)}, agent.SpanInfo{}))
+	_, err := childSink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"settings_updated"}`)})
 	require.NoError(t, err)
-	assert.False(t, broadcast)
-	broadcast, err = sink.PersistWorkerNotification(agent.MessageContent{Original: []byte(`{"type":"api_retry_resolved"}`)})
-	require.NoError(t, err)
-	assert.False(t, broadcast)
-
-	sink.OpenSpan("proc-tool", "")
-	sink.SetSpanType("proc-tool", "Execute")
-	sink.CloseSpan("archive-tool")
-	sink.ResetSpans()
-	assert.Zero(t, sink.ReserveSpanColor("proc-tool", ""))
-	sink.ReportProgress(agent.ResetProgress())
-
-	assert.Empty(t, recorder.Messages(), "the archive remains the only chat writer")
-	assert.Empty(t, recorder.PersistedNotifications(), "notifications from the bound process do not write into the child transcript")
-	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "archive-tool"}}, recorder.OpenSpans(), "bound process span calls must not mutate the archive-owned child spans")
-	assert.Empty(t, recorder.ClosedSpans(), "bound process CloseSpan must not close archive-owned child spans")
-	assert.Zero(t, recorder.ResetSpanCount(), "bound process ResetSpans must not reset archive-owned child spans")
-	assert.Positive(t, recorder.ProgressSnapshot().ThinkingTokens, "bound process ReportProgress must not wipe archive-owned child progress")
-	assert.Equal(t, steerChildID, recorder.LastSessionID())
+	assert.Len(t, recorder.Child("child-1").Messages(), 2, "the bound child writes its own chat rows and turn end directly")
+	assert.Len(t, recorder.Child("child-1").PersistedNotifications(), 1, "status notifications still reach the child")
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "proc-tool"}}, recorder.Child("child-1").OpenSpans(), "bound child spans reach the child sink directly")
+	assert.Empty(t, recorder.Child("child-1").ClosedSpans(), "non-interrupted turn end keeps open bound child spans alive")
+	assert.Equal(t, steerChildID, recorder.Child("child-1").LastSessionID())
 }
 
 func countDroidProcessCalls(calls []droidProcessCall, method string) int {
@@ -320,21 +381,20 @@ func (s heldDroidReviveSink) ReviveBackgroundTask(rowKey string) error {
 
 func TestChildExitBeforeReviveCannotLeaveARunningRow(t *testing.T) {
 	fixture := newDroidProcessFixture(t, "", "LEAPMUX_DROID_CHILD_EXIT_AFTER_RELEASE=1")
-	held := heldDroidReviveSink{
-		ProviderServices: fixture.root.sink,
-		entered:          make(chan struct{}),
-		release:          make(chan struct{}),
-	}
-	fixture.root.sink = held
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fixture.root.sink = agent.DecorateProviderServices(fixture.root.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return heldDroidReviveSink{ProviderServices: direct, entered: entered, release: release}
+	})
 	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(held.release) }) }
-	defer release()
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseFn()
 	result := make(chan error, 1)
 	go func() {
 		result <- agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"})
 	}()
 	select {
-	case <-held.entered:
+	case <-entered:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the child send did not reach registry revival")
 	}
@@ -348,7 +408,7 @@ func TestChildExitBeforeReviveCannotLeaveARunningRow(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the child process exit did not finish before registry revival")
 	}
-	release()
+	releaseFn()
 	require.NoError(t, <-result)
 	row, ok := fixture.sink.BackgroundTask(droidChildConnectionSessionID)
 	require.True(t, ok)
@@ -367,4 +427,175 @@ func TestStoppingRootRemovesChildRuntimeSettings(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, files, "Stop waits for both processes before removing their settings")
 	assert.ErrorIs(t, agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "later"}), errAgentStopped)
+}
+
+func TestChildBoundProcessOnTurnEndClosesRootBackgroundTask(t *testing.T) {
+	cases := []struct {
+		name       string
+		triggerRPC string
+		wantStatus bgtask.Status
+	}{
+		{name: "agent_turn_completed closes row as succeeded", triggerRPC: "droid.test_emit_turn_completed", wantStatus: bgtask.StatusSucceeded},
+		{name: "error notification closes row as failed", triggerRPC: "droid.test_emit_error", wantStatus: bgtask.StatusFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newDroidProcessFixture(t, "")
+			result, err := fixture.root.SendChildInput(droidChildConnectionSessionID, agent.ChildInput{Content: "run bound turn"})
+			require.NoError(t, err)
+
+			row, ok := fixture.sink.BackgroundTask(droidChildConnectionSessionID)
+			require.True(t, ok)
+			require.Equal(t, bgtask.StatusRunning, row.Status)
+
+			fixture.root.childConnMu.Lock()
+			connection := fixture.root.childConns[droidChildConnectionSessionID]
+			fixture.root.childConnMu.Unlock()
+			require.NotNil(t, connection)
+			require.NotNil(t, connection.agent)
+
+			require.NoError(t, connection.agent.request(tc.triggerRPC, map[string]any{
+				"sessionId": droidChildConnectionSessionID,
+				"turnId":    result.NativeReceipt.TurnID,
+			}))
+
+			require.Eventually(t, func() bool {
+				item, exists := fixture.sink.BackgroundTask(droidChildConnectionSessionID)
+				return exists && item.Status == tc.wantStatus
+			}, 10*time.Second, 10*time.Millisecond, "bound child onTurnEnd must close the root background task row")
+			assert.False(t, connection.agent.PublishTurnActive().Active)
+		})
+	}
+}
+
+func TestStopRacingInFlightChildStartProcess(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+
+	home := t.TempDir()
+	work := filepath.Join(home, "work")
+	require.NoError(t, os.MkdirAll(work, 0o700))
+	logPath := filepath.Join(home, "rpc-calls.log")
+	binary, err := os.Executable()
+	require.NoError(t, err)
+
+	processDone := make(chan struct{})
+	root, sink, _ := newSteerAgentWithProcessDone(t, processDone)
+	root.workingDir = work
+	root.homeDir = home
+	root.launchOpts = agent.Options{
+		AgentID:        "root-agent",
+		WorkingDir:     work,
+		HomeDir:        home,
+		Shell:          terminal.ResolveDefaultShell(),
+		StartupTimeout: 10 * time.Second,
+	}
+	root.launch = droidLaunch{
+		spec: launch.Spec{
+			Program:    binary,
+			PrefixArgs: []string{"-test.run=^TestDroidChildProcessHelper$", "--"},
+			Env: []string{
+				droidChildProcessTestEnv + "=1",
+				"LEAPMUX_DROID_CHILD_PROCESS_LOG=" + logPath,
+				"LEAPMUX_DROID_CHILD_LOAD_GATE_ADDR=" + ln.Addr().String(),
+			},
+		},
+		shutdownGrace: Registration().ShutdownGrace,
+	}
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "droid-tool-task-1",
+		ProviderChildKey: droidChildConnectionSessionID,
+		Title:            "Inspect the note",
+	})
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask, RowKey: droidChildConnectionSessionID, Kind: bgtask.KindSubagent,
+		ChildAgentID: childID, ParentAgentID: root.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
+	}))
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			accepted <- conn
+		}
+	}()
+
+	sendErr := make(chan error, 1)
+	go func() {
+		sendErr <- agenttest.SendChildInput(root, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"})
+	}()
+
+	ctx := testutil.DeadlineContext(t)
+	var gateConn net.Conn
+	select {
+	case gateConn = <-accepted:
+	case <-ctx.Done():
+		t.Fatal("child helper did not reach load_session gate")
+	}
+	var closeOnce sync.Once
+	releaseGate := func() { closeOnce.Do(func() { _ = gateConn.Close() }) }
+	defer releaseGate()
+
+	root.childConnMu.Lock()
+	connection := root.childConns[droidChildConnectionSessionID]
+	root.childConnMu.Unlock()
+	require.NotNil(t, connection)
+
+	// Close processDone without canceling root.Context() so Stop reaches
+	// stopChildConnections (setting childClosing=true) while the child handshake
+	// can still complete and return a live *Agent to exercise the post-start
+	// childClosing cleanup path.
+	close(processDone)
+	stopDone := make(chan struct{})
+	go func() {
+		root.Stop()
+		close(stopDone)
+	}()
+
+	testutil.RequireEventually(t, func() bool {
+		root.childConnMu.Lock()
+		closing := root.childClosing
+		root.childConnMu.Unlock()
+		return closing
+	}, "Stop must mark childClosing while load_session is held")
+
+	releaseGate()
+
+	select {
+	case err := <-sendErr:
+		require.ErrorIs(t, err, errAgentStopped)
+	case <-ctx.Done():
+		t.Fatal("SendChildInput did not return after load_session gate released")
+	}
+	select {
+	case <-stopDone:
+	case <-ctx.Done():
+		t.Fatal("Stop did not finish after load_session gate released")
+	}
+
+	root.childConnMu.Lock()
+	_, exists := root.childConns[droidChildConnectionSessionID]
+	root.childConnMu.Unlock()
+	assert.False(t, exists, "failed in-flight child slot must be removed from childConns")
+
+	select {
+	case <-connection.ready:
+	default:
+		t.Fatal("connection.ready must be closed")
+	}
+	select {
+	case <-connection.done:
+	default:
+		t.Fatal("connection.done must be closed")
+	}
+	require.NotNil(t, connection.agent)
+	assert.True(t, connection.agent.IsStopped(), "child agent started during Stop must be stopped")
+	select {
+	case <-connection.agent.ProcessDone():
+	case <-ctx.Done():
+		t.Fatal("child process did not exit after Stop")
+	}
 }

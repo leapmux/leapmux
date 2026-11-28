@@ -1,14 +1,21 @@
 package pi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 	"github.com/leapmux/leapmux/util/pathutil"
 )
@@ -193,4 +200,141 @@ func piSessionIDFromFileName(name string) string {
 		return stem[i+1:]
 	}
 	return stem
+}
+
+// piSessionTimestampLayout matches Pi's ISO-8601 UTC millisecond header timestamp.
+const piSessionTimestampLayout = "2006-01-02T15:04:05.000Z"
+
+// piSessionFileTimestampLayout matches Pi's file-safe UTC timestamp prefix.
+const piSessionFileTimestampLayout = "2006-01-02T15-04-05-000Z"
+
+// forkPiSessionFile atomically clones a Pi JSONL session file into the target
+// working directory's session folder with a fresh UUID, timestamp, target cwd,
+// and parentSession pointer while keeping all subsequent entry lines verbatim.
+// It returns the absolute path of the newly written session file.
+func forkPiSessionFile(q agent.StoredSessionQuery, forkFromHandle, srcWorkingDir, targetWorkingDir string) (string, error) {
+	resolved, err := (piProvider{}).ResolveResumeHandle(forkFromHandle, q.Home())
+	if err != nil {
+		return "", fmt.Errorf("cannot fork Pi session %q: invalid session handle: %w", forkFromHandle, err)
+	}
+	targetWorkingDir = strings.TrimSpace(targetWorkingDir)
+	if targetWorkingDir == "" {
+		return "", errors.New("cannot fork Pi session: target working directory is empty")
+	}
+
+	srcPath, err := locatePiSessionFile(q, resolved, cmp.Or(strings.TrimSpace(srcWorkingDir), targetWorkingDir), targetWorkingDir)
+	if err != nil {
+		return "", err
+	}
+
+	root := piSessionsRoot(q)
+	if root == "" {
+		return "", errors.New("cannot resolve Pi sessions root directory")
+	}
+	newUUID, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("create forked Pi session ID: %w", err)
+	}
+	newID := newUUID.String()
+	now := time.Now().UTC()
+
+	targetDir := filepath.Join(root, manglePiPath(filepath.Clean(targetWorkingDir)))
+	dstPath := filepath.Join(targetDir, now.Format(piSessionFileTimestampLayout)+"_"+newID+".jsonl")
+
+	err = providerkit.StreamForkJSONL(srcPath, dstPath, 0o600, func(lr *providerkit.JSONLLineReader) ([][]byte, error) {
+		firstLine, readErr := lr.ReadLine()
+		if errors.Is(readErr, io.EOF) || (readErr == nil && len(firstLine) == 0) {
+			return nil, fmt.Errorf("source Pi session %q is empty", srcPath)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read Pi source session %q: %w", srcPath, readErr)
+		}
+
+		var header map[string]any
+		if err := json.Unmarshal(firstLine, &header); err != nil {
+			return nil, fmt.Errorf("parse Pi session header in %q: %w", srcPath, err)
+		}
+		if typ, _ := header["type"].(string); typ != "session" {
+			return nil, fmt.Errorf("source Pi session %q does not start with a session header", srcPath)
+		}
+
+		header["id"] = newID
+		header["timestamp"] = now.Format(piSessionTimestampLayout)
+		header["cwd"] = filepath.Clean(targetWorkingDir)
+		header["parentSession"] = srcPath
+
+		encodedHeader, err := json.Marshal(header)
+		if err != nil {
+			return nil, fmt.Errorf("encode forked Pi session header: %w", err)
+		}
+		return [][]byte{encodedHeader}, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return dstPath, nil
+}
+
+// locatePiSessionFile resolves either a session file path or a bare session ID
+// to an existing Pi JSONL transcript file on disk.
+func locatePiSessionFile(q agent.StoredSessionQuery, resolved, srcWorkingDir, targetWorkingDir string) (string, error) {
+	if filepath.IsAbs(resolved) || strings.HasSuffix(resolved, ".jsonl") || strings.ContainsAny(resolved, `/\`) {
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", fmt.Errorf("stat source Pi session file %q: %w", resolved, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("source Pi session %q is not a regular file", resolved)
+		}
+		return resolved, nil
+	}
+
+	root := piSessionsRoot(q)
+	if root == "" {
+		return "", errors.New("cannot resolve Pi sessions root directory")
+	}
+	dirs := []string{filepath.Join(root, manglePiPath(filepath.Clean(srcWorkingDir)))}
+	if targetDir := filepath.Join(root, manglePiPath(filepath.Clean(targetWorkingDir))); targetDir != dirs[0] {
+		dirs = append(dirs, targetDir)
+	}
+	for _, dir := range dirs {
+		if path, ok := findPiSessionByID(dir, resolved); ok {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("source Pi session %q not found", resolved)
+}
+
+func findPiSessionByID(dir, sessionID string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	// Pass 1: zero-I/O filename match (newest-first by timestamp prefix).
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !isPiTranscript(entry) {
+			continue
+		}
+		if piSessionIDFromFileName(entry.Name()) == sessionID {
+			return filepath.Join(dir, entry.Name()), true
+		}
+	}
+	// Pass 2: header scan newest-first for files whose name does not embed the ID.
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !isPiTranscript(entry) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		head, _, err := sessionstore.JSONLHead(path, sessionstore.JSONLProbeBytes)
+		if err != nil || len(head) == 0 {
+			continue
+		}
+		var header piSessionHeader
+		if json.Unmarshal(head[0], &header) == nil && header.Type == "session" && strings.TrimSpace(header.ID) == sessionID {
+			return path, true
+		}
+	}
+	return "", false
 }

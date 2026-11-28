@@ -1,0 +1,73 @@
+{{- /*
+  Shared dual-theme video partial (light/dark MP4 + poster pair controlled by
+  assets/js/site-media.js). Never sets HTML autoplay or eager preload on hidden
+  variants; site-media.js hydrates src/poster and plays only the active-theme
+  visible clip when in viewport and prefers-reduced-motion is unset.
+
+  Params (dict):
+    page:    Page context
+    src:     base filename without -light.mp4 / -dark.mp4
+    poster:  optional base filename without -light.png / -dark.png (defaults to src)
+    alt:     optional accessible label (defaults to caption)
+    caption: optional Markdown caption
+    width:   optional positive integer string (default "1280")
+    height:  optional positive integer string (default "800")
+    class:   extra figure class (e.g. "lm-video-clip")
+    role:    "clip" (standalone) or "hero" (inside hero-showcase panel)
+    pos:     caller Position string for errorf
+*/ -}}
+{{- $src := .src -}}
+{{- $pos := .pos | default "" -}}
+{{- if not $src -}}
+  {{- errorf "theme-video: missing required 'src' parameter (%s)" $pos -}}
+{{- end -}}
+{{- $poster := .poster | default $src -}}
+{{- range slice
+  (printf "static/videos/docs/%s-light.mp4" $src)
+  (printf "static/videos/docs/%s-dark.mp4" $src)
+  (printf "static/images/docs/%s-light.png" $poster)
+  (printf "static/images/docs/%s-dark.png" $poster)
+-}}
+  {{- if not (fileExists .) -}}
+    {{- errorf "theme-video: missing asset %s (%s)" . $pos -}}
+  {{- end -}}
+{{- end -}}
+{{- $caption := .caption | default "" -}}
+{{- $alt := .alt | default $caption -}}
+{{- $width := printf "%v" (.width | default "1280") -}}
+{{- $height := printf "%v" (.height | default "800") -}}
+{{- if or (not (findRE `^[1-9][0-9]*$` $width)) (not (findRE `^[1-9][0-9]*$` $height)) -}}
+  {{- errorf "theme-video: width/height must be positive integers, got %q x %q (%s)" $width $height $pos -}}
+{{- end -}}
+{{- $role := .role | default "clip" -}}
+{{- $extraClass := .class | default "" -}}
+{{- $lightVideo := printf "videos/docs/%s-light.mp4" $src | relURL -}}
+{{- $darkVideo := printf "videos/docs/%s-dark.mp4" $src | relURL -}}
+{{- $lightPoster := printf "images/docs/%s-light.png" $poster | relURL -}}
+{{- $darkPoster := printf "images/docs/%s-dark.png" $poster | relURL -}}
+<figure class="doc-screenshot{{ with $extraClass }} {{ . }}{{ end }}" style="{{ printf "--lm-clip-w: %s; --lm-clip-h: %s;" $width $height | safeCSS }}">
+  <div class="doc-screenshot-frame">
+    {{- range slice
+      (dict "variant" "light" "cls" "doc-screenshot-light" "video" $lightVideo "poster" $lightPoster)
+      (dict "variant" "dark" "cls" "doc-screenshot-dark" "video" $darkVideo "poster" $darkPoster)
+    -}}
+    <video
+      class="{{ .cls }} lm-managed-video"
+      data-theme-variant="{{ .variant }}"
+      data-video-role="{{ $role }}"
+      data-video-src="{{ .video }}"
+      data-poster-src="{{ .poster }}"
+      loop
+      muted
+      playsinline
+      preload="none"
+      width="{{ $width }}"
+      height="{{ $height }}"
+      {{- with $alt }} aria-label="{{ . }}"{{ end }}
+    ></video>
+    {{- end -}}
+  </div>
+  {{- with $caption }}
+  <figcaption class="doc-screenshot-caption">{{ . | $.page.RenderString (dict "display" "inline") }}</figcaption>
+  {{- end }}
+</figure>

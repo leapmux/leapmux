@@ -186,9 +186,10 @@ type SubmitInput struct {
 	// because CanUseWorker only asks "may this USER use this worker". That is
 	// the same cross-machine reach service.WorkerReachAuthorizer refuses one
 	// layer over.
-	WorkerScope func(workerID string) bool
-	Internal    bool
-	publication *PublicationReceipt
+	WorkerScope     func(workerID string) bool
+	Internal        bool
+	publication     *PublicationReceipt
+	layoutLifecycle *LayoutLifecycleCommit
 }
 
 // Manager owns one user's CRDT state and its journal, and coordinates
@@ -214,8 +215,9 @@ type Manager struct {
 	clock       *Clock
 	hubClientID string
 
-	mu    sync.RWMutex
-	state *leapmuxv1.UserCrdtState
+	mu              sync.RWMutex
+	state           *leapmuxv1.UserCrdtState
+	layoutEventWake chan struct{}
 	// The manager goroutine (Start's select loop) is the SOLE writer of
 	// m.state: every mutation -- including workspace lifecycle create/delete,
 	// which flows through SubmitInternal as CreateWorkspaceOp /
@@ -375,6 +377,10 @@ type Manager struct {
 	// nothing. Only WaitForNudges (tests) waits, which is safe because a test
 	// nudger returns promptly.
 	nudgeWG sync.WaitGroup
+
+	// onLayoutEvents, when set by an owning Registry, forwards layout-event
+	// wake signals to the registry's per-owner channel. Guarded by m.mu.
+	onLayoutEvents func()
 }
 
 // overflowed reports whether the transport flagged a dropped frame. A nil
@@ -1553,7 +1559,7 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 	// full Project + Diff. The latter is at most as expensive as the
 	// pre-existing path (which projected both states unconditionally), so
 	// this is a strict improvement.
-	diff := DiffProjectionForBatch(m.state, working, batch.GetOps())
+	diff, layoutFacts := projectionDiffAndLayoutFacts(m.state, working, batch.GetOps())
 
 	hash, err := BatchBodyHash(batch)
 	if err != nil {
@@ -1577,14 +1583,19 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 			OpCount:           int64(len(batch.GetOps())),
 			ExpiresAt:         m.now().Add(DedupTTL),
 		},
-		IndexDiff:   diff,
-		Transitions: transitions,
-		Publication: in.publication,
+		IndexDiff:       diff,
+		Transitions:     transitions,
+		Publication:     in.publication,
+		LayoutFacts:     layoutFacts,
+		LayoutLifecycle: in.layoutLifecycle,
 	}); err != nil {
 		return fmt.Errorf("commit batch: %w", err)
 	}
 
 	m.commitState(working)
+	if len(layoutFacts) != 0 || in.layoutLifecycle != nil {
+		m.signalLayoutEvents()
+	}
 	return nil
 }
 
@@ -1684,10 +1695,10 @@ func (m *Manager) WithStateRLock(fn func(state *leapmuxv1.UserCrdtState)) {
 }
 
 // LocateTileWorkspace walks the live state from `tileID` up through
-// parent_id links and returns the workspace_id of the matching root,
-// or "" when the chain doesn't terminate at a registered workspace
-// root. Runs under m.mu.RLock so the lookup is a single synchronous
-// pass — callers don't pay a full-state clone per RPC.
+// parent_id links and returns the workspace_id of the matching workspace or
+// live floating-window root, or "" when the chain does not end at a registered
+// root. Runs under m.mu.RLock so the lookup is a single synchronous pass —
+// callers do not pay a full-state clone per RPC.
 func (m *Manager) LocateTileWorkspace(tileID string) string {
 	if tileID == "" {
 		return ""
@@ -1697,7 +1708,7 @@ func (m *Manager) LocateTileWorkspace(tileID string) string {
 	if m.state == nil {
 		return ""
 	}
-	return FindRootWorkspace(m.state.GetNodes(), m.state.GetWorkspaces(), tileID)
+	return FindRootWorkspace(m.state.GetNodes(), m.state.GetWorkspaces(), m.state.GetFloatingWindows(), tileID)
 }
 
 // SeedStateForTest runs fn against a CLONE of m.state as the sole writer and

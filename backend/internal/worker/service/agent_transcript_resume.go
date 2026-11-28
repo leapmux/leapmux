@@ -15,6 +15,46 @@ import (
 
 var errNativeSessionAlreadyOpen = errors.New("the native agent session is already open; close its tab before resuming")
 
+// createAgentRecordForForkUsing creates a new forked root agent row and copies
+// the source agent's transcript, virtual child subtree, and to-dos atomically
+// inside the caller's transaction. Live runtime state (control requests, queued
+// inputs, session goals) is intentionally not copied.
+func (svc *Service) createAgentRecordForForkUsing(ctx context.Context, queries *db.Queries, params db.CreateAgentParams, source db.Agent) error {
+	if err := validateAgentRecordProvider(params); err != nil {
+		return err
+	}
+	// Never claim the source's native session in pending_resume_session_id: the
+	// source tab may still be open and holds idx_agents_open_native_owner for it.
+	params.PendingResumeSessionID = ""
+	params.ForkedFromAgentID = source.ID
+	params.Resumed = 1
+	if err := svc.createAgentRecordUsing(ctx, queries, params); err != nil {
+		return fmt.Errorf("create forked agent: %w", err)
+	}
+	if source.PlanFilePath != "" || source.PlanTitle != "" {
+		if err := queries.UpdateAgentPlan(ctx, db.UpdateAgentPlanParams{
+			PlanFilePath: source.PlanFilePath,
+			PlanTitle:    source.PlanTitle,
+			ID:           params.ID,
+		}); err != nil {
+			return fmt.Errorf("copy forked agent plan: %w", err)
+		}
+	}
+	if err := cloneAgentTranscript(ctx, queries, source.ID, params.ID); err != nil {
+		return fmt.Errorf("copy forked agent transcript: %w", err)
+	}
+	if err := cloneArchivedChildTree(ctx, queries, source.ID, params.ID); err != nil {
+		return fmt.Errorf("copy forked agent child transcripts: %w", err)
+	}
+	if _, err := queries.CloneAgentTodosForFork(ctx, db.CloneAgentTodosForForkParams{
+		TargetAgentID: params.ID,
+		SourceAgentID: source.ID,
+	}); err != nil {
+		return fmt.Errorf("copy forked agent todos: %w", err)
+	}
+	return nil
+}
+
 // createAgentRecordWithTranscript gives a reopened LeapMux tab the Worker
 // transcript tree from its last closed tab. An external native session opens
 // without Worker history.

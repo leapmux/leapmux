@@ -194,7 +194,7 @@ func (a *Agent) refreshUsageLoop() {
 func (a *Agent) refreshUsage() {
 	ctx, cancel := context.WithTimeout(a.Context(), kiloUsageReadTimeout)
 	defer cancel()
-	raw, err := a.ReadDaemon(ctx, kiloProviderUsageRoute)
+	raw, err := a.Daemon().Get(ctx, kiloProviderUsageRoute)
 	if err != nil {
 		slog.Debug("kilo could not read the provider usage", "agent_id", a.AgentID(), "error", err)
 		return

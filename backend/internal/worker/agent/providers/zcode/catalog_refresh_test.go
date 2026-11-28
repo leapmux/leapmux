@@ -3,12 +3,12 @@ package zcode
 import (
 	"encoding/json"
 	"testing"
-
-	"github.com/leapmux/leapmux/generated/contracts"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
@@ -308,6 +308,14 @@ func TestZCodeCatalogRefresh_CoalescesAccountAndWorkspaceTriggers(t *testing.T) 
 		waiters[i] = make(chan error, 1)
 		go func(ch chan error) { ch <- a.awaitZCodeCatalogRefresh() }(waiters[i])
 	}
+	// Both waiters join the pass in flight before the test answers it. A waiter
+	// that arrived after the following pass would start a third pass, which
+	// nobody answers.
+	require.Eventually(t, func() bool {
+		a.catalogRefresh.mu.Lock()
+		defer a.catalogRefresh.mu.Unlock()
+		return len(a.catalogRefresh.waiters) == len(waiters)
+	}, 30*time.Second, time.Millisecond, "both waiters join the pass in flight")
 	a.scheduleZCodeCatalogRefresh()
 	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, registry), json.RawMessage(`{"refreshed":true}`)))
 	zcodeAnswerCatalogResume(t, a, stdin, 1, `[]`)
@@ -511,7 +519,7 @@ func TestZCodeSendInput_RequiresAnAvailableModelChoice(t *testing.T) {
 		}
 		return nil
 	})
-	err := a.SendInput("hello", nil)
+	err := agenttest.SendInput(a, "hello", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "select an available model")
 	assert.Zero(t, sends)
@@ -574,7 +582,7 @@ func TestZCodeCompleteCatalog_DisabledModelsRemainUnavailableUntilACompleteRefre
 	check()
 	zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"personal:p","modelId":"A"},"available":[{"ref":{"providerId":"personal:p","modelId":"A"}}]}}`)
 	check()
-	require.ErrorIs(t, a.SendInput("hello", nil), errZCodeModelSelectionRequired)
+	require.ErrorIs(t, agenttest.SendInput(a, "hello", nil), errZCodeModelSelectionRequired)
 	assert.Zero(t, sends)
 	available[0].DisabledReason = ""
 	a.Mu.Lock()

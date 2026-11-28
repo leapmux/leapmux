@@ -16,15 +16,23 @@ func quotedArguments(args []string, quote func(string) string) []string {
 	return result
 }
 
-func buildPosixCommand(shell string, spec shellLaunchSpec, prepared *PreparedLaunch) string {
+func (d posixDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunch) (string, error) {
+	script := d.renderCommand(spec, prepared)
+	if runtime.GOOS == "windows" && d.shell == "bash" {
+		return prepared.writeBashInvocation(script)
+	}
+	return script, nil
+}
+
+func (d posixDialect) renderCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	quote := shellquote.POSIX.Quote
 	var script strings.Builder
-	script.WriteString(posixProtocolSetup(shell))
-	script.WriteString(posixLaunchEnvironment(shell, spec.StripEnvKeys, spec.pins, false))
+	script.WriteString(posixProtocolSetup(d.shell))
+	script.WriteString(posixLaunchEnvironment(d.shell, spec.StripEnvKeys, spec.pins, false))
 	if len(prepared.candidates) == 0 {
 		fmt.Fprintf(&script, "__lm_kind=external\n__lm_path=%s\n", quote(spec.Launch.Program))
 	} else {
-		script.WriteString(posixLookupSetup(shell))
+		script.WriteString(posixLookupSetup(d.shell))
 		fmt.Fprintf(&script, "for __lm_selected in %s; do __leapmux_lookup \"$__lm_selected\" command; [ \"$__lm_kind\" = missing ] || break; done\n",
 			strings.Join(quotedArguments(prepared.candidates, quote), " "))
 		fmt.Fprintf(&script, "if [ \"$__lm_kind\" = missing ]; then\n__leapmux_print '\\n%%s\\n' %s >&2\n__leapmux_missing\nelse\n", quote(prepared.exhaustedMarker))
@@ -32,18 +40,18 @@ func buildPosixCommand(shell string, spec shellLaunchSpec, prepared *PreparedLau
 `)
 	}
 	if runtime.GOOS == "windows" {
-		script.WriteString(posixLaunchEnvironment(shell, nil, spec.pins, true))
+		script.WriteString(posixLaunchEnvironment(d.shell, nil, spec.pins, true))
 	}
 	script.WriteString("__leapmux_invoke() {\n")
 	if len(prepared.environmentProbe) == 0 {
-		script.WriteString(protocolLine(shell, prepared.Delimiter, spec.EnvGated == nil))
+		script.WriteString(d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	} else {
 		fmt.Fprintf(&script, "if [ \"$__lm_kind\" = external ] && %s; then\n%selse\n%sfi\n",
 			strings.Join(quotedArguments(prepared.environmentProbe, quote), " "),
-			protocolLine(shell, prepared.Delimiter, false), protocolLine(shell, prepared.Delimiter, spec.EnvGated == nil))
+			d.protocolLine(prepared.Delimiter, false), d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	}
 	script.WriteString("case \"$__lm_kind\" in\n")
-	switch shell {
+	switch d.shell {
 	case "bash":
 		script.WriteString(bashSelectionDispatch)
 	case "zsh":
@@ -58,8 +66,8 @@ alias) \eval "$__lm_selected" '"$@"';;
 	if optional := spec.EnvGated; optional != nil {
 		additionalArgs := strings.Join(quotedArguments(optional.Args, quote), " ")
 		fmt.Fprintf(&script, "if %s; then\n%s__leapmux_invoke %s\nelse\n%s__leapmux_invoke %s %s\nfi\n",
-			posixEnvCondition(optional.EnvVars), protocolLine(shell, prepared.MetaPrefix+optional.MetaKey+"=false", true), baseArgs,
-			protocolLine(shell, prepared.MetaPrefix+optional.MetaKey+"=true", true), baseArgs, additionalArgs)
+			posixEnvCondition(optional.EnvVars), d.protocolLine(prepared.MetaPrefix+optional.MetaKey+"=false", true), baseArgs,
+			d.protocolLine(prepared.MetaPrefix+optional.MetaKey+"=true", true), baseArgs, additionalArgs)
 	} else {
 		fmt.Fprintf(&script, "__leapmux_invoke %s\n", baseArgs)
 	}
@@ -107,12 +115,15 @@ alias)
 
 // Apply environment changes in the launch shell. A subshell would lose them
 // when it returned. Keep profile functions available to the selected command.
+//
+// The call with msys false runs after the profile and before the candidate
+// selection. It puts the directory of the Worker's CLI first on PATH again
+// (see posixReprependControlCLI), and then removes strip and sets pins, so a
+// PATH that a provider pins wins. The call with msys true runs on Windows
+// after the selection, and it only stops the MSYS2 argument conversion.
 func posixLaunchEnvironment(shell string, strip []string, pins []environmentPin, msys bool) string {
-	if len(strip) == 0 && len(pins) == 0 && !msys {
-		return ""
-	}
 	var script strings.Builder
-	prefix := "\\"
+	prefix := posixBuiltinPrefix(shell)
 	switch shell {
 	case "bash":
 		script.WriteString(`__lm_restore_mode=false
@@ -122,7 +133,6 @@ case ":$SHELLOPTS:" in
 esac
 `)
 	case "zsh":
-		prefix = "\\builtin \\"
 		script.WriteString(`__lm_restore_builtin=false
 if (( $+functions[builtin] )); then
 	__lm_builtin_definition=$functions[builtin]
@@ -136,6 +146,9 @@ if (( $+functions[builtin] )); then
 	__lm_restore_builtin=true
 fi
 `)
+	}
+	if !msys {
+		script.WriteString(posixReprependControlCLI(prefix))
 	}
 	if len(strip) != 0 {
 		fmt.Fprintf(&script, "%sunset %s || %sexit $?\n", prefix, strings.Join(strip, " "), prefix)
@@ -155,17 +168,32 @@ fi
 	}
 	switch shell {
 	case "bash":
-		script.WriteString("if [ \"$__lm_restore_mode\" = true ]; then \\set +o posix; fi\n")
+		script.WriteString("if [ \"$__lm_restore_mode\" = true ]; then \\unset __lm_restore_mode; \\set +o posix; else \\unset __lm_restore_mode; fi\n")
 	case "zsh":
-		script.WriteString("if [ \"$__lm_restore_builtin\" = true ]; then functions[builtin]=$__lm_builtin_definition; fi\n")
+		script.WriteString("if [ \"$__lm_restore_builtin\" = true ]; then () { \\builtin \\unset __lm_restore_builtin __lm_builtin_definition; functions[builtin]=$1; } \"$__lm_builtin_definition\"; else \\builtin \\unset __lm_restore_builtin __lm_builtin_definition; fi\n")
 	}
 	return script.String()
 }
 
-func buildPwshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
+// posixBuiltinPrefix is the prefix that posixLaunchEnvironment writes before
+// each builtin that it calls. A backslash stops alias expansion. Bash runs the
+// block in POSIX mode, where a special builtin wins over a function. zsh lets
+// a function replace any builtin, so the block calls each one through
+// `builtin`, which it first frees from a profile function.
+func posixBuiltinPrefix(shell string) string {
+	if shell == "zsh" {
+		return "\\builtin \\"
+	}
+	return "\\"
+}
+
+func (d pwshDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunch) (string, error) {
 	quote := shellquote.PowerShell.Quote
 	var script strings.Builder
 	script.WriteString(pwshLookupSetup)
+	// The step runs after the profile and before StripEnvKeys and the pins, so
+	// a PATH that a provider pins wins (see pwshReprependControlCLI).
+	script.WriteString(pwshReprependControlCLI)
 	script.WriteString("$ErrorActionPreference = 'Stop'; ")
 	script.WriteString(pwshClearEnv(spec.StripEnvKeys) + pwshSetEnv(spec.pins))
 	if len(prepared.candidates) == 0 {
@@ -190,12 +218,12 @@ func buildPwshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	writeArgs(spec.BaseArgs, false)
 	if gate := spec.EnvGated; gate != nil {
 		fmt.Fprintf(&script, "if (%s) { %s} else { %s",
-			pwshEnvCondition(gate.EnvVars), protocolLine("pwsh", prepared.MetaPrefix+gate.MetaKey+"=false", true), protocolLine("pwsh", prepared.MetaPrefix+gate.MetaKey+"=true", true))
+			pwshEnvCondition(gate.EnvVars), d.protocolLine(prepared.MetaPrefix+gate.MetaKey+"=false", true), d.protocolLine(prepared.MetaPrefix+gate.MetaKey+"=true", true))
 		writeArgs(gate.Args, true)
 		script.WriteString("}; ")
 	}
 	if len(prepared.environmentProbe) == 0 {
-		script.WriteString(protocolLine("pwsh", prepared.Delimiter, spec.EnvGated == nil))
+		script.WriteString(d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	} else {
 		// PowerShell can buffer native output in its pipeline. Write the
 		// captured record through the same console stream as readiness.
@@ -219,7 +247,7 @@ if ($__lm_observed) {
   %s
 }
 `, strings.Join(quotedArguments(prepared.environmentProbe, quote), " "),
-			protocolLine("pwsh", prepared.Delimiter, false), protocolLine("pwsh", prepared.Delimiter, spec.EnvGated == nil))
+			d.protocolLine(prepared.Delimiter, false), d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	}
 	script.WriteString(`$global:LASTEXITCODE = $null
 $PSNativeCommandUseErrorActionPreference = $false
@@ -230,18 +258,47 @@ if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
 if ($__lm_success) { exit 0 }
 exit 1
 `)
-	return script.String()
+	return script.String(), nil
 }
 
-func buildNuSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocations map[string]nuInvocationFiles) string {
+func (d nuDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunch) (string, error) {
+	if len(prepared.candidates) != 0 {
+		scripts, err := prepared.writeNuInvocations(spec.WrapSpec)
+		if err != nil {
+			return "", err
+		}
+		return d.buildSelection(spec, prepared, scripts), nil
+	}
+	return d.buildDirect(spec, prepared), nil
+}
+
+// buildDirect builds the inner command string for Nushell with an explicit program.
+func (d nuDialect) buildDirect(spec shellLaunchSpec, prepared *PreparedLaunch) string {
+	// `^"<program>"` is Nushell's documented form for running an external
+	// command whose path contains a space.
+	return nuLaunchEnvironment(spec) +
+		d.launchArguments(spec.WrapSpec, prepared.MetaPrefix) +
+		d.readiness(prepared, spec.EnvGated == nil, "") +
+		"^" + nuQuote(spec.Launch.Program) + " ...$__lm_args\n"
+}
+
+// nuLaunchEnvironment is the head of both Nushell builders. It runs after the
+// profile: it puts the directory of the Worker's CLI first on PATH again (see
+// nuReprependControlCLI), then removes StripEnvKeys and sets the pins, so a
+// PATH that a provider pins wins.
+func nuLaunchEnvironment(spec shellLaunchSpec) string {
+	return nuReprependControlCLI + nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n"
+}
+
+func (d nuDialect) buildSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocations map[string]nuInvocationFiles) string {
 	var script strings.Builder
-	script.WriteString(nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n")
+	script.WriteString(nuLaunchEnvironment(spec))
 	script.WriteString(nuLookupSetup)
 	fmt.Fprintf(&script, "let __lm_selected = ([%s] | %%each {|name| let target = (leapmux-lookup $name false); if $target != null { {name: $name, target: $target} } } | %%take 1 | %%get -o 0)\n",
 		strings.Join(quotedArguments(prepared.candidates, nuQuote), ", "))
 	fmt.Fprintf(&script, "if $__lm_selected == null { %%print -e ''; %%print -e %s; %%exit 127 }\n", nuQuote(prepared.exhaustedMarker))
-	script.WriteString(nuLaunchArguments(spec.WrapSpec, prepared.MetaPrefix))
-	script.WriteString(prepared.nuReadiness(spec.EnvGated == nil, "$__lm_selected.target.type == 'external'"))
+	script.WriteString(d.launchArguments(spec.WrapSpec, prepared.MetaPrefix))
+	script.WriteString(d.readiness(prepared, spec.EnvGated == nil, "$__lm_selected.target.type == 'external'"))
 	script.WriteString("if $__lm_selected.target.type == 'external' { ^$__lm_selected.target.path ...$__lm_args } else {\nmatch $__lm_selected.name {\n")
 	for _, name := range prepared.candidates {
 		files := invocations[name]
@@ -257,43 +314,50 @@ func buildNuSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocation
 	return script.String()
 }
 
-func nuLaunchArguments(spec WrapSpec, metaPrefix string) string {
+func (d nuDialect) launchArguments(spec WrapSpec, metaPrefix string) string {
 	var script strings.Builder
 	fmt.Fprintf(&script, "let __lm_base = [%s]\n", strings.Join(quotedArguments(spec.BaseArgs, nuQuote), ", "))
 	if gate := spec.EnvGated; gate != nil {
 		fmt.Fprintf(&script, "let __lm_args = if (%s) { %s$__lm_base } else { %s$__lm_base ++ [%s] }\n",
-			nuEnvCondition(gate.EnvVars), protocolLine("nu", metaPrefix+gate.MetaKey+"=false", true),
-			protocolLine("nu", metaPrefix+gate.MetaKey+"=true", true), strings.Join(quotedArguments(gate.Args, nuQuote), ", "))
+			nuEnvCondition(gate.EnvVars), d.protocolLine(metaPrefix+gate.MetaKey+"=false", true),
+			d.protocolLine(metaPrefix+gate.MetaKey+"=true", true), strings.Join(quotedArguments(gate.Args, nuQuote), ", "))
 	} else {
 		script.WriteString("let __lm_args = $__lm_base\n")
 	}
 	return script.String()
 }
 
-// nuReadiness writes the helper's bytes unchanged and falls back to ordinary
+// readiness writes the helper's bytes unchanged and falls back to ordinary
 // framing if it could not observe the selected command's environment.
-func (p *PreparedLaunch) nuReadiness(first bool, external string) string {
-	ordinary := protocolLine("nu", p.Delimiter, first)
+func (d nuDialect) readiness(p *PreparedLaunch, first bool, external string) string {
+	ordinary := d.protocolLine(p.Delimiter, first)
 	if len(p.environmentProbe) == 0 {
 		return ordinary
 	}
 	observe := fmt.Sprintf("let __lm_probe = (try { do { ^%s } | complete } catch { {exit_code: 127} })\nif $__lm_probe.exit_code == 0 { %%print -n $__lm_probe.stdout; %s} else { %s}\n",
 		strings.Join(quotedArguments(p.environmentProbe, nuQuote), " "),
-		protocolLine("nu", p.Delimiter, false), ordinary)
+		d.protocolLine(p.Delimiter, false), ordinary)
 	if external == "" {
 		return observe
 	}
 	return fmt.Sprintf("if %s {\n%s} else { %s}\n", external, observe, ordinary)
 }
 
+func (d cshDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunch) (string, error) {
+	return prepared.writeCshInvocation(d.renderCommand(spec, prepared))
+}
+
 // Csh substitutes variables before evaluating a line. Keep each existence
 // check in cshEnvSeed on a separate line from the read it guards.
 // cshQuote protects the program and arguments from history expansion and
 // trailing backslashes even in branches the shell skips.
-func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
+func (d cshDialect) renderCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	ordered := len(prepared.candidates) != 0
 	var script strings.Builder
-	script.WriteString(cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins))
+	// The step runs after the profile and before StripEnvKeys and the pins, so
+	// a PATH that a provider pins wins (see cshReprependControlCLI). Only the
+	// line that frees the builtins from the profile's aliases comes first.
+	script.WriteString(cshUnaliasBuiltins + cshReprependControlCLI + cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins))
 	if ordered {
 		script.WriteString("\nset __lm_chosen = 0\nset __lm_status = 127\n")
 	}
@@ -306,7 +370,7 @@ func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	}
 	writeInvocation := func(recordTerminator string, dispatch func(string) string) {
 		writeRecord := func(record string, first bool) {
-			script.WriteString(strings.TrimSuffix(protocolLine("csh", record, first), "\n"))
+			script.WriteString(strings.TrimSuffix(d.protocolLine(record, first), "\n"))
 			script.WriteString(recordTerminator)
 		}
 		writeReady := func(first bool) {
@@ -319,13 +383,13 @@ func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 			}
 			script.WriteString(strings.Join(quotedArguments(prepared.environmentProbe, cshQuote), " ") + "\n")
 			script.WriteString("if ( $status == 0 ) then\n")
-			script.WriteString(protocolLine("csh", prepared.Delimiter, false))
+			script.WriteString(d.protocolLine(prepared.Delimiter, false))
 			script.WriteString("else\n")
-			script.WriteString(protocolLine("csh", prepared.Delimiter, first))
+			script.WriteString(d.protocolLine(prepared.Delimiter, first))
 			script.WriteString("endif\n")
 			if ordered {
 				script.WriteString("else\n")
-				script.WriteString(protocolLine("csh", prepared.Delimiter, first))
+				script.WriteString(d.protocolLine(prepared.Delimiter, first))
 				script.WriteString("endif\n")
 			}
 		}

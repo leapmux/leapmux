@@ -5,6 +5,7 @@ import type { UntrustedLinkConfirmRequest } from './untrustedLinks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveVariant, themeById } from '~/styles/themes'
 import { flush } from '~/test-support/async'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { stubDocumentFonts } from '~/test-support/documentFonts'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet } from './browserStorage'
@@ -64,6 +65,29 @@ describe('createTerminalInstance', () => {
     const instance = createTerminalInstance()
     expect(instance.suppressInput).toBe(false)
     instance.dispose()
+  })
+
+  // The CLI's rendered `terminal read` keeps the scrollback that the terminal
+  // contract states, so the browser must keep the same number of lines. The
+  // shipped value equals the default of xterm.js, so only another value shows
+  // that the terminal reads the contract.
+  it('keeps the scrollback that the terminal contract states', async () => {
+    vi.resetModules()
+    vi.doMock('~/generated/contracts/terminal', () => ({ TERMINAL_SCROLLBACK_LINES: 37 }))
+    try {
+      // The fresh module graph has a storage gateway of its own, which reads
+      // the preferences only under a storage account.
+      const storage = await import('./browserStorage')
+      storage.setStorageAccountForTests(TEST_USER_ID)
+      const { createTerminalInstance: createWithContract } = await import('./terminal')
+      const instance = createWithContract()
+      expect(instance.terminal.options.scrollback).toBe(37)
+      instance.dispose()
+    }
+    finally {
+      vi.doUnmock('~/generated/contracts/terminal')
+      vi.resetModules()
+    }
   })
 
   it('keeps legacy key encoding until the application enables CSI-u input', () => {

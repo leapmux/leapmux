@@ -13,11 +13,9 @@ import (
 // to guess -- and the only safe guess is "transient, ask again", which pins a
 // retry timer per unanswerable tab for the life of the page.
 //
-// `requested` is the caller's tab_ids, and is never empty in practice: both
-// callers answer an empty request with an empty response and return before
-// reaching this (agent.go, terminal.go). The guard below is a defensive
-// backstop for a third caller, not a supported request shape. `found` names
-// the ids present in the response body; anything else the caller named has no
+// `requested` is the caller's tab_ids. It is empty when ListAgents queries only
+// by spawned_by_agent_ids, in which case verdicts is nil. `found` specifies
+// the ids present in the response body; anything else in `requested` has no
 // record on this worker at all, and nothing the client does changes that.
 func tabHydrationVerdicts(requested []string, found map[string]bool) []*leapmuxv1.TabHydrationVerdict {
 	if len(requested) == 0 {

@@ -251,13 +251,84 @@ func TestGenerationRetryDoesNotRequireFreshAdmission(t *testing.T) {
 	raw := &agenttest.Sink{PersistErr: errors.New("storage unavailable")}
 	sink := &rejectingGenerationReservation{ProviderServices: agent.NewProviderServices(raw)}
 	var buffer GenerationBuffer
-	buffer.Append("scope", agent.AssembledMessageKindText, "kept", JoinVerbatim)
+	buffer.AppendForNativeTurn("scope", agent.AssembledMessageKindText, "kept", JoinVerbatim, NativeTurnRef{SessionID: "original-session", TurnID: "original-turn"})
 	require.True(t, agent.OutputRetained(FlushGeneration(&buffer, sink, agent.MessageCompletionComplete, false)))
+	attempt := raw.Messages()
+	require.Len(t, attempt, 1)
+	require.False(t, attempt[0].Stored())
 	raw.PersistErr = nil
 	sink.refusal = errors.New("fresh admission closed")
 	require.NoError(t, FlushGeneration(&buffer, sink, agent.MessageCompletionComplete, false))
+	messages := raw.Messages()
+	require.Len(t, messages, 2)
+	assert.True(t, messages[1].Stored())
+	assert.Equal(t, "original-session", messages[1].AgentSessionID)
+	assert.Equal(t, "original-turn", messages[1].NativeTurnID)
 	assert.False(t, buffer.OutputQueue().HasPending())
 	assert.False(t, buffer.HasPendingWrites())
+}
+
+func TestGenerationKeepsOnlyNativeTurnIdentityThatEveryFragmentProves(t *testing.T) {
+	t.Parallel()
+	var source, destination GenerationBuffer
+	const text = agent.AssembledMessageKindText
+	source.AppendForNativeTurn("confirmed", text, "one", JoinVerbatim, NativeTurnRef{SessionID: "session", TurnID: "turn"})
+	source.AppendForNativeTurn("confirmed", text, " two", JoinVerbatim, NativeTurnRef{SessionID: "session", TurnID: "turn"})
+	source.AppendForNativeTurn("mixed", text, "one", JoinVerbatim, NativeTurnRef{SessionID: "session", TurnID: "turn"})
+	source.AppendForNativeTurn("mixed", text, " two", JoinVerbatim, NativeTurnRef{SessionID: "session", TurnID: "other-turn"})
+	source.AppendForNativeTurn("mixed", text, " three", JoinVerbatim, NativeTurnRef{SessionID: "session", TurnID: "other-turn"})
+	source.AppendForNativeTurn("missing", text, "one", JoinVerbatim, NativeTurnRef{SessionID: "session", TurnID: "turn"})
+	source.AppendForNativeTurn("missing", text, " two", JoinVerbatim, NativeTurnRef{SessionID: "session", TurnID: ""})
+	source.MoveAllTo(&destination)
+	sink := &generationFlushSink{}
+	require.NoError(t, FlushGeneration(&destination, sink, agent.MessageCompletionInterrupted, false))
+	require.Len(t, sink.rows, 3)
+	assert.Equal(t, "session", sink.rows[0].AgentSessionID)
+	assert.Equal(t, "turn", sink.rows[0].NativeTurnID)
+	assert.Empty(t, sink.rows[1].NativeTurnID)
+	assert.Empty(t, sink.rows[2].NativeTurnID)
+	assert.Contains(t, string(sink.rows[1].Original), "one two three")
+	assert.Contains(t, string(sink.rows[2].Original), "one two")
+}
+
+func TestGenerationPrepareClearsStaleNativeInputIDAndMixedTurnMetadata(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	const text = agent.AssembledMessageKindText
+	buffer.AppendForNativeTurn("mixed", text, "one", JoinVerbatim, NativeTurnRef{SessionID: "s1", TurnID: "turn-1"})
+	buffer.AppendForNativeTurn("mixed", text, " two", JoinVerbatim, NativeTurnRef{SessionID: "s1", TurnID: "turn-2"})
+	buffer.AppendForNativeTurn("earlier-turn", text, "old", JoinVerbatim, NativeTurnRef{SessionID: "s1", TurnID: "turn-1"})
+	buffer.AppendForNativeTurn("same-turn", text, "cur", JoinVerbatim, NativeTurnRef{SessionID: "s1", TurnID: "turn-2"})
+	buffer.Append("unassigned", text, "plain", JoinVerbatim)
+
+	sink := &generationFlushSink{}
+	template := agent.MessageContent{
+		AgentSessionID: "s1",
+		NativeTurnID:   "turn-2",
+		NativeInputID:  "input-2",
+	}
+	require.NoError(t, buffer.PersistAllTo(agent.MessageCompletionComplete, sink, template, agent.SpanInfo{}))
+	require.Len(t, sink.rows, 4)
+
+	// mixed-turn segment must clear both NativeTurnID and NativeInputID rather than inheriting template's turn-2/input-2.
+	assert.Equal(t, "s1", sink.rows[0].AgentSessionID)
+	assert.Empty(t, sink.rows[0].NativeTurnID)
+	assert.Empty(t, sink.rows[0].NativeInputID)
+
+	// earlier-turn segment must override NativeTurnID to turn-1 and clear stale NativeInputID from turn-2.
+	assert.Equal(t, "s1", sink.rows[1].AgentSessionID)
+	assert.Equal(t, "turn-1", sink.rows[1].NativeTurnID)
+	assert.Empty(t, sink.rows[1].NativeInputID)
+
+	// same-turn segment keeps template's NativeTurnID and NativeInputID.
+	assert.Equal(t, "s1", sink.rows[2].AgentSessionID)
+	assert.Equal(t, "turn-2", sink.rows[2].NativeTurnID)
+	assert.Equal(t, "input-2", sink.rows[2].NativeInputID)
+
+	// plain Append segment (no native turn attached) inherits template metadata unchanged.
+	assert.Equal(t, "s1", sink.rows[3].AgentSessionID)
+	assert.Equal(t, "turn-2", sink.rows[3].NativeTurnID)
+	assert.Equal(t, "input-2", sink.rows[3].NativeInputID)
 }
 
 func (s *generationFlushSink) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {

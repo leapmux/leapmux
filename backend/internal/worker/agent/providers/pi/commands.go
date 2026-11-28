@@ -35,14 +35,20 @@ func (a *Agent) refreshPiCommands(timeout time.Duration) bool {
 		return false
 	}
 	commands := make(map[string]bool)
+	bridgeReady := false
 	for _, command := range *catalog.Commands {
 		if command.Source == "extension" && command.Name != "" {
+			if a.steerBridge != nil && command.Name == a.steerBridge.Capability {
+				bridgeReady = true
+				continue
+			}
 			commands[command.Name] = true
 		}
 	}
 	a.Mu.Lock()
 	changed := !maps.Equal(a.extensionCommands, commands)
 	a.extensionCommands = commands
+	a.steerBridgeReady = bridgeReady
 	a.Mu.Unlock()
 	if changed {
 		a.sink.PublishGoalCapabilities()

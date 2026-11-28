@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -78,6 +79,7 @@ type pinResult struct {
 	StrippedPresent bool
 	EmptyPresent    bool
 	EmptyValue      string
+	Path            string
 }
 
 func readPinResult(t *testing.T, output []byte) pinResult {
@@ -100,7 +102,7 @@ func TestPinnedEnvironmentChild(t *testing.T) {
 	}
 	_, stripped := os.LookupEnv("LEAPMUX_TEST_STRIPPED")
 	emptyValue, emptyPresent := os.LookupEnv("LEAPMUX_TEST_EMPTY")
-	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: testPinVariableNames(), Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue})
+	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: testPinVariableNames(), Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue, Path: os.Getenv("PATH")})
 	if err != nil {
 		os.Exit(2)
 	}
@@ -135,7 +137,7 @@ func TestPinnedEnvironmentRunsInEveryInstalledShell(t *testing.T) {
 			const value = "pin-value-'quoted'\n$HOME $(printf injected)"
 			cmd, _, _ := wrapTestCommand(t, ctx, WrapSpec{Shell: shell, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=" + value}})
 			home := t.TempDir()
-			cmd.Env = envutil.PinEnv(cmd.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"), "XDG_STATE_HOME="+filepath.Join(home, ".state"), "ZDOTDIR="+home, "LEAPMUX_PIN_TEST_HELPER=1", "POWERSHELL_TELEMETRY_OPTOUT=1", "DOTNET_CLI_TELEMETRY_OPTOUT=1")
+			cmd.Env = envutil.PinEnv(cmd.Environ(), append(homeEnv(home), "LEAPMUX_PIN_TEST_HELPER=1")...)
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, err, "%s", output)
 			result := readPinResult(t, output)
@@ -147,7 +149,7 @@ func TestPinnedEnvironmentRunsInEveryInstalledShell(t *testing.T) {
 
 func TestEnvironmentPinNamesAvoidEveryEnvironmentNamespace(t *testing.T) {
 	t.Parallel()
-	prepared := prepareShellLaunch(WrapSpec{
+	prepared := prepareShellLaunch(posixDialect{shell: "sh"}, WrapSpec{
 		SetEnv:       []string{"PRIVATE_TOKEN=secret", "__leapmux_pin_TEST_1=target"},
 		StripEnvKeys: []string{"__LEAPMUX_PIN_test_0_"},
 	}, "test", []string{"__LEAPMUX_PIN_test_0=existing"})
@@ -160,10 +162,11 @@ func TestEnvironmentPinNamesAvoidEveryEnvironmentNamespace(t *testing.T) {
 func TestCshPinNamesStayWithinTheVariableLimitAfterCollisions(t *testing.T) {
 	t.Parallel()
 	spec := WrapSpec{Shell: "bsd-csh", SetEnv: []string{"PRIVATE_TOKEN=secret"}}
+	dialect := resolveDialect(terminal.ShellBaseName(spec.Shell))
 	const token = "profilelaunch"
-	first := prepareShellLaunch(spec, token, nil).pins[0].source
-	second := prepareShellLaunch(spec, token, []string{strings.ToUpper(first) + "=occupied"}).pins[0].source
-	third := prepareShellLaunch(spec, token, []string{first + "=occupied", second + "=occupied"}).pins[0].source
+	first := prepareShellLaunch(dialect, spec, token, nil).pins[0].source
+	second := prepareShellLaunch(dialect, spec, token, []string{strings.ToUpper(first) + "=occupied"}).pins[0].source
+	third := prepareShellLaunch(dialect, spec, token, []string{first + "=occupied", second + "=occupied"}).pins[0].source
 	for _, source := range []string{first, second, third} {
 		assert.Regexp(t, shellIdentifier, source)
 		assert.LessOrEqual(t, len(source), 30)

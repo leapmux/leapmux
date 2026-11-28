@@ -14,6 +14,7 @@ import (
 
 type nativeControl struct {
 	payload         []byte
+	inputReceipt    agent.NativeInputReceipt
 	automaticReply  []byte
 	rootPermission  bool
 	published       bool
@@ -44,6 +45,11 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 	a.mu.Lock()
 	_, ownTool := a.turnToolCalls[request.ToolUseID]
 	record.rootPermission = request.Subtype == contracts.CodebuddyControlRequestSubtypeCanUseTool && request.AgentID == "" && ownTool
+	if reply := a.turnReplyLocked(); record.rootPermission && reply != nil {
+		if _, owned := reply.tools[request.ToolUseID]; owned {
+			record.inputReceipt = reply.receipt
+		}
+	}
 	if a.controls == nil {
 		a.controls = make(map[string]*nativeControl)
 	}
@@ -52,7 +58,10 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 		return
 	}
 	if record.rootPermission && request.ToolName != "" && request.ToolName != "AskUserQuestion" && (codebuddyProvider{}).PlanModeControl(request.ToolName) == agent.PlanModeControlNone {
-		record.automaticReply, _ = json.Marshal(map[string]any{"type": frameTypeControlResponse, "response": map[string]any{"subtype": "success", "request_id": envelope.RequestID, "response": contracts.CodebuddyCanUseToolAnswer{Allowed: true, UpdatedInput: request.Input}}})
+		record.automaticReply = agent.ControlResponseEnvelope(envelope.RequestID, contracts.CodebuddyCanUseToolAnswer{
+			Allowed:      true,
+			UpdatedInput: request.Input,
+		})
 	}
 	a.controls[envelope.RequestID] = record
 	bypass := a.canBypassControlLocked(record)
@@ -73,7 +82,10 @@ func (a *Agent) canBypassControlLocked(record *nativeControl) bool {
 }
 
 func (a *Agent) publishRegisteredControl(id string, record *nativeControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: id, Payload: record.payload})
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: id, Payload: record.payload,
+		AgentSessionID: record.inputReceipt.SessionID, NativeTurnID: record.inputReceipt.TurnID,
+	})
 	a.mu.Lock()
 	current := a.controls[id] == record
 	record.published, record.ready = err == nil, true

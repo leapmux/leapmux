@@ -238,6 +238,7 @@ type OutputHandler struct {
 	// only until the shutdown deadline.
 	refreshLifecycleMu sync.Mutex
 	activityRefreshes  drain.Counter
+	activityByRoot     agentPublicationDrain
 
 	// newSettleTimer schedules the end of a settle's debounce window. Defaults to
 	// time.AfterFunc; a test replaces it to fire the window on demand, because a
@@ -337,12 +338,13 @@ type OutputHandler struct {
 	// after a committed background-task mutation. Set via SetBackgroundWorkFunc
 	// in service.New; nil in tests that build an OutputHandler directly.
 	backgroundWorkChanged func(rootAgentID string)
-	// requeueDroppedInput queues input that a provider dropped as the reader's
-	// next message, and reports whether this call added it. Set via
+	// requeueDroppedInput queues a steer that a provider dropped as the
+	// reader's next input, and reports whether this call added it. Set via
 	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
 	// OutputHandler directly, where RequeueDroppedInput then refuses.
-	requeueDroppedInput func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)
+	requeueDroppedInput func(agentID string, dropped agent.SteerRequest) (bool, error)
 	steersEchoed        func(agentID string, count int, spanLines string) error
+	resolveSteer        func(agentID string, resolution agent.SteerResolution, spanLines string) (bool, error)
 	steersDropped       func(agentID string, count int) error
 	steersUncertain     func(agentID string, count int) error
 
@@ -541,9 +543,9 @@ func (h *OutputHandler) SetBackgroundWorkFunc(fn func(rootAgentID string)) {
 	h.backgroundWorkChanged = fn
 }
 
-// SetRequeueDroppedInputFunc wires the input queue that takes back the input a
+// SetRequeueDroppedInputFunc wires the input queue that takes back the steer a
 // provider dropped. Call it before any agent output is processed.
-func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)) {
+func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID string, dropped agent.SteerRequest) (bool, error)) {
 	h.requeueDroppedInput = fn
 }
 
@@ -774,7 +776,7 @@ func (h *OutputHandler) claimControlResponseAnswer(params db.StoreControlRespons
 		operationID: params.RequestID, instanceID: params.ClaimToken,
 	}
 	if !params.NonBlocking {
-		if !h.controls.hasBlockingInstance(params.AgentID, params.RequestID, params.ClaimToken) {
+		if !h.controls.hasBlockingSnapshot(params.AgentID, params.RequestID, params.ClaimToken, params.AgentSessionID, params.RequestPayload) {
 			return "", nil
 		}
 		return reserveControlDelivery(h.db, identity, func(queries *db.Queries, deliveryID string) (int64, error) {
@@ -790,6 +792,7 @@ func (h *OutputHandler) claimControlResponseAnswer(params db.StoreControlRespons
 				NonBlocking:          false,
 				AgentSessionID:       params.AgentSessionID,
 				InputID:              params.InputID,
+				Decision:             params.Decision,
 			})
 		})
 	}
@@ -887,7 +890,7 @@ func (publication *controlPublication) enqueueCancellation(handler *OutputHandle
 // enqueueControlCancel records and queues one exact cancellation without watcher delivery or logging.
 func (h *OutputHandler) enqueueControlCancel(agentID, requestID, claimToken string) (bool, error) {
 	changed := h.recordControlRequestsRemoved(agentID, "", controlRequestInstance{RequestID: requestID, ClaimToken: claimToken})
-	state, err := controlResponseState(h, agentID, requestID, claimToken)
+	state, err := controlResponseState(bgCtx(), h, agentID, requestID, claimToken)
 	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
@@ -1012,12 +1015,22 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
+	_ = h.clearAgentControlRequests(bgCtx(), agentID)
+	// Blocking controls were already drained under lockControlMutation above;
+	// retire the remaining agent state without re-clearing controls published
+	// by callbacks after finishControlPublication released the lock.
+	if _, retiredIDs, _, retired := h.retireAgentState(agentID); retired {
+		h.finishAgentCleanup(agentID, retiredIDs)
+	}
+}
+
+func (h *OutputHandler) clearAgentControlRequests(ctx context.Context, agentID string) error {
 	st, _, release := h.lockControlMutation(agentID, "")
 	publication := controlPublication{}
 	for _, request := range h.controls.drainBlocking(agentID) {
 		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
 	}
-	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
+	deleted, err := h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
 	if err != nil {
 		publication.recordFailure("clear agent runtime state: delete control requests", "agent_id", agentID, "error", err)
 	}
@@ -1026,12 +1039,7 @@ func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
 	}
 	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
 	h.finishControlPublication(st, agentID, "", publication, release)
-	// Blocking controls were already drained under lockControlMutation above;
-	// retire the remaining agent state without re-clearing controls published
-	// by callbacks after finishControlPublication released the lock.
-	if _, retiredIDs, _, retired := h.retireAgentState(agentID); retired {
-		h.finishAgentCleanup(agentID, retiredIDs)
-	}
+	return err
 }
 
 // rootTracker returns the SpanTracker for a ROOT main agent, creating one if
@@ -1343,11 +1351,13 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 		// publishes land before the caller closes the database. A shutdown
 		// that already began admits nothing, and the refused edge is lost
 		// with the process.
-		if published && s.h.beginActivityRefresh() {
-			go func() {
-				defer s.h.activityRefreshes.Done()
-				s.BroadcastGitStatus()
-			}()
+		if published {
+			if finish := s.h.beginActivityRefresh(s.rootAgentID); finish != nil {
+				go func() {
+					defer finish()
+					s.BroadcastGitStatus()
+				}()
+			}
 		}
 	}()
 	if content.IdempotencyKey != "" {
@@ -1377,6 +1387,9 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 		}
 	}
 	content.WriteReceipt.RecordStoredWrite(true)
+	end := &leapmuxv1.AgentEvent{
+		AgentId: s.agentID, Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}},
+	}
 	owner.activity.mu.Lock()
 	if owner.currentLocked() {
 		tracker := s.currentSpanTracker()
@@ -1393,10 +1406,12 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 		} else {
 			owner.activity.settledToolUses = nil
 		}
-		s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-			AgentId: s.agentID, Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}},
-		})
+		s.h.watcher.EnqueueAgentEvent(s.agentID, end)
 		published = true
+	} else if _, stored := content.WriteReceipt.StoredMessageSequence(); (stored || content.IdempotencyKey != "") && s.h.watcher.recordAgentFact != nil {
+		// The stored row or native claim proves a completion of the older turn.
+		// Only the current scope can change live activity.
+		s.h.watcher.recordAgentFact(s.agentID, end)
 	}
 	owner.activity.mu.Unlock()
 	return nil
@@ -1430,7 +1445,7 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 		mutation.Unlock()
 		return
 	}
-	change := s.h.recordTurnActive(s.agentID, s.rootAgentID, state.Active)
+	change := s.h.recordTurnActive(s.agentID, s.rootAgentID, state)
 	change.activity.mu.Lock()
 	change.activity.turnSteerable = state.Steerable
 	admission := &providerTurnAdmission{sink: s, activity: change.activity, scope: s.h.scopeLocked(change.activity, s.rootAgentID),
@@ -1443,23 +1458,26 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	}
 }
 
-// RequeueDroppedInput queues the input as the reader's next message. It writes
-// the row that states why the message appears again only when this call added
-// the item, so a repeat of one drop writes nothing twice.
+// RequeueDroppedInput queues the dropped steer as the reader's next input (see
+// Service.requeueDroppedInput). It writes the row that states why the message
+// appears again only when this call added the item, so a repeat of one drop
+// writes nothing twice.
 //
 // The row and the queued message are written independently. The queue can
 // deliver the message before this writes the row, so the row's words read
 // correctly on either side of the message.
 //
-// A subagent has no input queue of its own, so a child sink refuses.
-func (s *agentOutputSink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+// A child sink refuses. The queue steers a subagent's input through
+// ChildSteerer.SteerChildInput, which states no queue item, so no steer of a
+// subagent can specify the item to take back.
+func (s *agentOutputSink) RequeueDroppedInput(dropped agent.SteerRequest) error {
 	if s.root != nil {
-		return fmt.Errorf("requeue dropped input: subagent %s has no input queue", s.agentID)
+		return fmt.Errorf("requeue dropped input: a steer of subagent %s states no queue item", s.agentID)
 	}
 	if s.h.requeueDroppedInput == nil {
 		return errors.New("requeue dropped input: no input queue is wired")
 	}
-	added, err := s.h.requeueDroppedInput(s.agentID, dropID, content, attachments)
+	added, err := s.h.requeueDroppedInput(s.agentID, dropped)
 	if err != nil {
 		return err
 	}
@@ -1526,6 +1544,25 @@ func (s *agentOutputSink) CaptureSteerReport(count int, outcome agent.SteerOutco
 		default:
 			return fmt.Errorf("invalid steer outcome: %d", outcome)
 		}
+	}
+}
+
+func (s *agentOutputSink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	spanLines := s.h.snapshotPassthroughSpanLines(s.agentID)
+	return func() error {
+		if !s.registeredCurrent() {
+			return nil
+		}
+		if s.h.resolveSteer == nil {
+			return errors.New("the steer resolution has no queue callback")
+		}
+		matched, err := s.h.resolveSteer(s.agentID, resolution, spanLines)
+		if err == nil && matched && resolution.Outcome == agent.SteerOutcomeDropped {
+			s.PersistLeapMuxNotification(map[string]interface{}{
+				contracts.NotificationFieldType: contracts.NotificationTypeInputRequeued,
+			})
+		}
+		return err
 	}
 }
 
@@ -1662,6 +1699,20 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	if request.SourceSeq < 0 {
 		return fmt.Errorf("control source sequence is negative")
 	}
+	if request.NativeTurnID != "" && request.AgentSessionID == "" {
+		return errors.New("a native control turn requires an agent session")
+	}
+	var nativeInputIDs []string
+	if len(request.NativeInputIDs) > 0 {
+		if request.NonBlocking || request.AgentSessionID == "" {
+			return errors.New("native control inputs require a stored blocking request with a session")
+		}
+		var err error
+		nativeInputIDs, err = normalizeNativeControlInputIDs(request.NativeInputIDs)
+		if err != nil {
+			return err
+		}
+	}
 	if !s.ownsControlPublisher() {
 		return nil
 	}
@@ -1701,6 +1752,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	var storedClaimToken string
 	var storedSourceSeq int64
 	var storedSessionID string
+	var isNewClaim bool
 	if !request.NonBlocking {
 		if !s.ownsControlPublisher() {
 			return nil
@@ -1714,6 +1766,11 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		hasExistingSQL := err == nil
 		if !s.ownsControlPublisher() {
 			return nil
+		}
+		current, hasCurrent := s.h.controls.getBlocking(s.agentID, requestID)
+		claimToken := request.InstanceID
+		if err := validateControlInstanceReuse(claimToken, hasExistingSQL, existingSQL.ClaimToken, hasCurrent, current.ClaimToken, current.Payload, current.AgentSessionID, payload, request.AgentSessionID); err != nil {
+			return err
 		}
 		var deletedSQL db.ControlRequest
 		var deletedSQLRow bool
@@ -1735,8 +1792,6 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 				return nil
 			}
 		}
-		current, hasCurrent := s.h.controls.getBlocking(s.agentID, requestID)
-		claimToken := request.InstanceID
 		if claimToken == "" {
 			claimToken = id.Generate()
 		}
@@ -1748,6 +1803,8 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		stored := s.h.controls.upsertBlocking(blockingControlRecord{
 			AgentID:        s.agentID,
 			AgentSessionID: request.AgentSessionID,
+			NativeTurnID:   request.NativeTurnID,
+			NativeInputIDs: nativeInputIDs,
 			RequestID:      requestID,
 			Payload:        payload,
 			ClaimToken:     claimToken,
@@ -1764,31 +1821,39 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			}
 			return nil
 		}
+		enqueueReplacedClaimCancellation(&publication, s.h, s.agentID, requestID, hasCurrent, current.ClaimToken, stored.ClaimToken)
+		enqueueReplacedClaimCancellation(&publication, s.h, s.agentID, requestID, deletedSQLRow, deletedSQL.ClaimToken, stored.ClaimToken)
 		storedClaimToken = stored.ClaimToken
 		storedSourceSeq = stored.SourceSeq
 		storedSessionID = stored.AgentSessionID
+		isNewClaim = !hasCurrent || current.ClaimToken != stored.ClaimToken
 		st.mu.Lock()
 		if st.pendingControl == nil {
 			st.pendingControl = make(map[string]ownedControlRequest)
 		}
 		st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
 		st.mu.Unlock()
-		publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
+		publication.activityChanged = publication.activityChanged || !known || previous.claimToken != stored.ClaimToken
 	} else {
 		// The database owns persisted non-blocking values. A non-blocking request
 		// outlives its scope, so its claim reuse reads only the stored row.
-		current, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("read the pending control request: %w", err)
+		current, getErr := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+		if getErr != nil && !errors.Is(getErr, sql.ErrNoRows) {
+			return fmt.Errorf("read the pending control request: %w", getErr)
 		}
+		hasCurrent := getErr == nil
 		if !s.ownsControlPublisher() {
 			return nil
 		}
 		claimToken := request.InstanceID
+		existingBlocking, hasBlocking := s.h.controls.getBlocking(s.agentID, requestID)
+		if err := validateControlInstanceReuse(claimToken, hasBlocking, existingBlocking.ClaimToken, hasCurrent, current.ClaimToken, current.Payload, current.AgentSessionID, payload, request.AgentSessionID); err != nil {
+			return err
+		}
 		if claimToken == "" {
 			claimToken = id.Generate()
 		}
-		if err == nil && request.InstanceID == "" &&
+		if hasCurrent && request.InstanceID == "" &&
 			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
 			claimToken = current.ClaimToken
 		}
@@ -1812,30 +1877,80 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			}
 			return nil
 		}
+		enqueueReplacedClaimCancellation(&publication, s.h, s.agentID, requestID, hasCurrent, current.ClaimToken, stored.ClaimToken)
 		// Only after the durable write commits and publisher ownership still holds,
 		// drop any same-requestID blocking entry from memory to keep (agentID, requestID) unique.
 		if removedBlocking, ok := s.h.controls.deleteBlocking(s.agentID, requestID, ""); ok {
-			publication.activityChanged = s.h.recordControlRequestsRemoved(s.agentID, s.rootAgentID, controlRequestInstance{
-				RequestID: removedBlocking.RequestID, ClaimToken: removedBlocking.ClaimToken,
-			}) || publication.activityChanged
+			if removedBlocking.ClaimToken != "" && removedBlocking.ClaimToken != stored.ClaimToken {
+				publication.enqueueCancellation(s.h, s.agentID, requestID, removedBlocking.ClaimToken)
+			} else {
+				publication.activityChanged = s.h.recordControlRequestsRemoved(s.agentID, s.rootAgentID, controlRequestInstance{
+					RequestID: removedBlocking.RequestID, ClaimToken: removedBlocking.ClaimToken,
+				}) || publication.activityChanged
+			}
 		}
 		storedClaimToken = stored.ClaimToken
 		storedSourceSeq = stored.SourceSeq
 		storedSessionID = stored.AgentSessionID
+		isNewClaim = !hasCurrent || current.ClaimToken != stored.ClaimToken
 	}
 	request.SourceSeq = storedSourceSeq
 	request.AgentSessionID = storedSessionID
-	prepared, stateErr := buildAgentControlRequest(s.h, s.agentID, s.agentProvider, request, storedClaimToken)
+	if request.NativeTurnID != "" || len(request.NativeInputIDs) > 0 {
+		s.h.enqueueInputReplyChanged(s.agentID)
+	}
+	prepared, stateErr := buildAgentControlRequest(s.h, s.plugin, s.agentID, s.agentProvider, request, storedClaimToken)
 	if stateErr != nil {
 		publication.recordFailure("could not read the control response state", "agent_id", s.agentID, "request_id", requestID, "error", stateErr)
 	}
-	s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+	event := &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_ControlRequest{
 			ControlRequest: prepared,
 		},
-	})
+	}
+	if isNewClaim {
+		s.h.watcher.EnqueueAgentEvent(s.agentID, event)
+	} else {
+		s.h.watcher.EnqueueAgentEventLiveOnly(s.agentID, event)
+	}
 	return nil
+}
+
+func validateControlInstanceReuse(
+	claimToken string,
+	hasOtherStore bool,
+	otherStoreClaim string,
+	hasCurrent bool,
+	currentClaim string,
+	currentPayload []byte,
+	currentSessionID string,
+	payload []byte,
+	sessionID string,
+) error {
+	if claimToken == "" {
+		return nil
+	}
+	if hasOtherStore && otherStoreClaim == claimToken {
+		return errors.New("the control request instance changed without a new instance ID")
+	}
+	if hasCurrent && currentClaim == claimToken &&
+		(!bytes.Equal(currentPayload, payload) || currentSessionID != sessionID) {
+		return errors.New("the control request instance changed without a new instance ID")
+	}
+	return nil
+}
+
+func enqueueReplacedClaimCancellation(
+	publication *controlPublication,
+	h *OutputHandler,
+	agentID, requestID string,
+	hasOld bool,
+	oldClaim, newClaim string,
+) {
+	if hasOld && oldClaim != "" && oldClaim != newClaim {
+		publication.enqueueCancellation(h, agentID, requestID, oldClaim)
+	}
 }
 
 func (s *agentOutputSink) restoreDeletedNonBlockingControl(row db.ControlRequest) error {
@@ -1902,14 +2017,31 @@ func (s *agentOutputSink) MessageSessionID() string {
 }
 
 func (s *agentOutputSink) UpdateSessionID(sessionID string) {
-	s.updateSessionID(sessionID, false)
+	_ = s.updateSessionID(sessionID, updateNativeSession)
 }
 
 func (s *agentOutputSink) AdoptNativeSession(sessionID string) {
-	s.updateSessionID(sessionID, true)
+	_ = s.updateSessionID(sessionID, adoptNativeSession)
 }
 
-func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
+func (s *agentOutputSink) BindChildSessionID(sessionID string) error {
+	if sessionID == "" || s.agentID == s.rootAgentID {
+		return agent.ErrChildIdentityRefused
+	}
+	return s.updateSessionID(sessionID, bindInitialChildSession)
+}
+
+type nativeSessionUpdate uint8
+
+const (
+	updateNativeSession nativeSessionUpdate = iota
+	adoptNativeSession
+	bindInitialChildSession
+)
+
+func (s *agentOutputSink) updateSessionID(sessionID string, update nativeSessionUpdate) error {
+	bindChild := update == bindInitialChildSession
+	newLifetime := update == adoptNativeSession
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.Lock()
 	var failureMessage string
@@ -1936,7 +2068,17 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 		}
 	}()
 	if !s.registeredCurrent() {
-		return
+		if bindChild {
+			return agent.ErrChildIdentityRefused
+		}
+		return nil
+	}
+	if bindChild {
+		var err error
+		sessionChanged, err = s.bindChildSessionLocked(sessionID)
+		if err != nil {
+			return err
+		}
 	}
 	activity := s.h.activityFor(s.agentID, s.rootAgentID)
 	activity.mu.Lock()
@@ -1964,10 +2106,13 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 		}
 	}
 	s.sessionInfoMu.Unlock()
+	if bindChild {
+		return nil
+	}
 	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
 		failureMessage, failure = "failed to fetch agent for session ID comparison", err
-		return
+		return err
 	}
 
 	if existingAgent.AgentSessionID != sessionID {
@@ -1976,11 +2121,38 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 			ID:             s.agentID,
 		}); err != nil {
 			failureMessage, failure = "failed to store agent session ID", err
-			return
+			return err
 		}
 
 		sessionChanged = true
 	}
+	return nil
+}
+
+// bindChildSessionLocked stores the session before the sink uses it for new writes.
+// The caller holds the transcript mutation mutex.
+func (s *agentOutputSink) bindChildSessionLocked(sessionID string) (bool, error) {
+	child, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+	if err != nil {
+		return false, err
+	}
+	if !child.ParentAgentID.Valid || child.ClosedAt.Valid ||
+		child.AgentSessionID != "" && child.AgentSessionID != sessionID {
+		return false, agent.ErrChildIdentityRefused
+	}
+	if child.AgentSessionID == sessionID {
+		return false, nil
+	}
+	changed, err := s.h.queries.BindChildSessionID(bgCtx(), db.BindChildSessionIDParams{
+		ID: s.agentID, AgentSessionID: sessionID,
+	})
+	if err != nil {
+		return false, err
+	}
+	if changed != 1 {
+		return false, agent.ErrChildIdentityRefused
+	}
+	return true, nil
 }
 
 func (s *agentOutputSink) UpdatePermissionMode(mode string) {
@@ -2474,6 +2646,9 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		ID:                             msgID,
 		AgentID:                        agentID,
 		AgentSessionID:                 content.AgentSessionID,
+		NativeInputID:                  content.NativeInputID,
+		NativeTurnID:                   content.NativeTurnID,
+		InputTurnOutcome:               workerdb.OptionalStorageEnum(content.InputTurnOutcome),
 		IdempotencyKey:                 content.IdempotencyKey,
 		Source:                         source,
 		Content:                        compressed,
@@ -2637,6 +2812,16 @@ func (h *OutputHandler) publishMessageWrite(write messageWrite, seq int64) {
 	} else {
 		h.enqueueMessage(agentID, write.message)
 	}
+	if write.params.InputTurnOutcome != nil {
+		h.enqueueInputReplyChanged(agentID)
+	}
+}
+
+func (h *OutputHandler) enqueueInputReplyChanged(agentID string) {
+	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event:   &leapmuxv1.AgentEvent_InputReplyChanged{InputReplyChanged: &leapmuxv1.AgentInputReplyChanged{}},
+	})
 }
 
 // persistMessageWithTodoEvent stores one provider message and applies its extracted
@@ -2842,6 +3027,34 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 	}
 }
 
+func (s *agentOutputSink) mergedSessionInfo() map[string]interface{} {
+	info := s.sessionInfoSnapshot()
+	if info == nil {
+		info = make(map[string]interface{})
+	}
+	if s.progress != nil {
+		for key, value := range s.progress.snapshotInfo() {
+			info[key] = value
+		}
+	}
+	return info
+}
+
+// SessionInfoSnapshot returns the agent's current ephemeral session info map
+// (cached fields merged with live progress counters), or nil when no live sink
+// exists for agentID.
+func (h *OutputHandler) SessionInfoSnapshot(agentID string) map[string]interface{} {
+	sink := h.sinkForAgent(agentID)
+	if sink == nil {
+		return nil
+	}
+	info := sink.mergedSessionInfo()
+	if checks := sink.permissionCheckSnapshots(); len(checks) > 0 {
+		info[contracts.SessionInfoKeyRunningTool] = checks[len(checks)-1]
+	}
+	return info
+}
+
 // SessionInfoReplayEvents restores cached state, active running-tool output
 // tails, and active permission checks after a reconnect. The counters come
 // first, followed by each active tail and each check in session and span order.
@@ -2851,13 +3064,7 @@ func (h *OutputHandler) SessionInfoReplayEvents(agentID string) []*leapmuxv1.Age
 	if sink == nil {
 		return nil
 	}
-	info := sink.sessionInfoSnapshot()
-	if info == nil {
-		info = make(map[string]interface{})
-	}
-	for key, value := range sink.progress.snapshotInfo() {
-		info[key] = value
-	}
+	info := sink.mergedSessionInfo()
 	var events []*leapmuxv1.AgentEvent
 	if len(info) > 0 {
 		events = append(events, sessionInfoEvent(agentID, info))

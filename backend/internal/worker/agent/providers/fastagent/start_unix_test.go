@@ -47,7 +47,7 @@ func TestFastAgentBypassLaunchArguments(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runs := agenttest.RunLaunch(t, agenttest.LaunchProbe{Binary: "fast-agent", Start: func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 				opts.Options = map[string]string{"model": "gpt-4o", "bypassPermissions": tc.value}
-				opts.ResumeSessionID = tc.resume
+				opts.Session = agent.ResumeSession(tc.resume)
 				return Start(ctx, opts, sink)
 			}})
 			require.Len(t, runs, 1)

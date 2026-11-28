@@ -15,6 +15,7 @@ func TestKiloAnswersAQuestionThroughTheBridge(t *testing.T) {
 	opencodetest.AssertAnswersAQuestionThroughTheBridge(t, a, opencode.EventRoute, opencode.QuestionRoot,
 		func(ctx context.Context, sink agent.ControlServices, baseURL string) {
 			a.SetContextForTest(ctx)
+			a.SetSessionIDForTest(opencodetest.FakeQuestionSessionID)
 			a.BeginQuestionsForTest(ctx, sink, "agent-1", baseURL)
 		})
 }

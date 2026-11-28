@@ -16,6 +16,10 @@ type CredentialIdentity struct {
 	// an API credential. It is false for sessions, delegation credentials and
 	// API credentials built in tests without a persisted app row.
 	appElevationDisabled bool
+	// clientID is the OAuth client registration that owns an API credential
+	// (such as oauthapp.ControlCLIClientID or oauthapp.ServiceAccountClientID).
+	// Empty for non-API credentials or test fixtures built without a client ID.
+	clientID string
 	// workerID is the worker that MINTED a delegation token. It limits where the
 	// token may be used (see ChannelService.verifyDelegationWorkerScope); empty
 	// for every other kind.
@@ -49,9 +53,25 @@ func APICredential(tokenID string) CredentialIdentity {
 // APICredentialWithElevationPolicy identifies an API credential and carries
 // whether its current app registration permits a new elevation ceremony.
 func APICredentialWithElevationPolicy(tokenID string, elevationAllowed bool) CredentialIdentity {
+	return APICredentialWithClientPolicy(tokenID, "", elevationAllowed)
+}
+
+// APICredentialWithClientPolicy identifies an API credential, the OAuth client
+// registration that owns it, and whether that app permits step-up elevation.
+func APICredentialWithClientPolicy(tokenID, clientID string, elevationAllowed bool) CredentialIdentity {
 	credential := APICredential(tokenID)
+	credential.clientID = clientID
 	credential.appElevationDisabled = !elevationAllowed
 	return credential
+}
+
+// ClientID returns the OAuth client registration ID for an API credential, or
+// an empty string for other credential kinds.
+func (c CredentialIdentity) ClientID() string {
+	if c.kind == credentialAPI {
+		return c.clientID
+	}
+	return ""
 }
 
 // AppElevationDisabled reports whether the credential's current app policy

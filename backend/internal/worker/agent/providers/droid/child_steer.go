@@ -1,9 +1,6 @@
 package droid
 
 import (
-	"log/slog"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -45,40 +42,36 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 		a.childAgents[childKey] = childID
 	}
 	a.dispatchMu.Unlock()
-
-	a.tailMu.Lock()
-	hasTail := a.childTails[childKey] != nil
-	a.tailMu.Unlock()
-	var initial *droidArchivePosition
-	if !hasTail {
-		pos, probeErr := a.probeChildArchiveEnd(childKey)
-		if probeErr == nil {
-			initial = pos
-		} else {
-			slog.Warn("droid: probe child archive end failed; tailing from start", "session_id", childKey, "error", probeErr)
-		}
-	}
-
+	a.pollChildTail(childKey)
 	child, err := a.childConnection(childKey, childID)
 	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
-	if err := child.SendInputForSession(childKey, input.Content, input.Attachments); err != nil {
+	a.stopChildTail(childKey)
+	receipt, err := child.sendNativeInput(&childKey, input.Content, input.Attachments, droidInputDispatch{
+		mode: droidInputOrdinary,
+	})
+	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
-	ready := make(chan struct{})
-	if a.resumeChildTail(childKey, initial, ready) {
-		providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
-		close(ready)
-	}
+	providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
 	a.finishExitedChild(childKey, child)
-	return agent.ChildInputResult{
-
-		// SteerChildInput uses only an active process already bound to the child.
-		StartsTurn: true}, nil
+	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, nil
 }
 
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+// SteerChildInput injects a steered input into an active bound child process
+// and settles the queue item at Droid's native user echo or discard.
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, a.steerChild(childKey, request, droidInputSteer)
+}
+
+// ChildSteerPolicy holds the steer row until echo and retains accepted child
+// steers until Droid echoes or explicitly discards them.
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
+
+func (a *Agent) steerChild(childKey string, request agent.SteerRequest, mode droidInputMode) error {
 	if _, err := a.registeredChildID(childKey); err != nil {
 		return err
 	}
@@ -95,7 +88,10 @@ func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmux
 	if connection.err != nil {
 		return connection.err
 	}
-	return connection.agent.sendInput(nil, content, attachments, droidInputChildSteer)
+	_, err := connection.agent.sendNativeInput(&childKey, request.Content, request.Attachments, droidInputDispatch{
+		mode: mode, queueInputID: request.InputID, attemptID: request.AttemptID,
+	})
+	return err
 }
 
 // ActiveChildTurnState reports a child's turn after a refusal. The queue reads

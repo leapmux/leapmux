@@ -506,7 +506,7 @@ func TestStartKiroStatesTheReasonOfAFailedPrompt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a, sink, _, _ := startFakeKiroWith(t, "auto", []string{kiroFakePromptErrorEnv + "=" + tc.promptError}, agent.Options{})
 
-			require.NoError(t, a.SendInput("Say hello.", nil))
+			require.NoError(t, agenttest.SendInput(a, "Say hello.", nil))
 			require.Eventually(t, func() bool { return !a.PromptActive() }, 30*time.Second, 10*time.Millisecond)
 
 			assert.Equal(t, tc.wantMessages, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
@@ -554,7 +554,7 @@ func TestStartKiroStatesThePolicyPresetInTheSession(t *testing.T) {
 }
 
 func TestStartKiroLoadsWithoutAReplay(t *testing.T) {
-	_, requests, _ := startFakeKiro(t, agent.Options{ResumeSessionID: kiroFakeSessionID})
+	_, requests, _ := startFakeKiro(t, agent.Options{Session: agent.ResumeSession(kiroFakeSessionID)})
 
 	assert.Empty(t, requestsFor(requests(), acp.MethodSessionNew))
 	loads := requestsFor(requests(), acp.MethodSessionLoad)
@@ -568,7 +568,7 @@ func TestStartKiroLoadsWithoutAReplay(t *testing.T) {
 // it and restates the goal, so the goal card and its controls are back before
 // any notification of the run arrives.
 func TestStartKiroRestoresTheGoalRunOfAResumedSession(t *testing.T) {
-	a, sink, requests, _ := startFakeKiroWith(t, "auto", []string{kiroFakeGoalRunEnv + "=1"}, agent.Options{ResumeSessionID: kiroFakeSessionID})
+	a, sink, requests, _ := startFakeKiroWith(t, "auto", []string{kiroFakeGoalRunEnv + "=1"}, agent.Options{Session: agent.ResumeSession(kiroFakeSessionID)})
 
 	require.Eventually(t, func() bool { return len(sink.Goals()) == 1 }, 30*time.Second, 10*time.Millisecond)
 	goal, _ := sink.LastGoal()
@@ -644,7 +644,7 @@ func TestStartKiroRevealsTheEffortOfTheSessionModel(t *testing.T) {
 			agent.OptionIDModel:  "mock-sonnet",
 			agent.OptionIDEffort: "max",
 		}}},
-		{name: "a resumed session", opts: agent.Options{ResumeSessionID: kiroFakeSessionID, Options: map[string]string{agent.OptionIDEffort: "max"}}},
+		{name: "a resumed session", opts: agent.Options{Session: agent.ResumeSession(kiroFakeSessionID), Options: map[string]string{agent.OptionIDEffort: "max"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, requests, _ := startFakeKiroOn(t, "mock-sonnet", tc.opts)

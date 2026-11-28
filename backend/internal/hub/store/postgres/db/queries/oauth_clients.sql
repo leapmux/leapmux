@@ -333,3 +333,35 @@ ON CONFLICT (client_id) DO UPDATE SET
     scopes = EXCLUDED.scopes,
     grant_types = EXCLUDED.grant_types,
     registration_source = EXCLUDED.registration_source;
+
+-- name: ListOAuthClientsByIDExact :many
+SELECT client_id, owner_user_id, secret_hash, client_name,
+       COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
+       scopes, grant_types, elevation_allowed, registration_source,
+       verified_at, verified_by_user_id, created_at, updated_at, revoked_at
+FROM oauth_clients
+WHERE (revoked_at IS NULL OR sqlc.arg(include_revoked)::boolean)
+  AND (CASE WHEN sqlc.arg(hub_wide_only)::boolean
+       THEN owner_user_id IS NULL
+       ELSE (owner_user_id = sqlc.arg(user_id)
+             OR (owner_user_id IS NULL AND sqlc.arg(include_hub_wide)::boolean))
+       END)
+  AND client_id = sqlc.arg(id)::text;
+
+-- name: ListOAuthClientsByIDPrefix :many
+SELECT client_id, owner_user_id, secret_hash, client_name,
+       COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
+       scopes, grant_types, elevation_allowed, registration_source,
+       verified_at, verified_by_user_id, created_at, updated_at, revoked_at
+FROM oauth_clients
+WHERE (revoked_at IS NULL OR sqlc.arg(include_revoked)::boolean)
+  AND (CASE WHEN sqlc.arg(hub_wide_only)::boolean
+       THEN owner_user_id IS NULL
+       ELSE (owner_user_id = sqlc.arg(user_id)
+             OR (owner_user_id IS NULL AND sqlc.arg(include_hub_wide)::boolean))
+       END)
+  AND client_id >= sqlc.arg(id_lo)::text
+  AND client_id < sqlc.arg(id_hi)::text
+  AND client_id > sqlc.arg(id_gt)::text
+ORDER BY client_id ASC
+LIMIT sqlc.arg('limit');

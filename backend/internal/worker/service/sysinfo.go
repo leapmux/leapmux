@@ -24,4 +24,5 @@ func registerSysInfoHandlers(d ownerOnlyRegistrar, svc *Service) {
 			Build: version.BuildInfoProto(),
 		})
 	})
+	registerSkillsHandlers(d, svc)
 }

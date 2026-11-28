@@ -40,8 +40,8 @@ func StartEchoWithGoalCommand(ctx context.Context, opts agent.Options, sink agen
 // Raw input goes directly to the transport because cat has no native permission state.
 type echoAgent struct{ *claude.Agent }
 
-func (a *echoAgent) SendRawInput(data []byte, stop agent.StopContext) error {
-	return a.Process.SendRawInput(data, stop)
+func (a *echoAgent) SendRawInput(input agent.RawInput) error {
+	return a.Process.SendRawInput(input.Data, input.Stop)
 }
 
 // StartSilent starts a Claude agent over a process that reads stdin

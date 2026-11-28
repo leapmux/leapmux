@@ -29,6 +29,9 @@ type bufferedSessionUpdate struct {
 	sessionID     string
 	rootSessionID string
 	raw           json.RawMessage
+	// promptResponse places a correlated reply among the notifications it separates.
+	promptResponse    *acpRootPromptRequest
+	promptResponseRaw json.RawMessage
 	// dispatch is nil for standard session/update params. A provider supplies
 	// its concrete handler for an extension notification's unchanged frame.
 	dispatch       func(string, json.RawMessage)
@@ -96,6 +99,10 @@ func (b *Base) dispatchBufferedSessionUpdate(update bufferedSessionUpdate) {
 	}
 	if update.dispatch != nil {
 		update.dispatch(update.sessionID, update.raw)
+		return
+	}
+	if update.promptResponse != nil {
+		b.captureRootPromptResponse(update.promptResponse, update.promptResponseRaw)
 		return
 	}
 	b.dispatchACPSessionUpdate(update.raw)
@@ -219,12 +226,14 @@ func (b *Base) handleACPSessionUpdate(params json.RawMessage) {
 	b.dispatchACPSessionUpdate(params)
 }
 
+type acpSessionUpdate struct {
+	SessionID string                     `json:"sessionId"`
+	Update    json.RawMessage            `json:"update"`
+	Meta      map[string]json.RawMessage `json:"_meta"`
+}
+
 func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
-	var wrapper struct {
-		SessionID string                     `json:"sessionId"`
-		Update    json.RawMessage            `json:"update"`
-		Meta      map[string]json.RawMessage `json:"_meta"`
-	}
+	var wrapper acpSessionUpdate
 	if err := json.Unmarshal(params, &wrapper); err != nil {
 		slog.Warn("Read ACP session update", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
 		return
@@ -241,7 +250,7 @@ func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
 	if current := b.CurrentSessionID(); current != "" && wrapper.SessionID != current {
 		// A subagent that runs in a session of its own reaches its transcript.
 		// Every other session is one this agent no longer serves.
-		if rowKey := b.childSessionRow(wrapper.SessionID); rowKey != "" && b.FeedChildUpdate(rowKey, wrapper.Update) {
+		if rowKey := b.childSessionRow(wrapper.SessionID); rowKey != "" && b.feedChildUpdate(rowKey, wrapper) {
 			return
 		}
 		slog.Debug("Ignore ACP update from another session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "session_id", wrapper.SessionID)
@@ -256,5 +265,5 @@ func (b *Base) dispatchACPSessionUpdate(params json.RawMessage) {
 		}
 		b.hooks.SessionNotificationMetadata(kind.SessionUpdate, wrapper.Meta)
 	}
-	b.handleACPUpdate(wrapper.Update)
+	b.handleACPUpdateWithMeta(wrapper)
 }

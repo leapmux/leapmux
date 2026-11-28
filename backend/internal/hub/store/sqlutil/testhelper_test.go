@@ -2,7 +2,6 @@ package sqlutil
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -10,32 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestClearWorkerDeregisteringAtKeepsItsFixedScope(t *testing.T) {
-	for _, dialect := range []Dialect{DialectSQLite, DialectPostgres, DialectMySQL} {
-		var query string
-		var args []any
-		injected := errors.New("the test database refused the update")
-		err := ClearWorkerDeregisteringAt(context.Background(), func(_ context.Context, text string, values ...any) error {
-			query, args = text, values
-			return injected
-		}, dialect, "worker")
-		assert.ErrorIs(t, err, injected)
-		placeholder := "?"
-		if dialect == DialectPostgres {
-			placeholder = "$1"
-		}
-		assert.Equal(t, "UPDATE workers SET deregistering_at = NULL WHERE id = "+placeholder+" AND deleted_at IS NULL", query)
-		assert.Equal(t, []any{"worker"}, args)
-	}
-	called := false
-	err := ClearWorkerDeregisteringAt(context.Background(), func(context.Context, string, ...any) error {
-		called = true
-		return nil
-	}, Dialect(255), "worker")
-	assert.Error(t, err)
-	assert.False(t, called)
-}
 
 func TestSetEntityColumnValueUsesApprovedIdentifiersAndDialect(t *testing.T) {
 	var gotQuery string

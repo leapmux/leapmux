@@ -1,13 +1,14 @@
 package opencode
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -21,6 +22,8 @@ type openCodeControlOwner struct {
 	nativeSessionID string
 	sessionID       string
 	sink            agent.ProviderServices
+	// replyInputs checks which native inputs own a control's assistant message.
+	replyInputs func(messageID string) []string
 	// current reads captured session authority only. Callers do not hold the owner mutex when entering this registry.
 	current func() bool
 }
@@ -31,6 +34,7 @@ type openCodePendingControl struct {
 	nativeID           string
 	instanceID         string
 	kind               string
+	sourceMessageID    string
 	payload            []byte
 	order              uint64
 	publishing         bool
@@ -65,6 +69,45 @@ func openCodeControlKey(kind, sessionID, nativeID string) string {
 	return "opencode:" + kind + ":" + sessionID + ":" + nativeID
 }
 
+// ControlRequestKey reads the key that register gives a stored native request
+// (openCodeControlKey): its kind, the session that owns it, and its id. A
+// permission states its session and its id itself, and a form states them in
+// its `form`. register keys a request by the session of its owner, and
+// publishPermission and publishForm refuse a request of another session, so
+// the session that the request states is the owner's.
+func (opencodeProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	request, err := decodeOpenCodeControlEnvelope(payload)
+	if err != nil {
+		return "", false
+	}
+	var kind string
+	var native struct {
+		ID        string `json:"id"`
+		SessionID string `json:"sessionID"`
+	}
+	switch request.Type {
+	case contracts.OpenCodeNativeEventPermissionAsked:
+		kind = "permission"
+		if json.Unmarshal(request.Data, &native) != nil {
+			return "", false
+		}
+	case contracts.OpenCodeNativeEventFormCreated:
+		kind = "form"
+		var data struct {
+			Form json.RawMessage `json:"form"`
+		}
+		if json.Unmarshal(request.Data, &data) != nil || json.Unmarshal(data.Form, &native) != nil {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	if native.ID == "" || native.SessionID == "" {
+		return "", false
+	}
+	return openCodeControlKey(kind, native.SessionID, native.ID), true
+}
+
 func (r *openCodeControls) publishPermission(owner openCodeControlOwner, raw json.RawMessage) error {
 	permission, err := readOpenCodePermission(raw)
 	if err != nil {
@@ -74,10 +117,12 @@ func (r *openCodeControls) publishPermission(owner openCodeControlOwner, raw jso
 		return errors.New("the OpenCode permission belongs to another owner")
 	}
 	header := map[string]any{"tool_name": permission.Action}
+	var sourceMessageID string
 	if permission.Source != nil && permission.Source.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(permission.Source.MessageID, permission.Source.ID)
+		sourceMessageID = permission.Source.MessageID
 	}
-	return r.register(owner, permission.ID, "permission", contracts.OpenCodeNativeEventPermissionAsked, raw, header)
+	return r.register(owner, permission.ID, "permission", sourceMessageID, contracts.OpenCodeNativeEventPermissionAsked, raw, header)
 }
 
 func (r *openCodeControls) publishForm(owner openCodeControlOwner, raw json.RawMessage) error {
@@ -108,17 +153,19 @@ func (r *openCodeControls) publishForm(owner openCodeControlOwner, raw json.RawM
 		toolName = "form"
 	}
 	header := map[string]any{"tool_name": toolName}
+	var sourceMessageID string
 	if metadata.Tool != nil && metadata.Tool.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(metadata.Tool.MessageID, metadata.Tool.ID)
+		sourceMessageID = metadata.Tool.MessageID
 	}
 	data, err := json.Marshal(map[string]json.RawMessage{"form": raw})
 	if err != nil {
 		return err
 	}
-	return r.register(owner, form.ID, "form", contracts.OpenCodeNativeEventFormCreated, data, header)
+	return r.register(owner, form.ID, "form", sourceMessageID, contracts.OpenCodeNativeEventFormCreated, data, header)
 }
 
-func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, eventType string, data json.RawMessage, header map[string]any) error {
+func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, sourceMessageID, eventType string, data json.RawMessage, header map[string]any) error {
 	if owner.sink == nil || owner.current == nil || owner.sessionID == "" {
 		return errors.New("the OpenCode control has no publication owner")
 	}
@@ -131,12 +178,16 @@ func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, 
 	r.mu.Lock()
 	if r.closed || !owner.current() {
 		r.mu.Unlock()
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
 	}
 	if previous := r.pending[key]; previous != nil {
 		if previous.owner.sessionID == owner.sessionID {
 			retry := previous.publicationFailed && !previous.published && !previous.publishing && !previous.answering
+			published := previous.published
 			r.mu.Unlock()
+			if published {
+				return bindOpenCodeControlInputs(previous, resolveOpenCodeControlInputs(owner, sourceMessageID))
+			}
 			if retry {
 				return r.publish(previous)
 			}
@@ -149,7 +200,7 @@ func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, 
 		replaced = previous
 	}
 	r.nextOrder++
-	record := &openCodePendingControl{owner: owner, requestID: key, nativeID: nativeID, instanceID: id.Generate(), kind: kind, payload: payload, order: r.nextOrder}
+	record := &openCodePendingControl{owner: owner, requestID: key, nativeID: nativeID, instanceID: id.Generate(), kind: kind, sourceMessageID: sourceMessageID, payload: payload, order: r.nextOrder}
 	r.pending[key] = record
 	automatic := r.autoApprove && kind == "permission"
 	replacedPublished := replaced != nil && replaced.published
@@ -172,7 +223,14 @@ func (r *openCodeControls) publish(record *openCodePendingControl) error {
 	}
 	record.publishing = true
 	r.mu.Unlock()
-	err := record.owner.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.owner.sessionID, RequestID: record.requestID, InstanceID: record.instanceID, Payload: record.payload})
+	inputIDs := resolveOpenCodeControlInputs(record.owner, record.sourceMessageID)
+	err := record.owner.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: record.owner.sessionID,
+		NativeInputIDs: inputIDs,
+		RequestID:      record.requestID,
+		InstanceID:     record.instanceID,
+		Payload:        record.payload,
+	})
 	r.mu.Lock()
 	record.publishing = false
 	current := r.pending[record.requestID] == record
@@ -201,6 +259,26 @@ func (r *openCodeControls) publish(record *openCodePendingControl) error {
 	return err
 }
 
+func resolveOpenCodeControlInputs(owner openCodeControlOwner, messageID string) []string {
+	if messageID == "" || owner.replyInputs == nil {
+		return nil
+	}
+	return owner.replyInputs(messageID)
+}
+
+func bindOpenCodeControlInputs(record *openCodePendingControl, inputIDs []string) error {
+	if len(inputIDs) == 0 {
+		return nil
+	}
+	err := record.owner.sink.SetNativeControlInputs(agent.NativeControlInputs{
+		SessionID: record.owner.sessionID, RequestID: record.requestID, InstanceID: record.instanceID, InputIDs: inputIDs,
+	})
+	if agent.OutputRetained(err) {
+		return nil
+	}
+	return err
+}
+
 func (r *openCodeControls) autoApproveEnabled() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -223,6 +301,9 @@ func (r *openCodeControls) setAutoApprove(enabled bool) {
 		}
 	}
 	r.mu.Unlock()
+	slices.SortFunc(publish, func(left, right *openCodePendingControl) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	for _, record := range publish {
 		if err := r.publish(record); err != nil {
 			slog.Error("OpenCode could not publish a permission after Auto-approve was disabled", "request_id", record.requestID, "error", err)
@@ -252,7 +333,9 @@ func (r *openCodeControls) approvePending() {
 		}
 	}
 	r.mu.Unlock()
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].order < candidates[j].order })
+	slices.SortFunc(candidates, func(left, right *openCodePendingControl) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	for _, selected := range candidates {
 		r.mu.Lock()
 		if r.closed || !r.autoApprove {
@@ -282,7 +365,8 @@ func (r *openCodeControls) approvePending() {
 	}
 }
 
-func (r *openCodeControls) answer(raw []byte) error {
+func (r *openCodeControls) answer(input agent.RawInput) error {
+	raw := input.Data
 	var header struct {
 		RequestID string `json:"request_id"`
 	}
@@ -293,16 +377,26 @@ func (r *openCodeControls) answer(raw []byte) error {
 	record := r.pending[header.RequestID]
 	r.mu.Unlock()
 	if record == nil {
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
+	}
+	if err := agent.ControlInstanceRefusal(record.instanceID, input.ControlInstanceID); err != nil {
+		return err
 	}
 	answer, err := readOpenCodeControlAnswer(raw, record.requestID, record.kind)
 	if err != nil {
 		return err
 	}
 	r.mu.Lock()
-	if r.closed || r.pending[record.requestID] != record || !record.owner.current() {
+	if r.closed || !record.owner.current() {
 		r.mu.Unlock()
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
+	}
+	if current := r.pending[record.requestID]; current != record {
+		r.mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return agent.ErrControlRequestNotPending
 	}
 	if record.uncertain {
 		r.mu.Unlock()
@@ -334,6 +428,9 @@ func (r *openCodeControls) reconcilePending(kind, sessionID string) error {
 		}
 	}
 	r.mu.Unlock()
+	slices.SortFunc(observations, func(left, right observation) int {
+		return cmp.Compare(left.record.order, right.record.order)
+	})
 	var snapshot []json.RawMessage
 	var err error
 	switch kind {
@@ -478,6 +575,9 @@ func (r *openCodeControls) removePendingLocked(matches func(*openCodePendingCont
 		}
 		delete(r.pending, key)
 	}
+	slices.SortFunc(retired, func(left, right *openCodePendingControl) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	return retired
 }
 

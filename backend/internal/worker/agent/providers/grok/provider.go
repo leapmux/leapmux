@@ -17,12 +17,12 @@ import (
 // and it adds what only Grok knows: where its session store lives, and the
 // replies of Grok's own dialogs.
 //
-// The browser answers each dialog in the shared shape of its surface: a plan
-// approval with the neutral allow and deny envelope, an MCP form with the
-// neutral elicitation envelope, and folder trust with the selected option of a
+// AnswerControlRequest answers each dialog in a shared shape: a plan approval
+// with the neutral allow and deny envelope, an MCP form with the neutral
+// elicitation envelope, and folder trust with the selected option of a
 // permission reply. This type rewrites each into the reply that Grok reads. A
-// question and a tool permission need no rewrite: the browser already sends
-// Grok's own reply.
+// question and a tool permission need no rewrite: AnswerControlRequest already
+// builds Grok's own reply.
 type grokProvider struct {
 	acp.Provider
 }
@@ -120,22 +120,16 @@ func withheld(ctx agent.ControlResponseContext, reason string) agent.ControlResp
 	return result
 }
 
-// decisionFor reads the neutral allow and deny envelope, and checks that it
-// answers the stored request. refusal states why the answer stands unread, for
-// the reader.
+// decisionFor reads the neutral allow and deny envelope, and checks that the
+// stored request has the id that the reply needs. refusal states why the
+// answer stands unread, for the reader.
 func decisionFor(ctx agent.ControlResponseContext) (behavior, message, refusal string) {
-	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !ok {
 		return "", "", agent.RefusalNoDecision
 	}
-	_, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	switch {
-	case !found:
+	if _, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload); !found {
 		return "", "", agent.RefusalUnreadableRequest
-	case requestID == "":
-		return "", "", agent.RefusalNoDecision
-	case requestID != agent.StoredControlRequestID(ctx, storedID):
-		return "", "", agent.RefusalOtherRequest
 	}
 	return behavior, message, ""
 }
@@ -157,10 +151,10 @@ func resolveGrokPlanApproval(ctx agent.ControlResponseContext) agent.ControlResp
 	result := agent.DefaultControlResponseResolution(ctx)
 	reply := map[string]any{}
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		reply[contracts.GrokReplyFieldOutcome] = contracts.GrokPlanOutcomeApproved
 		result.PlanModeControl = agent.PlanModeControlExit
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		reply[contracts.GrokReplyFieldOutcome] = contracts.GrokPlanOutcomeCancelled
 		if message != "" {
 			reply[contracts.GrokReplyFieldFeedback] = message
@@ -208,17 +202,19 @@ func resolveGrokElicitation(ctx agent.ControlResponseContext) agent.ControlRespo
 }
 
 // resolveGrokFolderTrust answers the question whether the repository's own
-// configuration may load. The browser draws it as a permission with two
-// options, and sends the id of the one the reader chose. The shared Allow and
-// Deny pair, which answers a request whose options the browser cannot read,
-// maps onto the same two words.
+// configuration may load. ReadControlRequest states it as a permission with
+// two options, and AnswerControlRequest selects the id of the one the reader
+// chose. Those ids are Grok's own two reply words.
 //
 // Grok reads any word but `trust` as a rejection. It keeps a rejection for the
 // rest of the process and asks about that repository no more, and it stores
 // only a grant for the workspace. So an answer this cannot read is withheld,
 // never sent as reject.
 func resolveGrokFolderTrust(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
-	outcome, ok := grokFolderTrustOutcome(ctx)
+	if _, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload); !found {
+		return withheld(ctx, agent.RefusalUnreadableRequest)
+	}
+	outcome, ok := grokFolderTrustOutcome(ctx.ResponseContent)
 	if !ok {
 		return withheld(ctx, agent.RefusalUnreadableAnswer)
 	}
@@ -231,19 +227,11 @@ func resolveGrokFolderTrust(ctx agent.ControlResponseContext) agent.ControlRespo
 	return result
 }
 
-// grokFolderTrustOutcome reads the reader's choice from either envelope.
-func grokFolderTrustOutcome(ctx agent.ControlResponseContext) (string, bool) {
-	if behavior, _, refusal := decisionFor(ctx); refusal == "" {
-		switch behavior {
-		case agent.ControlBehaviorAllow:
-			return contracts.GrokTrustOutcomeTrust, true
-		case agent.ControlBehaviorDeny:
-			return contracts.GrokTrustOutcomeReject, true
-		}
-		return "", false
-	}
+// grokFolderTrustOutcome reads the reader's choice from the permission reply
+// content: the option that it selects, when the option is one of Grok's two
+// words.
+func grokFolderTrustOutcome(content []byte) (string, bool) {
 	var reply struct {
-		ID     json.RawMessage `json:"id"`
 		Result struct {
 			Outcome struct {
 				Outcome  string `json:"outcome"`
@@ -251,12 +239,7 @@ func grokFolderTrustOutcome(ctx agent.ControlResponseContext) (string, bool) {
 			} `json:"outcome"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(ctx.ResponseContent, &reply) != nil || reply.Result.Outcome.Outcome != contracts.ACPPermissionOutcomeSelected {
-		return "", false
-	}
-	_, responseID, found := agent.ExtractJSONRPCID(ctx.ResponseContent)
-	_, storedID, stored := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	if !found || !stored || responseID != agent.StoredControlRequestID(ctx, storedID) {
+	if json.Unmarshal(content, &reply) != nil || reply.Result.Outcome.Outcome != contracts.ACPPermissionOutcomeSelected {
 		return "", false
 	}
 	switch reply.Result.Outcome.OptionID {

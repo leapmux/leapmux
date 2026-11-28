@@ -31,6 +31,47 @@ func TestFlushBufferedOutputKeepsTheRequestedCompletionAndOrder(t *testing.T) {
 	assert.Len(t, sink.ProgressUpdates(), 2)
 }
 
+func TestFlushBufferedOutputPreservesTheNativeAssistantKey(t *testing.T) {
+	b, sink := newACPTurnBase(t, agenttest.NopStdin(&bytes.Buffer{}))
+	var assigned []string
+	b.hooks.AssistantTextKey = func(messageID string) string {
+		assigned = append(assigned, messageID)
+		return "reply:" + messageID
+	}
+	b.appendThought("reasoning", "native-thought")
+	b.appendAssistant("the verified answer", "native-assistant")
+	b.FlushBufferedOutput(agent.MessageCompletionComplete)
+	b.appendAssistant("an unidentified fragment", "")
+	b.FlushBufferedOutput(agent.MessageCompletionComplete)
+
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.Equal(t, []string{"native-assistant"}, assigned)
+	assert.Empty(t, rows[0].IdempotencyKey)
+	assert.Equal(t, "reply:native-assistant", rows[1].IdempotencyKey)
+	assert.Empty(t, rows[2].IdempotencyKey)
+	assert.Equal(t, []string{"thought:reasoning", "text:the verified answer", "text:an unidentified fragment"}, assembledTexts(t, rows))
+}
+
+func TestFlushNativeReplyOutputWaitsForBothBuffersToBelongToTheReply(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPTurnBase(t, agenttest.NopStdin(&bytes.Buffer{}))
+	b.appendThought("reasoning", "native-thought")
+	b.appendAssistant("answer", "native-answer")
+	owned := map[string]bool{"native-thought": true, "native-answer": true}
+
+	b.FlushNativeReplyOutput("old-session", owned)
+	b.FlushNativeReplyOutput("session-1", map[string]bool{"native-thought": true})
+	b.FlushNativeReplyOutput("session-1", map[string]bool{"native-answer": true})
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.ProgressUpdates())
+
+	b.FlushNativeReplyOutput("session-1", owned)
+	b.FlushNativeReplyOutput("session-1", owned)
+	assert.Equal(t, []string{"thought:reasoning", "text:answer"}, assembledTexts(t, sink.Messages()))
+	assert.Len(t, sink.ProgressUpdates(), 2)
+}
+
 func TestDiscardBufferedOutputResetsEachSelectedScope(t *testing.T) {
 	for _, reasoningOnly := range []bool{false, true} {
 		b, sink := newACPTurnBase(t, agenttest.NopStdin(&bytes.Buffer{}))

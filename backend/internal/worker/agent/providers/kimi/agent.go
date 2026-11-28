@@ -40,8 +40,10 @@ type Agent struct {
 	// Without it, a tool result could precede its opener and leave the card active indefinitely.
 	dispatchMu kimiPublicationMutex
 	// Queued provider writes share one readiness owner across dispatch and session mutations.
-	publicationOnce  sync.Once
-	publicationOwner *agent.OutputOwner
+	publicationOnce     sync.Once
+	publicationOwner    *agent.OutputOwner
+	publicationQueuesMu sync.Mutex
+	publicationQueues   map[*agent.OutputQueue]struct{}
 	// The launch stamp is immutable. dispatchMu protects the warning fingerprints.
 	serverLaunchedAt      time.Time
 	storedConfigWarnings  map[kimiConfigWarningKey]struct{}
@@ -123,43 +125,43 @@ var (
 // The reply can state that the prompt started, entered the queue, or was blocked.
 const kimiSendWait = 30 * time.Second
 
-// SendInput delivers a user message to the main agent.
+// SendInput delivers a user message to the main agent and returns its receipt.
 //
 // The POST reply states whether the prompt started, queued, or was blocked.
 // This call never waits for a turn to finish.
 // A running turn returns ErrAgentBusy so the LeapMux queue retains the input.
 // Native queueing would otherwise show that input before its turn starts.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, content, attachments)
 }
 
-// SendInputForSession validates the session before it sends.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+// SendInputForSession validates the session before it sends and returns its receipt.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return errors.New("agent is stopped")
+		return agent.NativeInputReceipt{}, errors.New("agent is stopped")
 	}
 	inputState := a.inputStateLocked(kimiMainAgentID)
 	sessionID, busy, steerable, model := a.sessionID, inputState.Active, inputState.Steerable, a.settings.model
 	a.Mu.Unlock()
 	if sessionID == "" {
-		return errors.New("agent has no Kimi Code session")
+		return agent.NativeInputReceipt{}, errors.New("agent has no Kimi Code session")
 	}
 	if busy {
-		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: steerable}
+		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: steerable}
 	}
 	parts, err := buildKimiContent(content, attachments, a.modelTakesImages(model))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	// The native turn header moves the turn flag, never this reply. The server
 	// replies once the turn launched, and a short turn can END before the reply
@@ -167,23 +169,50 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	// with no event left to clear it. A second message that slips in before
 	// the native turn header waits in the server's queue and runs next, which delivers
 	// it all the same.
-	reply, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
-	if err == nil && reply.Status == kimiPromptBlocked {
+	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
+	receipt, _, err := a.settlePromptSubmission(submission, reply, err)
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	if reply.Status == kimiPromptBlocked {
 		a.PublishTurnActive()
 	}
-	return err
+	return receipt, nil
 }
 
-// submitPrompt posts one prompt to one agent of the session.
-func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any) (kimiPromptReply, error) {
+// settlePromptSubmission reconciles POST /prompts with native stream proof.
+// When the stream already echoed the submission's random prompt ID, execution
+// is proved even if the HTTP reply failed. A blocked reply that never executed
+// retires its exact reply tracker. The returned bool reports whether the
+// submission is already settled (recovered from an error or blocked), so a
+// caller such as SteerInput skips post-submit follow-ups.
+func (a *Agent) settlePromptSubmission(submission *kimiPromptSubmission, reply kimiPromptReply, err error) (agent.NativeInputReceipt, bool, error) {
+	if err != nil {
+		if submission != nil && a.hasObservedPrompt(submission) {
+			return submission.receipt(), true, nil
+		}
+		return agent.NativeInputReceipt{}, false, err
+	}
+	if reply.Status == kimiPromptBlocked {
+		if !a.hasObservedPrompt(submission) {
+			a.retireKimiInput(submission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+		}
+		return submission.receipt(), true, nil
+	}
+	return submission.receipt(), false, nil
+}
+
+// submitPrompt reserves a native identity before it posts the prompt.
+func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any) (kimiPromptReply, *kimiPromptSubmission, error) {
 	if err := kimiCheckID("session", sessionID); err != nil {
-		return kimiPromptReply{}, err
+		return kimiPromptReply{}, nil, err
 	}
 	submission, err := a.reservePromptSubmission(sessionID, agentID)
 	if err != nil {
-		return kimiPromptReply{}, err
+		return kimiPromptReply{}, nil, err
 	}
-	return a.submitReservedPrompt(submission, parts)
+	reply, err := a.submitReservedPrompt(submission, parts)
+	return reply, submission, err
 }
 
 func (a *Agent) submitReservedPrompt(submission *kimiPromptSubmission, parts []map[string]any) (kimiPromptReply, error) {
@@ -233,7 +262,7 @@ func classifyKimiDeliveryError(err error) error {
 // state says so.
 func (a *Agent) SupportsSteering() bool { return true }
 
-// SteerInput adds a message to the running main turn.
+// SteerInput adds a message to the running main turn and returns its receipt.
 //
 // It posts the message, which the server queues behind the turn, and then
 // steers the queued prompt into it. A turn that ended in between launched the
@@ -243,42 +272,42 @@ func (a *Agent) SupportsSteering() bool { return true }
 // message would wait in the server's queue behind it. SteerInput posts nothing
 // for such a turn and reports it busy, so the input queue holds the message
 // until the turn ends.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	content, attachments := request.Content, request.Attachments
 	a.Mu.Lock()
 	inputState := a.inputStateLocked(kimiMainAgentID)
 	sessionID, active, steerable, stopped, model := a.sessionID, inputState.Active, inputState.Steerable, a.StoppedLocked(), a.settings.model
 	a.Mu.Unlock()
 	if stopped {
-		return errors.New("agent is stopped")
+		return agent.NativeInputReceipt{}, errors.New("agent is stopped")
 	}
 	if !active {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if !steerable {
-		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
+		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
 	}
 	parts, err := buildKimiContent(content, attachments, a.modelTakesImages(model))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	reply, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
+	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
+	receipt, settled, err := a.settlePromptSubmission(submission, reply, err)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	if reply.Status != kimiPromptQueued {
-		// The turn ended before the prompt arrived, so the prompt started the next
-		// turn. The text reached the agent either way, and its native header moves the
-		// flag for the new turn.
-		return nil
+	if settled || reply.Status != kimiPromptQueued {
+		// Already observed executing, blocked, or launched as the next turn.
+		return receipt, nil
 	}
 	if err := kimiCheckID("prompt", reply.PromptID); err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	ctx, cancel := context.WithTimeout(a.Context(), kimiSendWait)
 	defer cancel()
 	err = a.api.post(ctx, kimiItemPath(sessionID, "prompts", reply.PromptID, ":steer"), nil, nil)
-	if err == nil {
-		return nil
+	if err == nil || a.hasObservedPrompt(submission) {
+		return receipt, nil
 	}
 	if code, stated := kimiErrorCode(err); stated && code == kimiCodePromptNotPending {
 		// The server refuses the steer in two cases, and in each one it delivers
@@ -290,7 +319,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		//     waited in the server's queue ahead of the prompt -- a task
 		//     notification, a cron fire -- started when the steerable turn ended.
 		//     The prompt stays queued and runs as the turn after that one.
-		return nil
+		return receipt, nil
 	}
 	// The prompt still waits in the server's queue and would run after the turn.
 	// Withdraw it, so a caller that retries the steer cannot deliver the text
@@ -298,10 +327,16 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	// queue must not send it again.
 	abortErr := a.api.post(ctx, kimiItemPath(sessionID, "prompts", reply.PromptID, kimiActionAbort), nil, nil)
 	if abortErr != nil {
-		return fmt.Errorf("%w: the steer failed (%v) and the queued prompt could not be withdrawn: %v",
+		if a.hasObservedPrompt(submission) {
+			return receipt, nil
+		}
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: the steer failed (%v) and the queued prompt could not be withdrawn: %v",
 			agent.ErrDeliveryUncertain, err, abortErr)
 	}
-	return fmt.Errorf("steer the queued prompt into the running turn: %w", err)
+	if a.finishPromptSubmission(submission, nil) {
+		return receipt, nil
+	}
+	return agent.NativeInputReceipt{}, fmt.Errorf("steer the queued prompt into the running turn: %w", err)
 }
 
 // kimiCodePromptNotPending (PROMPT_NOT_FOUND) refuses a steer. The server states
@@ -340,7 +375,8 @@ func (a *Agent) inputStateLocked(nativeAgentID string) agent.TurnState {
 // SendRawInput delivers a raw frame: a control response, or the raw abort
 // frame. Kimi Code reads nothing on stdin, so there is no frame to forward
 // verbatim.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	if a.IsStopped() {
 		return errors.New("agent is stopped")
 	}
@@ -348,10 +384,10 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 		return a.Interrupt(stop)
 	}
 	// LeapMux asked the workspace-trust question, so no server request waits for its answer.
-	if handled, err := a.workspaceTrust.Answer(a.sink, kimiWorkspaceTrustHost{a}, data); handled {
+	if handled, err := a.workspaceTrust.Answer(a.sink, kimiWorkspaceTrustHost{a}, input); handled {
 		return err
 	}
-	return a.deliverControlResponse(data)
+	return a.deliverControlResponse(input)
 }
 
 // isKimiRawAbort reports whether data is the raw abort frame.

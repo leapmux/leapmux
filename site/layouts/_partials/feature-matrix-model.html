@@ -1,0 +1,55 @@
+{{- /*
+  Build the normalized coding-agent feature matrix view model once per build
+  via partialCached. Shared by shortcodes/matrix.html and
+  _partials/clean-markdown-body.html so HTML tables, Markdown exports, and
+  userNote-only filtering stay in lockstep.
+*/ -}}
+{{- $data := index hugo.Data "feature_matrix" -}}
+{{- $checklist := index $data "checklist" -}}
+{{- $featureGroups := (index $data "features").groups -}}
+{{- $features := where (index $data "features").features "showInMatrix" true -}}
+{{- $states := $checklist.supportStates -}}
+{{- $stateByID := dict -}}
+{{- range $state := $states -}}
+  {{- $stateByID = merge $stateByID (dict $state.id $state) -}}
+{{- end -}}
+{{- $groupedFeatures := slice -}}
+{{- range $featureGroup := $featureGroups -}}
+  {{- $groupFeatures := where $features "group" $featureGroup.id -}}
+  {{- if $groupFeatures -}}
+    {{- $groupedFeatures = $groupedFeatures | append (dict "group" $featureGroup "features" $groupFeatures) -}}
+  {{- end -}}
+{{- end -}}
+{{- /* Emit userNote only; never emit detailNote (maintainer-only evidence). */ -}}
+{{- $providerNotes := slice -}}
+{{- range $group := $checklist.providerGroups -}}
+  {{- range $provider := $group -}}
+    {{- with $provider.userNote -}}
+      {{- $providerNotes = $providerNotes | append (dict "provider" $provider "note" .) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- $cellNotes := slice -}}
+{{- range $feature := $features -}}
+  {{- $row := index $checklist.cells $feature.id -}}
+  {{- range $group := $checklist.providerGroups -}}
+    {{- range $provider := $group -}}
+      {{- $cell := index $row $provider.id -}}
+      {{- with $cell.userNote -}}
+        {{- $state := index $stateByID $cell.support -}}
+        {{- $cellNotes = $cellNotes | append (dict "provider" $provider "feature" $feature "state" $state "note" .) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- return (dict
+  "checklist" $checklist
+  "providerGroups" $checklist.providerGroups
+  "cells" $checklist.cells
+  "states" $states
+  "stateByID" $stateByID
+  "features" $features
+  "groupedFeatures" $groupedFeatures
+  "providerNotes" $providerNotes
+  "cellNotes" $cellNotes
+) -}}

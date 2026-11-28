@@ -117,7 +117,8 @@ func (d *FakeDaemon) SetPending(questions ...string) {
 	d.pending = questions
 }
 
-const FakeQuestion = `{"id":"que_1","sessionID":"ses_9","questions":[{"question":"Which one?","header":"Task","options":[{"label":"Inspect","description":"Look only"}]}]}`
+const FakeQuestionSessionID = "ses_9"
+const FakeQuestion = `{"id":"que_1","sessionID":"` + FakeQuestionSessionID + `","questions":[{"question":"Which one?","header":"Task","options":[{"label":"Inspect","description":"Look only"}]}]}`
 
 func AskedEvent(properties string) string {
 	return "data: {\"id\":\"evt_1\",\"type\":\"" + contracts.OpenCodeEventQuestionAsked + "\",\"properties\":" + properties + "}\n\n"
@@ -186,14 +187,19 @@ func AssertAnswersAQuestionThroughTheBridge(t *testing.T, ag agent.Agent, eventR
 	t.Cleanup(cancel)
 	begin(ctx, agent.NewProviderServices(sink), daemon.Server.URL)
 	daemon.Send(AskedEvent(FakeQuestion))
+	var published []agenttest.ControlRequestRecord
 	require.Eventually(t, func() bool {
-		return len(sink.PublishedControls()) == 1
+		published = sink.PublishedControls()
+		return len(published) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
 
 	// Through the interface, which is how the worker service calls it. The stdin
 	// writer is nil, so a frame that fell through to the stream fails rather than
 	// passing unnoticed.
-	require.NoError(t, ag.SendRawInput([]byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`), agent.StopContext{}))
+	require.NoError(t, ag.SendRawInput(agent.RawInput{
+		Data:              []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`),
+		ControlInstanceID: published[0].InstanceID,
+	}))
 	answers := daemon.Answers()
 	require.Len(t, answers, 1)
 	assert.Equal(t, "reply", answers[0].Action)

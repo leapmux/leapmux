@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -26,8 +27,12 @@ type FamilyBase struct {
 	Questions openCodeQuestions
 	// MemberEvents receives native session metadata. Set it before the daemon reader starts.
 	MemberEvents func(eventType string, properties json.RawMessage)
-	// DaemonReady runs once the address of the daemon's HTTP server is known,
-	// so ReadDaemon can reach it. Its context ends with the daemon bridge. It
+	// ConfigureHooks lets a family member adjust the ACP hooks built by
+	// FamilyHooks before the process starts. Set it before the start. It may be nil.
+	ConfigureHooks func(hooks *acp.Hooks)
+	QuestionTurnID func(ctx context.Context, sessionID, assistantID string) string
+	// DaemonReady runs once the address of the daemon HTTP server is known,
+	// so Daemon() can reach it. Its context ends with the daemon bridge. It
 	// runs before the bridge reads events, so it must not wait. Set it before
 	// the start. It may be nil.
 	DaemonReady func(ctx context.Context)
@@ -81,13 +86,51 @@ func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {
 	b.Questions.Configure(sink)
 	b.Questions.observe = b.handleDaemonEvent
 	b.Questions.ready = b.DaemonReady
+	b.Questions.questionTurnID = b.QuestionTurnID
+	b.Questions.questionOwner = b.sessionControlOwner
 }
 
-// ReadDaemon GETs one route of the daemon's HTTP server, such as a route that
-// one member of the family serves alone, and returns its body.
-func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, error) {
-	raw, _, err := b.Questions.readRoute(ctx, route)
-	return raw, err
+func (b *FamilyBase) controlOwner(sessionID string, _ *providerkit.ParsedLine, _ bool) (acp.ControlOwnerResolution, error) {
+	if sessionID == "" || b.IsCurrentSession(sessionID) {
+		return acp.ControlOwnerResolution{}, nil
+	}
+	child, err := b.sessionControlOwner(sessionID)
+	if err != nil {
+		slog.Warn("resolve the child permission owner", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
+	}
+	if err != nil || child == nil {
+		return acp.ControlOwnerResolution{Refuse: true}, nil
+	}
+	return acp.ControlOwnerResolution{Sink: child}, nil
+}
+
+func (b *FamilyBase) sessionControlOwner(sessionID string) (agent.ControlServices, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	if b.IsCurrentSession(sessionID) {
+		if sink := b.Sink(); sink != nil {
+			return sink, nil
+		}
+		return b.Questions.sink, nil
+	}
+	owner, found := b.SessionOwner(sessionID)
+	if !found {
+		return nil, nil
+	}
+	if err := owner.BindChildSessionID(sessionID); err != nil {
+		if errors.Is(err, agent.ErrChildIdentityRefused) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return owner, nil
+}
+
+// Daemon returns the HTTP client and readiness handle for the member's
+// discovered daemon server.
+func (b *FamilyBase) Daemon() *FamilyDaemon {
+	return &b.Questions.daemon
 }
 
 // SendRawInput answers a question through the daemon's HTTP server, and sends every
@@ -97,11 +140,11 @@ func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, erro
 // that LeapMux answers by id on the stream it arrived on; a question never reached
 // that stream, so it has no id there to answer and the daemon reads its answer from
 // a route instead.
-func (b *FamilyBase) SendRawInput(raw []byte, stop agent.StopContext) error {
-	if handled, err := b.Questions.answer(b.Context(), raw); handled {
+func (b *FamilyBase) SendRawInput(input agent.RawInput) error {
+	if handled, err := b.Questions.answer(b.Context(), input); handled {
 		return err
 	}
-	return b.Base.SendRawInput(raw, stop)
+	return b.Base.SendRawInput(input)
 }
 
 // SteerInput sends the steer as a second prompt on the running session.
@@ -113,12 +156,13 @@ func (b *FamilyBase) SendRawInput(raw []byte, stop agent.StopContext) error {
 //
 // A STOPPED agent states nothing: the reader ended the turn themselves, so a steer
 // that did not land is the outcome they asked for.
-func (b *FamilyBase) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (b *FamilyBase) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	content, attachments := request.Content, request.Attachments
 	_, active, sessionID, _ := b.SteerTarget()
 	if !active {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
-	return b.SendPromptDetached(sessionID, content, attachments, func(_ json.RawMessage, err error) {
+	return agent.NativeInputReceipt{}, b.SendPromptDetached(sessionID, content, attachments, func(_ json.RawMessage, err error) {
 		b.ReportSteerFailure(err)
 	})
 }

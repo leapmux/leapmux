@@ -46,3 +46,15 @@ func (m *Manager) PendingPresenceClearsForTest() int {
 	defer m.presenceCtl.mu.Unlock()
 	return len(m.presenceCtl.clearTimers)
 }
+
+// DiffProjectionForBatch exposes diffProjectionForBatch to external crdt tests
+// without exporting a test-only wrapper in production builds.
+func DiffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) IndexDiff {
+	return diffProjectionForBatch(prev, next, batch, nil)
+}
+
+// DiffProjection exposes diffProjection to external crdt tests without
+// exporting a test-only wrapper in production builds.
+func DiffProjection(prev, next *Projection) IndexDiff {
+	return diffProjection(prev, next, nil)
+}

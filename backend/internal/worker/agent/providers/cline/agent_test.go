@@ -1,6 +1,7 @@
 package cline
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func TestSendInputRefusesWhileATurnRuns(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.startTurn(t, "First.")
-	err := r.agent.SendInput("Second.", nil)
+	_, err := r.agent.SendInput("Second.", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, &r.sink.Sink, r.agent, err)
 	var busy *agent.AgentBusyError
 	require.ErrorAs(t, err, &busy)
@@ -56,7 +57,7 @@ func TestSendInputForSessionRejectsMissingAndReplacedSessions(t *testing.T) {
 	r := newRig(t)
 	agenttest.AssertRejectsMissingAndReplacedSessions(t, r.agent)
 	assert.Empty(t, r.hub.commandsNamed(commandSessionSendInput))
-	require.NoError(t, r.agent.SendInputForSession(r.sessionID(), "Current.", nil))
+	require.NoError(t, agenttest.SendInputForSession(r.agent, r.sessionID(), "Current.", nil))
 }
 
 func TestSendInputReleasesTheTurnWhenClineRefusesTheMessage(t *testing.T) {
@@ -65,7 +66,7 @@ func TestSendInputReleasesTheTurnWhenClineRefusesTheMessage(t *testing.T) {
 	r.hub.handle(commandSessionSendInput, func(fakeCommand) fakeReply {
 		return fakeReply{Code: "invalid_session_input", Message: "session input requires a prompt or attachment"}
 	})
-	err := r.agent.SendInput("Hello.", nil)
+	_, err := r.agent.SendInput("Hello.", nil)
 	var refused *HubCommandError
 	require.ErrorAs(t, err, &refused)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "a refusal is certain")
@@ -80,7 +81,7 @@ func TestSendInputReportsAnUnconfirmedDelivery(t *testing.T) {
 	r.agent.sendWait = 50 * time.Millisecond
 	// The hub reads the command and never starts the run.
 	r.hub.handle(commandSessionSendInput, func(fakeCommand) fakeReply { return fakeReply{Hold: true} })
-	err := r.agent.SendInput("Hello.", nil)
+	_, err := r.agent.SendInput("Hello.", nil)
 	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.True(t, r.turnActive(), "an uncertain delivery keeps the turn: the run may have started")
 }
@@ -92,7 +93,7 @@ func TestSendInputReportsALostConnectionAsUncertain(t *testing.T) {
 		go r.hub.drop()
 		return fakeReply{Hold: true}
 	})
-	err := r.agent.SendInput("Hello.", nil)
+	_, err := r.agent.SendInput("Hello.", nil)
 	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.True(t, r.turnActive())
 }
@@ -100,7 +101,7 @@ func TestSendInputReportsALostConnectionAsUncertain(t *testing.T) {
 func TestSendInputRefusesAMessageWithNothingInIt(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.Error(t, r.agent.SendInput("  ", nil))
+	require.Error(t, agenttest.SendInput(r.agent, "  ", nil))
 	assert.False(t, r.turnActive())
 	assert.Empty(t, r.hub.commandsNamed(commandSessionSendInput))
 }
@@ -109,7 +110,7 @@ func TestSendInputRefusesAStoppedAgent(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.agent.Stop()
-	require.ErrorIs(t, r.agent.SendInput("Hello.", nil), errAgentStopped)
+	require.ErrorIs(t, agenttest.SendInput(r.agent, "Hello.", nil), errAgentStopped)
 }
 
 func TestATurnReplyThatFailsAfterTheStartEndsTheTurnAsAnError(t *testing.T) {
@@ -130,10 +131,10 @@ func TestATurnReplyThatFailsAfterTheStartEndsTheTurnAsAnError(t *testing.T) {
 func TestSteerInputJoinsTheRunningTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.ErrorIs(t, r.agent.SteerInput("Early.", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Early."}), agent.ErrNoActiveTurn)
 	r.startTurn(t, "Hello.")
 	require.True(t, r.agent.SupportsSteering())
-	require.NoError(t, r.agent.SteerInput("Also this.", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Also this."}))
 	commands := r.hub.commandsNamed(commandSessionSendInput)
 	require.Len(t, commands, 2)
 	assert.Equal(t, deliverySteer, commands[1].str("delivery"))
@@ -144,7 +145,7 @@ func TestSteerInputRefusesATurnClineStartedByItself(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.agent.ensureTurn()
-	err := r.agent.SteerInput("Hello.", nil)
+	_, err := r.agent.SteerInput(agent.SteerRequest{Content: "Hello."})
 	var busy *agent.AgentBusyError
 	require.ErrorAs(t, err, &busy)
 	assert.False(t, busy.ActiveTurnSteerable)
@@ -158,7 +159,7 @@ func TestSteerInputReportsARefusal(t *testing.T) {
 	r.hub.handle(commandSessionSendInput, func(fakeCommand) fakeReply {
 		return fakeReply{Code: "session_not_running", Message: "no run"}
 	})
-	err := r.agent.SteerInput("Late.", nil)
+	_, err := r.agent.SteerInput(agent.SteerRequest{Content: "Late."})
 	var refused *HubCommandError
 	require.ErrorAs(t, err, &refused)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
@@ -230,7 +231,7 @@ func TestAttachmentsReachClineAsImagesAndFiles(t *testing.T) {
 		{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}},
 		{Filename: "notes.md", MimeType: "text/markdown", Data: []byte("# Notes\n")},
 	}
-	require.NoError(t, r.agent.SendInput("Look.", attachments))
+	require.NoError(t, agenttest.SendInput(r.agent, "Look.", attachments))
 	command, ok := r.hub.waitCommand(commandSessionSendInput)
 	require.True(t, ok)
 	var files struct {
@@ -247,7 +248,7 @@ func TestAttachmentsReachClineAsImagesAndFiles(t *testing.T) {
 func TestSendInputRefusesAnAttachmentClineCannotRead(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	err := r.agent.SendInput("Read.", []*leapmuxv1.Attachment{{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")}})
+	_, err := r.agent.SendInput("Read.", []*leapmuxv1.Attachment{{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PDF")
 	assert.False(t, r.turnActive())
@@ -305,7 +306,7 @@ func TestSendInputReleasesTheTurnWhenTheMessageCannotLeave(t *testing.T) {
 		t.Parallel()
 		r := newRig(t)
 		r.agent.hub.close()
-		err := r.agent.SendInput("Hello.", nil)
+		_, err := r.agent.SendInput("Hello.", nil)
 		require.ErrorIs(t, err, errHubClosed)
 		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 		assert.False(t, r.turnActive())
@@ -320,7 +321,7 @@ func TestSendInputReleasesTheTurnWhenTheMessageCannotLeave(t *testing.T) {
 		conn := r.agent.hub.conn
 		r.agent.hub.mu.Unlock()
 		require.NoError(t, conn.CloseNow())
-		err := r.agent.SendInput("Hello.", nil)
+		_, err := r.agent.SendInput("Hello.", nil)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the frame never left")
 		assert.Contains(t, err.Error(), "deliver the message to Cline")
@@ -345,7 +346,7 @@ func TestARunThatStartsAfterTheSenderGaveUpKeepsItsTurn(t *testing.T) {
 		sent <- c.RequestID
 		return fakeReply{Hold: true}
 	})
-	require.ErrorIs(t, r.agent.SendInput("Hello.", nil), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, agenttest.SendInput(r.agent, "Hello.", nil), agent.ErrDeliveryUncertain)
 	requestID := <-sent
 
 	r.emit(eventRunStarted, map[string]any{"requestId": requestID, "clientId": r.agent.clientID})
@@ -376,7 +377,7 @@ func TestSteerInputReportsALostConnectionAsUncertain(t *testing.T) {
 		go r.hub.drop()
 		return fakeReply{Hold: true}
 	})
-	err := r.agent.SteerInput("Also this.", nil)
+	_, err := r.agent.SteerInput(agent.SteerRequest{Content: "Also this."})
 	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.True(t, r.turnActive(), "the steer changes nothing about the turn")
 }
@@ -385,12 +386,79 @@ func TestSteerInputRefusesWhatCannotJoinTheTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.startTurn(t, "Hello.")
-	err := r.agent.SteerInput("Read.", []*leapmuxv1.Attachment{{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")}})
+	_, err := r.agent.SteerInput(agent.SteerRequest{Content: "Read.", Attachments: []*leapmuxv1.Attachment{{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")}}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PDF")
-	require.Error(t, r.agent.SteerInput(" ", nil), "a steer with nothing in it")
+	require.Error(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: " "}), "a steer with nothing in it")
 	assert.Len(t, r.hub.commandsNamed(commandSessionSendInput), 1, "no refused steer leaves")
 
 	r.agent.Stop()
-	require.ErrorIs(t, r.agent.SteerInput("Late.", nil), errAgentStopped)
+	require.ErrorIs(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Late."}), errAgentStopped)
+}
+
+func TestSteerInputAdmissionTimeoutForgetsProofAndReturnsUncertain(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.startTurn(t, "Hello.")
+	r.agent.sendWait = 20 * time.Millisecond
+	r.hub.handle(commandSessionSendInput, func(fakeCommand) fakeReply {
+		return fakeReply{Payload: map[string]any{"queued": true}}
+	})
+
+	receipt, err := r.agent.SteerInput(agent.SteerRequest{
+		InputID:   "steer-timeout-1",
+		AttemptID: "att-1",
+		Content:   "Steer without admission event.",
+	})
+	assert.Empty(t, receipt)
+	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	assert.ErrorContains(t, err, context.DeadlineExceeded.Error())
+
+	r.agent.Mu.Lock()
+	assert.Empty(t, r.agent.steerProofs.writes, "timed-out steer must be forgotten from steerProofs")
+	assert.Nil(t, r.agent.steerProofs.admission)
+	r.agent.Mu.Unlock()
+}
+
+func TestSteerInputSucceedsWhenHubReplyFailsAfterAdmission(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.startTurn(t, "Hello.")
+
+	type steerRes struct {
+		receipt agent.NativeInputReceipt
+		err     error
+	}
+	resCh := make(chan steerRes, 1)
+	go func() {
+		receipt, err := r.agent.SteerInput(agent.SteerRequest{
+			InputID:   "steer-admitted-1",
+			AttemptID: "att-1",
+			Content:   "Admitted before reply fails.",
+		})
+		resCh <- steerRes{receipt: receipt, err: err}
+	}()
+
+	steerCmd, ok := r.hub.waitCommand(commandSessionSendInput)
+	require.True(t, ok)
+
+	r.agent.Mu.Lock()
+	seq := r.agent.steerProofs.lastSequence
+	r.agent.Mu.Unlock()
+	feed := func(event string, payload any) {
+		seq++
+		raw, err := json.Marshal(payload)
+		require.NoError(t, err)
+		r.agent.handleEvent(hubEvent{Event: event, SessionID: r.sessionID(), Sequence: seq, Payload: raw})
+	}
+	queued := pendingPrompt("native-p-admitted", "Admitted before reply fails.")
+	feed(eventRunStarted, map[string]string{"requestId": steerCmd.RequestID, "clientId": steerCmd.ClientID})
+	feed(eventPendingPrompts, map[string]any{"prompts": []nativePendingPrompt{queued}})
+
+	// Now fail the hub command reply after native admission already completed.
+	r.hub.reply(steerCmd.RequestID, fakeReply{Code: "internal_error", Message: "reply failed after admission"})
+
+	res := <-resCh
+	require.NoError(t, res.err)
+	assert.Empty(t, res.receipt)
 }

@@ -241,12 +241,12 @@ func TestLoadOrCreateWorkerState_AnUnusableStateReRegisters(t *testing.T) {
 			path, _ := seedUsableState(t, dir, soloState{WorkerID: "w-old", AuthToken: "tok", RegisteredBy: "admin-1"})
 			return &fakeRegistrar{registration: activeRegistration("admin-1", workerkeystest.Keys(0x77))}, path
 		},
-		"a deregistering row": func(t *testing.T, dir string) (*fakeRegistrar, string) {
+		"a deleted row": func(t *testing.T, dir string) (*fakeRegistrar, string) {
 			t.Helper()
 			path, keys := seedUsableState(t, dir, soloState{WorkerID: "w-old", AuthToken: "tok", RegisteredBy: "admin-1"})
 			return &fakeRegistrar{registration: hub.WorkerRegistration{
 				Owner:      "admin-1",
-				Status:     leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
+				Status:     leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED,
 				PublicKeys: keys,
 			}}, path
 		},

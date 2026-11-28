@@ -34,10 +34,9 @@ test.describe('cli-created workspace hydrates', () => {
     const created = await runCLI(cli, [
       'workspace',
       'create',
-      '--title',
       `access-cli-${Date.now()}`,
-    ]) as { workspace_id?: string } | null
-    const second = created?.workspace_id
+    ]) as { id?: string } | null
+    const second = created?.id
     if (!second)
       throw new Error('The CLI reported no ID for the workspace that it created.')
     const agentId = await cliAgentOpen(cli, { workspaceId: second, workerId: leapmuxServer.workerId })
@@ -57,5 +56,15 @@ test.describe('cli-created workspace hydrates', () => {
       tab,
       'a bare "Agent" here means the already-open channel could not serve the CLI-made workspace',
     ).toHaveText(HYDRATED_AGENT_LABEL)
+
+    // Renaming the CLI-created workspace via CLI must update the sidebar live while preserving hydration.
+    await runCLI(cli, [
+      'workspace',
+      'rename',
+      second,
+      'Hydrated Renamed',
+    ])
+    await expect(workspaceRowTitle(page, second)).toHaveText('Hydrated Renamed')
+    await expect(tab).toHaveText(HYDRATED_AGENT_LABEL)
   })
 })

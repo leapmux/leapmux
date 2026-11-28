@@ -19,7 +19,8 @@ const (
 	grokSessionUpdateMethod = "_x.ai/session/update"
 	// grokQueueChangedMethod reports the prompt queue of one session, and the
 	// prompt that runs now. It is the only signal that a turn started.
-	grokQueueChangedMethod = "_x.ai/queue/changed"
+	grokQueueChangedMethod       = "_x.ai/queue/changed"
+	grokInterjectionNotification = "_x.ai/session/interjection"
 	// grokTaskBackgroundedMethod and grokTaskCompletedMethod report a shell
 	// command that runs in the background.
 	grokTaskBackgroundedMethod = "_x.ai/task_backgrounded"
@@ -69,7 +70,6 @@ var grokKnownTwinNotifications = map[string]bool{
 	"_x.ai/session/close":           true,
 	"_x.ai/session/load":            true,
 	"_x.ai/session/prompt_complete": true,
-	"_x.ai/session/interjection":    true,
 	"_x.ai/session/setup":           true,
 	"_x.ai/session/update":          true,
 	"_x.ai/session/upsert":          true,
@@ -93,7 +93,7 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 		contracts.GrokMethodFolderTrust:
 		return a.publishGrokControlRequest(line)
 	case contracts.GrokMethodSessionNotification, grokSessionUpdateMethod,
-		grokTaskBackgroundedMethod, grokTaskCompletedMethod, grokQueueChangedMethod:
+		grokTaskBackgroundedMethod, grokTaskCompletedMethod, grokQueueChangedMethod, grokInterjectionNotification:
 		if line.HasID() {
 			return false
 		}
@@ -136,11 +136,14 @@ func (a *Agent) notificationSession(raw json.RawMessage) (string, bool) {
 
 func (a *Agent) dispatchSessionNotification(sessionID string, raw json.RawMessage) {
 	line := providerkit.ParseLine(raw)
-	if line.Method == grokQueueChangedMethod {
+	switch line.Method {
+	case grokQueueChangedMethod:
 		a.handleQueueChanged(line.Params)
-		return
+	case grokInterjectionNotification:
+		a.observeGrokInterjection(sessionID, line.Params)
+	default:
+		a.handleSessionNotification(sessionID, line)
 	}
-	a.handleSessionNotification(sessionID, line)
 }
 
 // completeURLElicitation accepts the URL elicitation flow that Grok's own

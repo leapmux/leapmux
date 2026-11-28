@@ -49,6 +49,7 @@ func (a *Agent) finishPiProcessExit() {
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
 	a.closeOpenBgTasks(agent.IncompleteTaskStatus(completion))
+	a.resolveIdentifiedPiSteers(agent.SteerOutcomeUncertain)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	providerkit.ResetSpansAndProgress(a.sink)
 }
@@ -90,7 +91,7 @@ func (a *Agent) Wait() error {
 	a.stopPiGoalRefresh()
 	a.dialogDeadlines.StopAll()
 	a.finishPiProcessExit()
-	return err
+	return errors.Join(err, a.directory.Close())
 }
 
 // Interrupt writes the abort command for the active Pi turn.

@@ -30,6 +30,94 @@ type ManagerFactory func(ctx context.Context, owner userid.UserID) (*Manager, er
 // hundreds of seldom-revisited users over a uptime.
 const DefaultManagerIdleTTL = 10 * time.Minute
 
+const defaultLifecycleDrainTimeout = 15 * time.Second
+
+// LifecycleDrain tracks one in-flight coalesced lifecycle-outbox drain for an
+// owner. Multiple callers requesting a drain for the same user share one flight.
+type LifecycleDrain struct {
+	done chan struct{}
+	err  error
+}
+
+// Done returns a channel that closes when the drain flight finishes.
+func (d *LifecycleDrain) Done() <-chan struct{} { return d.done }
+
+// Err returns the drain error after Done closes.
+func (d *LifecycleDrain) Err() error { return d.err }
+
+// wakeEntry tracks one per-user broadcast wake channel and its active waiter count.
+type wakeEntry struct {
+	ch      chan struct{}
+	waiters int
+}
+
+// wakeChannels manages per-user one-shot wake channels with waiter reference
+// counting and a shutdown latch so disconnecting waiters clean up map entries
+// and closed registries never re-insert dead channels.
+type wakeChannels struct {
+	mu      sync.Mutex
+	entries map[string]*wakeEntry
+	closed  bool
+}
+
+func (w *wakeChannels) subscribe(userID string) (<-chan struct{}, func(), bool) {
+	if userID == "" {
+		return nil, func() {}, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil, func() {}, false
+	}
+	if w.entries == nil {
+		w.entries = make(map[string]*wakeEntry)
+	}
+	entry := w.entries[userID]
+	if entry == nil {
+		entry = &wakeEntry{ch: make(chan struct{})}
+		w.entries[userID] = entry
+	}
+	entry.waiters++
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			if w.entries[userID] != entry {
+				return
+			}
+			entry.waiters--
+			if entry.waiters == 0 {
+				delete(w.entries, userID)
+			}
+		})
+	}
+	return entry.ch, release, true
+}
+
+func (w *wakeChannels) signal(userID string) {
+	if userID == "" {
+		return
+	}
+	w.mu.Lock()
+	entry := w.entries[userID]
+	if entry != nil {
+		delete(w.entries, userID)
+		close(entry.ch)
+	}
+	w.mu.Unlock()
+}
+
+func (w *wakeChannels) closeAll() {
+	w.mu.Lock()
+	w.closed = true
+	for userID, entry := range w.entries {
+		close(entry.ch)
+		delete(w.entries, userID)
+	}
+	w.mu.Unlock()
+}
+
 // Registry hands out per-user managers, lazy-loading on first
 // reference. The registry is single-instance: this hub deployment
 // owns every user's manager, and there is no leader election.
@@ -38,16 +126,24 @@ const DefaultManagerIdleTTL = 10 * time.Minute
 // presence-tracked clients, and no submit activity within idleTTL.
 // Evicted managers re-bootstrap from disk on the next Get().
 type Registry struct {
-	mu       sync.Mutex
-	managers map[string]*Manager
-	factory  ManagerFactory
-	logger   *slog.Logger
-	idleTTL  time.Duration
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	// closed refuses every later Get. Shutdown sets it under r.mu: a manager
-	// that a Get created after the sweep snapshotted would run past the store
-	// close with nothing stopping it.
+	mu           sync.Mutex
+	managers     map[string]*Manager
+	layoutWakes  wakeChannels
+	workerWakes  wakeChannels
+	drains       map[string]*LifecycleDrain
+	factory      ManagerFactory
+	outbox       LifecycleOutboxReader
+	drainTimeout time.Duration
+	drainCtx     context.Context
+	cancelDrains context.CancelFunc
+	drainsWG     sync.WaitGroup
+	logger       *slog.Logger
+	idleTTL      time.Duration
+	stopCh       chan struct{}
+	doneCh       chan struct{}
+	// closed refuses every later Get and StartLifecycleDrain. Shutdown sets it
+	// under r.mu: a manager or drain started after the sweep snapshotted would
+	// run past the store close with nothing stopping it.
 	closed bool
 }
 
@@ -62,6 +158,12 @@ func WithManagerIdleTTL(d time.Duration) RegistryOption {
 	return func(r *Registry) { r.idleTTL = d }
 }
 
+// WithLifecycleOutbox attaches the lifecycle outbox reader used by
+// StartLifecycleDrain and DrainLifecycle.
+func WithLifecycleOutbox(reader LifecycleOutboxReader) RegistryOption {
+	return func(r *Registry) { r.outbox = reader }
+}
+
 // NewRegistry returns an empty registry. Without options, the
 // DefaultManagerIdleTTL janitor runs in the background; pass
 // WithManagerIdleTTL(0) to disable.
@@ -69,13 +171,18 @@ func NewRegistry(factory ManagerFactory, logger *slog.Logger, opts ...RegistryOp
 	if logger == nil {
 		logger = slog.Default()
 	}
+	drainCtx, cancelDrains := context.WithCancel(context.Background())
 	r := &Registry{
-		managers: map[string]*Manager{},
-		factory:  factory,
-		logger:   logger,
-		idleTTL:  DefaultManagerIdleTTL,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		managers:     map[string]*Manager{},
+		drains:       map[string]*LifecycleDrain{},
+		factory:      factory,
+		drainTimeout: defaultLifecycleDrainTimeout,
+		drainCtx:     drainCtx,
+		cancelDrains: cancelDrains,
+		logger:       logger,
+		idleTTL:      DefaultManagerIdleTTL,
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -162,6 +269,7 @@ func (r *Registry) Get(ctx context.Context, userID string) (*Manager, error) {
 		go m.Discard()
 		return existing, nil
 	}
+	m.setOnLayoutEvents(func() { r.SignalLayoutEvents(userID) })
 	r.managers[userID] = m
 	go func() {
 		runCtx, cancel := context.WithCancel(context.Background())
@@ -188,6 +296,15 @@ func (r *Registry) Get(ctx context.Context, userID string) (*Manager, error) {
 	return m, nil
 }
 
+// Loaded returns the manager already loaded for userID without bootstrapping
+// one or stamping idle activity.
+func (r *Registry) Loaded(userID string) (*Manager, bool) {
+	if r == nil {
+		return nil, false
+	}
+	return r.loaded(userID)
+}
+
 // loaded returns the manager already loaded for userID. It never bootstraps
 // one and stamps no activity: a broadcast to a user's subscribers is not that
 // user's activity.
@@ -198,34 +315,159 @@ func (r *Registry) loaded(userID string) (*Manager, bool) {
 	return m, ok
 }
 
-// BroadcastWorkersChanged tells every live /ws/userevents subscriber of userID
-// whose credential holds worker:read that the user's worker list changed (see
+// BroadcastWorkersChanged wakes any WorkerInventoryWake waiters for userID and
+// tells every live /ws/userevents subscriber of userID whose credential holds
+// worker:read that the user's worker list changed (see
 // Manager.BroadcastWorkersChanged).
 //
 // It uses only a manager that is already loaded and never bootstraps one: the
 // registry evicts only a manager with no subscriber (see SweepIdle), so a
-// loaded-only lookup reaches every live subscriber, and a user with no
-// manager has nobody to tell. A caller sends it after the change committed,
-// never inside a store transaction.
+// loaded-only lookup reaches every live subscriber, while WorkerInventoryWake
+// waiters still wake even when no manager is loaded. A caller sends it after
+// the change committed, never inside a store transaction.
 func (r *Registry) BroadcastWorkersChanged(userID string) {
-	if r == nil {
+	if r == nil || userID == "" {
 		return
 	}
-	if m, ok := r.loaded(userID); ok {
+	r.mu.Lock()
+	m := r.managers[userID]
+	r.mu.Unlock()
+	r.workerWakes.signal(userID)
+	if m != nil {
 		m.BroadcastWorkersChanged()
 	}
 }
 
-// Shutdown stops the janitor and every manager under one deadline, and waits
-// for them.
+// WorkerInventoryWake returns a channel that closes when
+// BroadcastWorkersChanged runs for userID, along with an idempotent release
+// function that cleans up the registration when the caller stops waiting.
+// Capture the channel before reading worker inventory so a concurrent change
+// cannot be missed, even before a Manager is loaded or across idle eviction.
+// Returns (nil, noop) when r is nil, userID is blank, or Shutdown has begun.
+func (r *Registry) WorkerInventoryWake(userID string) (<-chan struct{}, func()) {
+	if r == nil {
+		return nil, func() {}
+	}
+	ch, release, _ := r.workerWakes.subscribe(userID)
+	return ch, release
+}
+
+// LayoutEventWake returns a channel that closes when layout facts or pending
+// lifecycle mutations are signaled for userID, along with an idempotent release
+// function that cleans up the registration when the caller stops waiting.
+// Capture the channel before reading the layout log so a concurrent commit
+// cannot be missed, even before a Manager is loaded or across idle eviction.
+// Returns (nil, noop) when r is nil, userID is blank, or Shutdown has begun.
+func (r *Registry) LayoutEventWake(userID string) (<-chan struct{}, func()) {
+	if r == nil {
+		return nil, func() {}
+	}
+	ch, release, _ := r.layoutWakes.subscribe(userID)
+	return ch, release
+}
+
+// SignalLayoutEvents wakes every waiter watching userID's layout history.
+func (r *Registry) SignalLayoutEvents(userID string) {
+	if r == nil || userID == "" {
+		return
+	}
+	r.layoutWakes.signal(userID)
+}
+
+// StartLifecycleDrain starts or joins the single in-flight multi-page
+// lifecycle-outbox drain for userID. Shutdown cancels and joins all active
+// drain goroutines before stopping managers.
+func (r *Registry) StartLifecycleDrain(userID string) *LifecycleDrain {
+	done := func(err error) *LifecycleDrain {
+		d := &LifecycleDrain{done: make(chan struct{}), err: err}
+		close(d.done)
+		return d
+	}
+	if r == nil || r.outbox == nil || userID == "" {
+		return done(nil)
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return done(ErrRegistryClosed)
+	}
+	if existing := r.drains[userID]; existing != nil {
+		r.mu.Unlock()
+		return existing
+	}
+	d := &LifecycleDrain{done: make(chan struct{})}
+	r.drains[userID] = d
+	r.drainsWG.Add(1)
+	r.mu.Unlock()
+
+	go func() {
+		defer r.drainsWG.Done()
+		work, cancel := context.WithTimeout(r.drainCtx, r.drainTimeout)
+		defer cancel()
+		d.err = r.runLifecycleDrain(work, userID)
+		r.mu.Lock()
+		delete(r.drains, userID)
+		close(d.done)
+		r.mu.Unlock()
+	}()
+	return d
+}
+
+// DrainLifecycle drains pending lifecycle-outbox rows for userID, coalescing
+// concurrent callers onto one flight.
+func (r *Registry) DrainLifecycle(ctx context.Context, userID string) error {
+	if r == nil || r.outbox == nil || userID == "" {
+		return nil
+	}
+	d := r.StartLifecycleDrain(userID)
+	select {
+	case <-d.Done():
+		return d.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Registry) runLifecycleDrain(ctx context.Context, userID string) error {
+	mgr, err := r.Get(ctx, userID)
+	if err != nil {
+		return err
+	}
+	var lastFirstID int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		firstID, listed, err := mgr.submitLifecyclePage(ctx, r.outbox)
+		if err != nil {
+			return err
+		}
+		if listed == 0 {
+			return nil
+		}
+		if lastFirstID != 0 && firstID == lastFirstID {
+			return nil
+		}
+		lastFirstID = firstID
+	}
+}
+
+// Shutdown cancels active lifecycle drains, stops the janitor, and stops every
+// manager under one deadline, waiting for each to finish.
 //
-// The manager stops start before either wait, one goroutine per manager. A
-// stop that queued behind another would leave later managers running past the
-// caller's store close, and a stop that queued behind the janitor would give a
-// wedged janitor the whole budget. A manager still running at the deadline is
-// counted in a Warn and abandoned to the process exit.
+// Active lifecycle drains are cancelled and joined before managers stop so no
+// drain submits into a stopped manager or reads the store after Shutdown
+// returns. The manager stops start before waiting on the janitor, one
+// goroutine per manager. A manager still running at the deadline is counted in
+// a Warn and abandoned to the process exit.
 func (r *Registry) Shutdown(timeout time.Duration) {
-	// Stop the janitor first so it doesn't race the manager teardown.
+	// Cancel active lifecycle drains first so none starts new work against
+	// managers or the store.
+	if r.cancelDrains != nil {
+		r.cancelDrains()
+	}
+
+	// Stop the janitor next so it doesn't race the manager teardown.
 	select {
 	case <-r.stopCh:
 		// already stopped
@@ -240,9 +482,20 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 		managers = append(managers, m)
 	}
 	r.managers = map[string]*Manager{}
+	r.layoutWakes.closeAll()
+	r.workerWakes.closeAll()
 	r.mu.Unlock()
 
 	deadline := time.Now().Add(timeout)
+
+	drainsDone := make(chan struct{})
+	go func() {
+		r.drainsWG.Wait()
+		close(drainsDone)
+	}()
+	drain.WaitBounded(drainsDone, time.Until(deadline),
+		"crdt registry: lifecycle drains did not finish in the shutdown budget; abandoning them")
+
 	var stops drain.Counter
 	var running atomic.Int64
 	running.Store(int64(len(managers)))
@@ -255,7 +508,7 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 		}(m)
 	}
 
-	drain.WaitBounded(r.doneCh, timeout,
+	drain.WaitBounded(r.doneCh, time.Until(deadline),
 		"crdt registry: janitor did not stop in the shutdown budget; abandoning the sweep")
 	if !stops.Wait(time.Until(deadline), "") {
 		r.logger.Warn("crdt registry: managers still running at the shutdown deadline",

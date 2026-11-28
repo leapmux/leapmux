@@ -2,12 +2,14 @@ package grok
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -132,6 +134,67 @@ func (p grokRequestParams) key() controlKey {
 	return controlKey{sessionID: p.SessionID, toolCallID: toolCallID}
 }
 
+// A child permission uses the root session in the request. Grok emits a
+// pending interaction under the session that owns the tool before it sends
+// the request. A tool ID shared by pending sessions cannot identify an owner.
+func (a *Agent) resolveGrokPermissionSession(sessionID string, line *providerkit.ParsedLine) (string, error) {
+	var params grokRequestParams
+	if sessionID == "" || !a.IsCurrentSession(sessionID) || json.Unmarshal(line.Params, &params) != nil || params.ToolCall.ToolCallID == "" {
+		return sessionID, nil
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	var owner string
+	for key := range a.controls.checks {
+		if key.toolCallID != params.ToolCall.ToolCallID {
+			continue
+		}
+		if owner != "" && owner != key.sessionID {
+			return "", fmt.Errorf("the Grok tool %q has a pending permission in multiple sessions", key.toolCallID)
+		}
+		owner = key.sessionID
+	}
+	if owner == "" {
+		owner = sessionID
+	}
+	return owner, nil
+}
+
+func (a *Agent) grokControlOwner(sessionID string, line *providerkit.ParsedLine, needsTurn bool) (acp.ControlOwnerResolution, error) {
+	resolved, err := a.resolveGrokPermissionSession(sessionID, line)
+	if err != nil {
+		return acp.ControlOwnerResolution{}, err
+	}
+	res := acp.ControlOwnerResolution{SessionID: resolved}
+	if resolved != "" && !a.IsCurrentSession(resolved) {
+		child, err := a.grokChildPermissionOwner(resolved)
+		if err != nil {
+			slog.Warn("resolve the child permission owner", "agent_id", a.AgentID(), "session_id", resolved, "error", err)
+		}
+		if err != nil || child == nil {
+			res.Refuse = true
+			return res, nil
+		}
+		res.Sink = child
+	}
+	if needsTurn {
+		effective := resolved
+		if effective == "" {
+			effective = a.CurrentSessionID()
+		}
+		res.TurnID, res.InputIDs = a.grokSteerControlOwner(effective, line)
+	}
+	return res, nil
+}
+
+func (a *Agent) grokChildPermissionOwner(sessionID string) (agent.ControlServices, error) {
+	owner, found := a.SessionOwner(sessionID)
+	if !found || owner.MessageSessionID() != sessionID {
+		return nil, agent.ErrChildRouteNotReady
+	}
+	return owner, nil
+}
+
 // publishGrokControlRequest publishes one of Grok's own dialogs through the
 // base, which refuses a dialog of a session that the agent does not serve. It
 // answers true, because the publisher handles the line either way: it logs a
@@ -145,11 +208,12 @@ func (a *Agent) publishGrokControlRequest(line *providerkit.ParsedLine) bool {
 // Grok's own dialogs and the base's permission requests alike, right before
 // the publication (Hooks.ControlRequestObserver). It records the tool call of
 // the request, and it stores the plan that a plan approval carries.
-func (a *Agent) observeControlRequest(line *providerkit.ParsedLine) {
+func (a *Agent) observeControlRequest(sessionID string, line *providerkit.ParsedLine) {
 	var params grokRequestParams
 	if json.Unmarshal(line.Params, &params) != nil {
 		return
 	}
+	params.SessionID = sessionID
 	if line.Method == contracts.GrokMethodExitPlanMode {
 		a.storePlan(params)
 	}
@@ -196,7 +260,7 @@ func (a *Agent) handleInteractionResolved(sessionID string, update json.RawMessa
 	if !ok {
 		return
 	}
-	if a.WithdrawOutstandingControlRequest(a.Sink(), requestID) {
+	if a.WithdrawOutstandingControlRequest(requestID) {
 		slog.Info("grok withdrew a control request", "agent_id", a.AgentID(), "session_id", sessionID, "tool_call_id", resolved.ToolCallID, "request_id", requestID)
 	}
 }
@@ -251,13 +315,14 @@ func (a *Agent) clearPermissionCheck(key controlKey) {
 	}
 }
 
-// clearPermissionChecks ends every open badge: the turn that raised them is
-// over, a stop included.
-func (a *Agent) clearPermissionChecks() {
+// clearPermissionChecks ends the badges of the session whose turn ended.
+func (a *Agent) clearPermissionChecks(sessionID string) {
 	a.stateMu.Lock()
 	keys := make([]controlKey, 0, len(a.controls.checks))
 	for key := range a.controls.checks {
-		keys = append(keys, key)
+		if key.sessionID == sessionID {
+			keys = append(keys, key)
+		}
 	}
 	a.stateMu.Unlock()
 	for _, key := range keys {
@@ -267,18 +332,29 @@ func (a *Agent) clearPermissionChecks() {
 
 // completeToolOutput ends the badge of a tool call that reached its final
 // update: the call is over, whatever the classifier asked about it.
-func (a *Agent) completeToolOutput(toolCallID string) {
-	sessionID := a.CurrentSessionID()
+func (a *Agent) completeToolOutput(sessionID, toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	if sessionID != "" {
+		a.clearPermissionCheck(controlKey{sessionID: sessionID, toolCallID: toolCallID})
+		return
+	}
+	// An unbound sink reports an empty MessageSessionID. Clear open checks for
+	// this toolCallID whose session owner also reports an empty session ID so
+	// stale checks cannot leak or cause permission-session ambiguity.
 	a.stateMu.Lock()
-	key, open := controlKey{}, false
-	for check := range a.controls.checks {
-		if check.toolCallID == toolCallID && (check.sessionID == sessionID || check.sessionID == "") {
-			key, open = check, true
-			break
+	var keys []controlKey
+	for key := range a.controls.checks {
+		if key.toolCallID == toolCallID {
+			keys = append(keys, key)
 		}
 	}
 	a.stateMu.Unlock()
-	if open {
-		a.clearPermissionCheck(key)
+	for _, key := range keys {
+		owner, ok := a.SessionOwner(key.sessionID)
+		if !ok || owner.MessageSessionID() == "" {
+			a.clearPermissionCheck(key)
+		}
 	}
 }

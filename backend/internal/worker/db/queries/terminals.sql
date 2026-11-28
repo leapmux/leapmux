@@ -79,7 +79,7 @@ SELECT closed_at, title, workspace_archived FROM terminals WHERE id = ?;
 -- the live buffer forward and length is ignored).
 SELECT working_dir, shell_start_dir, shell, cols, rows,
        length(screen) AS screen_length, workspace_archived
-FROM terminals WHERE id = ?;
+FROM terminals WHERE id = ? AND closed_at IS NULL;
 
 -- name: CloseTerminal :execresult
 -- closed_at IS NULL keeps this idempotent -- see the note on CloseAgent, which
@@ -151,7 +151,7 @@ SELECT tab_type, tab_id, working_dir, workspace_archived FROM tab_locations
 WHERE working_dir IN (sqlc.slice('working_dirs'));
 
 -- name: CreateTerminal :exec
--- Initial records retain the existing shell on conflict.
+-- Inserts a new terminal record; fails on primary-key conflict.
 -- A terminal keeps its shell for its entire lifetime.
 -- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
 INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, closed_at)

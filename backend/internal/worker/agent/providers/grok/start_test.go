@@ -231,7 +231,7 @@ func TestStartGrokClosesTheSessionThatAContextClearReplaces(t *testing.T) {
 }
 
 func TestStartGrokResumesWithoutAReplay(t *testing.T) {
-	_, requests, _ := startFakeGrok(t, agent.Options{ResumeSessionID: "01a0cf79-ace2"})
+	_, requests, _ := startFakeGrok(t, agent.Options{Session: agent.ResumeSession("01a0cf79-ace2")})
 
 	assert.Empty(t, requestsFor(requests(), acp.MethodSessionLoad), "a load would replay the conversation")
 	resumes := requestsFor(requests(), acp.MethodSessionResume)

@@ -149,10 +149,12 @@ func TestManagerAcceptsANonComparableProvider(t *testing.T) {
 	assert.NotPanics(t, func() { m.LiveOptionGroups("value", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE) })
 }
 
-func (s *stubProvider) AgentID() string                                 { return "stub" }
-func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
-func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
-	return agent.ErrInputSessionChanged
+func (s *stubProvider) AgentID() string { return "stub" }
+func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
+}
+func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 }
 
 // PublishTurnActive is inert here: a stub holds no turn flag and no sink, and
@@ -160,10 +162,10 @@ func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachme
 func (s *stubProvider) PublishTurnActive() agent.TurnState {
 	return agent.TurnState{}
 }
-func (s *stubProvider) SendRawInput(data []byte, stop agent.StopContext) error { return nil }
-func (s *stubProvider) Stop()                                                  {}
-func (s *stubProvider) IsStopped() bool                                        { return false }
-func (s *stubProvider) DiscardOutput()                                         {}
+func (s *stubProvider) SendRawInput(agent.RawInput) error { return nil }
+func (s *stubProvider) Stop()                             {}
+func (s *stubProvider) IsStopped() bool                   { return false }
+func (s *stubProvider) DiscardOutput()                    {}
 func (s *stubProvider) ClearContext() (string, error) {
 	if s.clearContextFn != nil {
 		return s.clearContextFn()
@@ -221,7 +223,7 @@ func TestManager_RetryTurnWithoutAnAgentRefuses(t *testing.T) {
 
 	m := agent.NewManager(testRegistry, nil)
 
-	assert.ErrorIs(t, m.RetryTurn("missing", "turn-1", "gpt-5.5"), agent.ErrAgentNotFound)
+	assert.ErrorIs(t, m.RetryTurn("missing", "turn-1", "gpt-5.5", nil), agent.ErrAgentNotFound)
 	assert.Zero(t, m.LifecycleLockCallersForTest("missing"),
 		"the failed lookup must release the lifecycle lock")
 }
@@ -232,7 +234,7 @@ func TestManager_RetryTurnWithoutATurnRetrierRefuses(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 	m.PutAgentForTest("stub", &stubProvider{})
 
-	assert.ErrorIs(t, m.RetryTurn("stub", "turn-1", "gpt-5.5"), agent.ErrTurnRetryUnavailable)
+	assert.ErrorIs(t, m.RetryTurn("stub", "turn-1", "gpt-5.5", nil), agent.ErrTurnRetryUnavailable)
 	assert.Zero(t, m.LifecycleLockCallersForTest("stub"),
 		"the refusal must release the lifecycle lock")
 }
@@ -245,7 +247,7 @@ func TestManager_RetryTurnPropagatesABeginError(t *testing.T) {
 		return nil, agent.ErrTurnRetryUnavailable
 	}})
 
-	assert.ErrorIs(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"), agent.ErrTurnRetryUnavailable)
+	assert.ErrorIs(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5", nil), agent.ErrTurnRetryUnavailable)
 	m.WaitTurnRetriesForTest()
 	assert.Zero(t, m.LifecycleLockCallersForTest("retrying"),
 		"the refusal must release the lifecycle lock")
@@ -273,7 +275,7 @@ func TestManager_RetryTurnAnswersBeforeThePhasesRun(t *testing.T) {
 		return retry, nil
 	}})
 
-	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"),
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5", nil),
 		"the RPC answers while Replace still waits")
 	assert.True(t, beginLocked, "BeginTurnRetry runs under the lifecycle lock")
 	<-replacing
@@ -298,7 +300,7 @@ func TestManager_RetryTurnSkipsTheStartAfterAFailedReplace(t *testing.T) {
 		return retry, nil
 	}})
 
-	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"))
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5", nil))
 	m.WaitTurnRetriesForTest()
 
 	phases, _ := retry.Phases()
@@ -318,7 +320,7 @@ func TestManager_RetryTurnCompletesAfterAFailedStart(t *testing.T) {
 		return retry, nil
 	}})
 
-	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"))
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5", nil))
 	m.WaitTurnRetriesForTest()
 
 	phases, _ := retry.Phases()
@@ -341,7 +343,7 @@ func TestManager_RetryTurnAbandonsARetryWhoseProviderChanged(t *testing.T) {
 		return retry, nil
 	}})
 
-	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"))
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5", nil))
 	m.WaitTurnRetriesForTest()
 
 	phases, locked := retry.Phases()
@@ -352,7 +354,8 @@ func TestManager_RetryTurnAbandonsARetryWhoseProviderChanged(t *testing.T) {
 func TestManager_SendInputUnknownAgent(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 
-	assert.Error(t, m.SendInput("nonexistent", "hello", nil), "expected error for unknown agent")
+	_, err := m.SendInput("nonexistent", "hello", nil)
+	assert.Error(t, err, "expected error for unknown agent")
 
 	// The error path must release the lifecycle lock. It is taken before the
 	// lookup, so a return that skipped the unlock would leave the agent id locked
@@ -362,7 +365,8 @@ func TestManager_SendInputUnknownAgent(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		assert.Error(t, m.SendInput("nonexistent", "hello again", nil), "expected error for unknown agent")
+		_, err := m.SendInput("nonexistent", "hello again", nil)
+		assert.Error(t, err, "expected error for unknown agent")
 	}()
 	select {
 	case <-done:
@@ -1436,7 +1440,7 @@ func TestManager_RetryTurnRefusedAfterStopAll(t *testing.T) {
 	}})
 	require.Nil(t, m.StopAll(time.Second))
 
-	err := m.RetryTurn("retrying", "turn-1", "model")
+	err := m.RetryTurn("retrying", "turn-1", "model", nil)
 
 	require.ErrorIs(t, err, agent.ErrManagerClosed)
 	select {
@@ -1458,7 +1462,7 @@ func TestManager_StopAllJoinsATurnRetry(t *testing.T) {
 			return &fakeTurnRetry{entered: entered, replacePark: release}, nil
 		}}
 		startStubVia(t, m, "retrying", retrier)
-		require.NoError(t, m.RetryTurn("retrying", "turn-1", "model"))
+		require.NoError(t, m.RetryTurn("retrying", "turn-1", "model", nil))
 		// The retry is inside Replace, past the registration re-check, before
 		// StopAll can stop the provider under it.
 		<-entered

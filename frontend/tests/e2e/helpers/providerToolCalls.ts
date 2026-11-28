@@ -83,6 +83,15 @@ export function museSendChildMessageToolCall(id: string, commandId: string, suba
   }
 }
 
+/** Deliver a Copilot model instruction to the sender's native children. */
+export function copilotWriteChildMessageToolCall(id: string, message: string): MockModelToolCall {
+  return {
+    id,
+    name: COPILOT_TOOL.WriteAgent,
+    arguments: { scope: 'children', message },
+  }
+}
+
 /**
  * The mock returns the tool calls that each test scripts.
  * Each builder uses its provider's native name and arguments.

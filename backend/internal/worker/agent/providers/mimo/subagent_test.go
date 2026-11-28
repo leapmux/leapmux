@@ -338,7 +338,7 @@ func TestChildInput(t *testing.T) {
 	assert.ErrorIs(t, agenttest.SendChildInput(a, spawnSpanID, agent.ChildInput{Content: "more"}), agent.ErrAgentBusy, "a running subagent holds the message for a steer")
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState(spawnSpanID))
 
-	require.NoError(t, a.SteerChildInput(spawnSpanID, "also this", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, spawnSpanID, "also this", nil))
 	requests := server.requestsTo("POST /session/ses_test/prompt_async")
 	require.Len(t, requests, 1)
 	assert.JSONEq(t, `{"parts":[{"type":"text","text":"also this"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`,
@@ -346,7 +346,7 @@ func TestChildInput(t *testing.T) {
 
 	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(spawnSpanID))
-	assert.ErrorIs(t, a.SteerChildInput(spawnSpanID, "late", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerChildInput(a, spawnSpanID, "late", nil), agent.ErrNoActiveTurn)
 
 	assert.ErrorContains(t, agenttest.SendChildInput(a, "call-unknown", agent.ChildInput{Content: "hello"}), "no subagent")
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-unknown"))
@@ -358,32 +358,76 @@ func TestChildAudioInputValidatesTheModelWithoutChangingItsDeliveryTarget(t *tes
 	a, server := newTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 	attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255}}}
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments), "does not accept audio attachments")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "Listen to this.", attachments), "does not accept audio attachments")
 	assert.Empty(t, server.allRequests())
 	model := agent.FindAvailableModel(a.catalog.models, a.model)
 	require.NotNil(t, model)
 	model.SupportsAudioInput = true
-	require.NoError(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments))
+	require.NoError(t, agenttest.SteerChildInput(a, spawnSpanID, "Listen to this.", attachments))
 	requests := server.requestsTo("POST /session/ses_test/prompt_async")
 	require.Len(t, requests, 1)
 	assert.JSONEq(t, `{"parts":[{"type":"text","text":"Listen to this."},{"type":"file","mime":"audio/wav","url":"data:audio/wav;base64,AP8=","filename":"voice.wav"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`, string(requests[0].Body))
 }
 
-// MiMo runs a message to an idle subagent as a turn that no event reports: no
-// actor.status starts it or ends it. So the message is refused, with the reason,
-// before any request, and the queue records a failure that the user can read.
-func TestChildInputToAnIdleSubagentIsRefused(t *testing.T) {
+func TestChildInputToAnIdleSubagentUsesTheReceiptLifecycle(t *testing.T) {
 	t.Parallel()
-	a, server := newTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	a, sink, server := newSinkTestAgent(t)
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
+	server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"child-prompt"}`)
 
-	err := agenttest.SendChildInput(a, spawnSpanID, agent.ChildInput{Content: "next task"})
-	require.ErrorIs(t, err, errSubagentIdle)
-	assert.NotErrorIs(t, err, agent.ErrAgentBusy, "no turn runs that could deliver it later")
-	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "nothing reached MiMo")
-	assert.ErrorContains(t, err, "only while")
-	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
+	result, err := a.SendChildInput(spawnSpanID, agent.ChildInput{Content: "next task"})
+	require.NoError(t, err)
+	assert.True(t, result.StartsTurn)
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: testSessionID, InputID: "child-prompt", TurnID: "child-prompt"}, result.NativeReceipt)
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState(spawnSpanID))
+	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status)
+	_, err = a.SendChildInput(spawnSpanID, agent.ChildInput{Content: "stay queued"})
+	require.ErrorIs(t, err, agent.ErrAgentBusy)
+	require.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1)
+	feed(a,
+		messageEvent(t, "msg_02", roleAssistant, actorID, true),
+		eventJSON(t, mimoReceiptUpdated, map[string]any{
+			"sessionID": testSessionID, "agentID": actorID, "receiptId": "child-prompt", "inputMessageID": "msg_01",
+			"deliveryMessageID": "msg_02", "state": "claimed",
+		}),
+		textPartEvent(t, partTypeText, "child-part", "msg_02", "Receipt-backed reply", true),
+		eventJSON(t, mimoReceiptUpdated, map[string]any{
+			"sessionID": testSessionID, "agentID": actorID, "receiptId": "child-prompt", "inputMessageID": "msg_01",
+			"deliveryMessageID": "msg_02", "state": "settled", "outcome": "success",
+		}),
+	)
+	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(spawnSpanID))
+	assert.Equal(t, bgtask.StatusSucceeded, backgroundTask(t, sink, spawnSpanID).Status)
+	turns := sink.Child("child-of-" + spawnSpanID).NativeReplyTurns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "mimo-part:child-part:text"}}, turns[0].Items)
+}
+
+func TestReconnectingKeepsAClaimedChildReceiptActive(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	a.connected = make(chan struct{})
+	a.onStreamConnected(t.Context())
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
+	server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"child-prompt"}`)
+	server.respond("GET /session/ses_test/receipt/child-prompt", http.StatusOK, `{"id":"child-prompt","lane":{"sessionID":"ses_test","agentID":"general-1"},"state":"claimed","inputMessageID":"msg_01","deliveryMessageID":"msg_02"}`)
+	result, err := a.SendChildInput(spawnSpanID, agent.ChildInput{Content: "next task"})
+	require.NoError(t, err)
+	require.True(t, result.StartsTurn)
+	a.onStreamConnected(t.Context())
+	assert.True(t, a.ActiveChildTurnState(spawnSpanID).Active)
+	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status)
+	assert.Empty(t, sink.Child("child-of-"+spawnSpanID).NativeReplyRetirements(), "a claimed input still has a later outcome")
+	feed(a, eventJSON(t, mimoReceiptUpdated, map[string]any{
+		"sessionID": testSessionID, "agentID": actorID, "receiptId": "child-prompt", "inputMessageID": "msg_01",
+		"deliveryMessageID": "msg_02", "state": "settled", "outcome": "success",
+	}))
+	assert.False(t, a.ActiveChildTurnState(spawnSpanID).Active)
+	assert.Equal(t, bgtask.StatusSucceeded, backgroundTask(t, sink, spawnSpanID).Status)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+		sink.Child("child-of-" + spawnSpanID).NativeReplyRetirements()[result.NativeReceipt])
 }
 
 func TestChildSteerReportsARefusal(t *testing.T) {
@@ -392,7 +436,7 @@ func TestChildSteerReportsARefusal(t *testing.T) {
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 	server.respond("POST /session/ses_test/prompt_async", http.StatusBadRequest, `{"name":"BadRequest"}`)
 
-	err := a.SteerChildInput(spawnSpanID, "also this", nil)
+	err := agenttest.SteerChildInput(a, spawnSpanID, "also this", nil)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 }
@@ -510,13 +554,12 @@ func TestRestoreActorLinks(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, actorID, actor.id)
 	assert.True(t, actor.closed, "the new process runs no turn of it yet")
-	assert.ErrorIs(t, agenttest.SendChildInput(a, spawnSpanID, agent.ChildInput{Content: "resume the work"}), errSubagentIdle)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(spawnSpanID))
 	assert.InDelta(t, 0.25, a.usageSnapshot().costUSD, 1e-9, "the session's cost so far carries over, and only an assistant message costs")
 
 	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 2, ""))
 	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status, "a later turn opens the row that the spawn call keys")
-	require.NoError(t, a.SteerChildInput(spawnSpanID, "resume the work", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, spawnSpanID, "resume the work", nil))
 	assert.JSONEq(t, `{"parts":[{"type":"text","text":"resume the work"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`,
 		string(server.requestsTo("POST /session/ses_test/prompt_async")[0].Body))
 }
@@ -625,14 +668,14 @@ func TestChildSteerRefusalsSendNothing(t *testing.T) {
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 
 	binary := []*leapmuxv1.Attachment{{Filename: "tool.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}}}
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "run it", binary), "tool.bin")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "run it", binary), "tool.bin")
 
 	a.sessionID = ""
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "more", nil), "no MiMo session")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "more", nil), "no MiMo session")
 
 	a.sessionID = testSessionID
 	a.SetStoppedForTest(true)
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "more", nil), "stopped")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "more", nil), "stopped")
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 }
 
@@ -1061,11 +1104,12 @@ func TestLateChildInputRefusesTheRetiredNativeSession(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
+		_, err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
 			close(entered)
 			<-release
 			return buildPromptParts("The original child delivery.", nil)
 		})
+		done <- err
 	}()
 	select {
 	case <-entered:
@@ -1094,7 +1138,7 @@ func TestChildInputRechecksTheActorAfterPromptConstruction(t *testing.T) {
 			t.Parallel()
 			a, _, server := newSinkTestAgent(t)
 			spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
-			err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
+			_, err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
 				a.Mu.Lock()
 				switch change {
 				case "idle actor":
@@ -1458,4 +1502,85 @@ func TestResumedActorTurnRevivesClosedRowWithoutPriorChild(t *testing.T) {
 	assert.Equal(t, []string{spawnSpanID}, sink.RevivedTasks(), "startActorTurn must revive closed row even when hadChild is false")
 	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status)
 	assert.Equal(t, turnCountBefore+1, len(sink.Child(childID).TurnActives()), "child turn active must be published once, not twice")
+}
+
+func TestMiMoAbsentActorReconcileReportsUnknownOutcomeAndClearsInboxActiveText(t *testing.T) {
+	t.Parallel()
+	t.Run("absent actor without inbox reports unknown outcome", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		runActorTurn(t, a, "Partial background result.")
+
+		server.respond("GET /session/ses_test/actors", http.StatusOK, `[]`)
+		server.respond("GET /workflows", http.StatusOK, `[]`)
+		a.dispatchMu.Lock()
+		a.reconcileActorsAndWorkflowsLocked(t.Context())
+		a.dispatchMu.Unlock()
+
+		reports := sink.LeapMuxNotifications()
+		require.Len(t, reports, 1)
+		assert.Equal(t, bgtask.StatusWire(bgtask.StatusEndedWithUnknownOutcome), reports[0][contracts.NotificationFieldStatus])
+	})
+
+	t.Run("absent actor with active inbox clears stale lastText", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		runActorTurn(t, a, "Stale tool turn result.")
+
+		// Simulate an open child receipt alongside the still-active tool turn.
+		a.Mu.Lock()
+		actor := a.actors[actorID]
+		a.inputReplies = map[string]*mimoInputReply{
+			"child-open": {
+				native:  mimoReceiptUpdate{ID: "child-open", SessionID: testSessionID, ActorID: actorID},
+				childID: actor.childAgentID,
+				owned:   true,
+			},
+		}
+		a.Mu.Unlock()
+
+		server.respond("GET /session/ses_test/actors", http.StatusOK, `[]`)
+		server.respond("GET /workflows", http.StatusOK, `[]`)
+		a.dispatchMu.Lock()
+		a.reconcileActorsAndWorkflowsLocked(t.Context())
+		a.dispatchMu.Unlock()
+
+		a.Mu.Lock()
+		remainingText := a.actors[actorID].lastText
+		a.Mu.Unlock()
+		assert.Empty(t, remainingText, "reconciling an absent actor with an active inbox must not leave stale lastText")
+		reports := sink.LeapMuxNotifications()
+		require.Len(t, reports, 1)
+		assert.Equal(t, bgtask.StatusWire(bgtask.StatusEndedWithUnknownOutcome), reports[0][contracts.NotificationFieldStatus])
+	})
+}
+
+func TestMiMoRootProgressCapturePreservesFallbackChildScopes(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	a.Mu.Lock()
+	a.parts["fallback-part"] = &mimoTextPart{
+		actorID:        actorID,
+		messageID:      "msg_child",
+		progressTarget: &mimoTranscriptTarget{sink: a.sink, childID: ""},
+	}
+	a.Mu.Unlock()
+
+	// PersistMessage through modelProgressResetTranscript captures content.Publication
+	// and calls content.Publication.ReportProgress(ResetModelProgress()).
+	err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+		Original: []byte(`{"type":"root"}`),
+	}, agent.SpanInfo{})
+	require.NoError(t, err)
+
+	var foundReset bool
+	for _, update := range sink.ProgressUpdates() {
+		if update.Operation == agent.ProgressModelReset && update.ScopeID == "" {
+			foundReset = true
+			assert.Contains(t, update.PreserveModelScopes, progressScope("fallback-part"))
+		}
+	}
+	assert.True(t, foundReset, "expected a root ProgressModelReset update")
 }

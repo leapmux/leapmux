@@ -63,7 +63,7 @@ export async function exerciseOpenCodeFamilyDenial(context: ManagedNativeScenari
       })
     },
     viewProof: async () => {
-      await expect(savedControlAnswer(context.page)).toHaveText('Denied')
+      await expect(savedControlAnswer(context.page)).toHaveText('Deny')
       await expectDeclinedToolRow(context.page, await nativeToolRowId(context, options.toolCall.id), OPENCODE_PERMISSION_REJECTION)
     },
   })

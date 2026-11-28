@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -20,27 +21,32 @@ import (
 // carries more than a settings key does: it installs a sign-in route for the
 // whole hub, and one with trust_email set links an incoming identity to any
 // account whose verified address it presents. Removing the last one locks out
-// every account that has no other login method. OAuth issuer validation stays conditional exactly as the CLI
-// verb had it: OIDC-typed providers validate their issuer by fetching its
-// discovery document; presets (github/google/apple) skip it.
+// every account that has no other login method. OAuth issuer validation runs
+// for every OIDC-typed provider (generic `oidc` as well as the `google` and
+// `apple` presets) by fetching its discovery document; non-OIDC providers
+// (`github`) skip it.
 type AdminIdPService struct {
 	store store.Store
-	// cache drops the built instances of a provider this service removes or
-	// disables. loadEnabledProvider refuses a deleted row with 404 and a
-	// disabled row with 403 BEFORE it rebuilds, so the login handler's own
-	// eviction can never reach such an entry -- and the entry holds the
-	// client secret decrypted by the store. The dependency is an interface
-	// so the admin verbs need the eviction and not the login handler.
+	// cache drops the built instances of a provider this service removes,
+	// disables, or rotates the client secret of. loadEnabledProvider refuses a
+	// deleted row with 404 and a disabled row with 403 BEFORE it rebuilds, so
+	// the login handler's own eviction can never reach such an entry -- and
+	// the entry holds the client secret decrypted by the store. Secret rotation
+	// evicts cached clients without clearing in-flight login states or pending
+	// signups. The dependency is an interface so the admin verbs need the
+	// eviction and not the login handler.
 	cache providerCacheInvalidator
 	// clockSeam supplies the instant the elevation gate and its slide read.
 	// Nil means time.Now, so production wires nothing.
 	clockSeam
 }
 
-// providerCacheInvalidator is the one thing the admin verbs need from the
-// OAuth login handler.
+// providerCacheInvalidator is what the admin verbs need from the OAuth login
+// handler: full invalidation (for remove/disable) and client-only eviction (for
+// secret rotation).
 type providerCacheInvalidator interface {
 	InvalidateProvider(providerID string)
+	EvictProviderCache(providerID string)
 }
 
 func NewAdminIdPService(st store.Store, cache providerCacheInvalidator) *AdminIdPService {
@@ -59,6 +65,7 @@ func adminOAuthProviderToProto(p store.OAuthProviderSummary) *leapmuxv1.AdminOAu
 		ClientId:     p.ClientID,
 		Scopes:       p.Scopes,
 		TrustEmail:   p.TrustEmail,
+		ResponseMode: oauth.ResponseModeWire(p.ResponseMode),
 		Enabled:      p.Enabled,
 		CreatedAt:    timestamppb.New(p.CreatedAt),
 	}
@@ -69,11 +76,11 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 	if msg.GetProviderType() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "provider_type is required (github, google, apple, oidc)")
 	}
-	if msg.GetClientId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "client_id is required")
+	if err := requireField(msg.GetClientId(), "client_id"); err != nil {
+		return nil, err
 	}
-	if msg.GetClientSecret() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "client_secret is required")
+	if err := requireField(msg.GetClientSecret(), "client_secret"); err != nil {
+		return nil, err
 	}
 
 	preset, ok := oauth.Presets[msg.GetProviderType()]
@@ -107,9 +114,20 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 	if trustEmail == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "trust_email is required for generic OIDC providers")
 	}
+	responseMode := preset.ResponseMode
+	if rawMode := msg.GetResponseMode(); rawMode != "" {
+		parsedMode, err := oauth.ParseResponseMode(rawMode)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+		}
+		responseMode = parsedMode
+	}
+	if storedType == oauth.ProviderTypeGitHub && responseMode == oauth.ResponseModeFormPost {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "form_post response_mode is only supported for OIDC providers")
+	}
 
-	// Issuer validation is conditional: OIDC-typed providers only; presets
-	// carry a known-good issuer.
+	// Issuer discovery validation runs for every OIDC-typed provider (including
+	// the google and apple presets); non-OIDC providers (github) skip it.
 	if storedType == oauth.ProviderTypeOIDC {
 		if issuer == "" {
 			return nil, connect.NewError(connect.CodeInvalidArgument, "issuer_url is required for OIDC providers")
@@ -130,6 +148,7 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 			ClientSecret: []byte(msg.GetClientSecret()),
 			Scopes:       scopes,
 			TrustEmail:   *trustEmail,
+			ResponseMode: responseMode,
 			Enabled:      true,
 		}); err != nil {
 			return storeConnectError(err, "create provider")
@@ -147,8 +166,16 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 	}, nil
 }
 
-func (s *AdminIdPService) ListOAuthProviders(ctx context.Context, _ *leapmuxv1.ListOAuthProvidersRequest) (*leapmuxv1.ListOAuthProvidersResponse, error) {
-	providers, err := s.store.OAuthProviders().ListAll(ctx)
+func (s *AdminIdPService) ListOAuthProviders(ctx context.Context, req *leapmuxv1.ListOAuthProvidersRequest) (*leapmuxv1.ListOAuthProvidersResponse, error) {
+	var (
+		providers []store.OAuthProviderSummary
+		err       error
+	)
+	if strings.TrimSpace(req.GetIdPrefix()) != "" {
+		providers, err = s.store.OAuthProviders().ListByIDPrefix(ctx, req.GetIdPrefix())
+	} else {
+		providers, err = s.store.OAuthProviders().ListAll(ctx)
+	}
 	if err != nil {
 		return nil, storeConnectError(err, "list providers")
 	}
@@ -232,4 +259,30 @@ func (s *AdminIdPService) SetOAuthProviderEnabled(ctx context.Context, req *leap
 	// the next request, and one rule reads better than two.
 	s.cache.InvalidateProvider(req.GetId())
 	return &leapmuxv1.SetOAuthProviderEnabledResponse{}, nil
+}
+
+// UpdateOAuthProviderSecret replaces the encrypted client secret on an
+// existing identity provider without changing its ID or disturbing linked user
+// accounts, then evicts cached provider clients so subsequent sign-ins use the
+// new secret immediately without aborting in-flight signups.
+func (s *AdminIdPService) UpdateOAuthProviderSecret(ctx context.Context, req *leapmuxv1.UpdateOAuthProviderSecretRequest) (*leapmuxv1.UpdateOAuthProviderSecretResponse, error) {
+	if err := requireField(req.GetId(), "id"); err != nil {
+		return nil, err
+	}
+	if err := requireField(req.GetClientSecret(), "client_secret"); err != nil {
+		return nil, err
+	}
+	if err := writeUnderElevation(ctx, s.store, s.now, func(tx store.Store) error {
+		if err := tx.OAuthProviders().UpdateClientSecret(ctx, store.UpdateOAuthProviderClientSecretParams{
+			ID:           req.GetId(),
+			ClientSecret: []byte(req.GetClientSecret()),
+		}); err != nil {
+			return storeConnectError(err, "update provider secret")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	s.cache.EvictProviderCache(req.GetId())
+	return &leapmuxv1.UpdateOAuthProviderSecretResponse{}, nil
 }

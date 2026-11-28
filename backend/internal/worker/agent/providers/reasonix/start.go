@@ -32,6 +32,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Base:         func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {
 			storeQuery := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
+			a.storeQuery = storeQuery
+			a.workingDir = opts.WorkingDir
 			transcript := newReasonixToolTranscript(ctx, sink, a.CurrentSessionID, storeQuery, opts.WorkingDir)
 			return acp.Hooks{
 				// A permission reply releases Reasonix's model loop immediately.
@@ -41,7 +43,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				},
 				PermissionAllowsBypass: permissionAllowsBypass,
 				Sink:                   transcript,
+				UpdateMessageID:        a.reasonixUpdateMessageID,
+				AssistantTextKey:       a.reasonixAssistantTextKey,
+				AssistantTextPrepared:  a.reasonixAssistantTextPrepared,
+				CaptureReplyReconciliation: func() func(agent.MessageCompletion, bool) error {
+					return a.captureReasonixSteerCompletion(agent.DirectProviderServices(a.Sink()))
+				},
 				ClearProviderState: func() {
+					a.retireReasonixSteers(a.Sink())
 					transcript.Reset()
 					a.resetPlanDraft()
 				},
@@ -70,9 +79,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			// The CLI already selects a new session's model. Its reply gives the canonical
 			// selector value, which can differ from the launch alias. A loaded session
 			// still needs the requested model applied after it restores its saved selection.
-			if opts.ResumeSessionID == "" && handshake.CurrentModelID != "" {
+			if !opts.Session.IsResume() && handshake.CurrentModelID != "" {
 				requestedModel = handshake.CurrentModelID
-			} else if opts.ResumeSessionID != "" && !slices.ContainsFunc(handshake.Models, func(info acp.ModelInfo) bool { return info.ModelID == model }) {
+			} else if opts.Session.IsResume() && !slices.ContainsFunc(handshake.Models, func(info acp.ModelInfo) bool { return info.ModelID == model }) {
 				var err error
 				handshake, err = a.resumeReasonixModel(handshake, model, opts.WorkingDir)
 				if err != nil {

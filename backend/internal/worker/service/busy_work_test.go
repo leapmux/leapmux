@@ -9,6 +9,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -56,7 +57,7 @@ func startLiveTestTerminal(t *testing.T, svc *Service, id, metaTitle string) {
 		WorkingDir: workingDir,
 		Cols:       200,
 		Rows:       24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 	if metaTitle != "" {
 		svc.Terminals.UpdateTitle(id, metaTitle)
 	}
@@ -65,9 +66,9 @@ func startLiveTestTerminal(t *testing.T, svc *Service, id, metaTitle string) {
 	const marker = "busy_work_shell_ready"
 	command, err := testutil.TestShellOutputCommand(marker)
 	require.NoError(t, err)
-	require.NoError(t, svc.Terminals.SendInput(id, []byte(command+testutil.TestShellEnter())))
+	require.NoError(t, svc.Terminals.SendInput(id, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}))
 	testutil.RequireEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
 	}, "expected the shell to execute the readiness marker")
 }

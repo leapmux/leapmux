@@ -72,6 +72,14 @@ service WorkerConnectorService {
   rpc ResolveTabPublication(ResolveTabPublicationRequest) returns (ResolveTabPublicationResponse) {
     option (leapmux.v1.access) = { public: {} };
   }
+  // Verify a notification destination against the authenticated Worker's owner.
+  rpc CheckNotificationWorkspace(CheckNotificationWorkspaceRequest) returns (google.protobuf.Empty) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+}
+
+message CheckNotificationWorkspaceRequest {
+  string workspace_id = 1;
 }
 
 message PublishTabRequest {
@@ -172,13 +180,15 @@ service WorkerManagementService {
   rpc EmailRegistrationInstructions(EmailRegistrationInstructionsRequest) returns (EmailRegistrationInstructionsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_ADMIN };
   }
-  // List registered workers for the authenticated user. A worker that is
-  // deregistering is not listed.
+  // List active registered workers for the authenticated user.
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
-  // Get a single worker's details. A worker that is deregistering answers
-  // NotFound, as ListWorkers does not list it.
+  // Read an atomic snapshot of the authenticated account's active Worker inventory.
+  rpc GetWorkerInventory(GetWorkerInventoryRequest) returns (GetWorkerInventoryResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+  // Get a single active worker's details.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
@@ -243,12 +253,11 @@ message DeregisterSelfRequest {}
 message DeregisterSelfResponse {}
 
 // WorkerStatus is the lifecycle state of a worker. The hub derives it from
-// workers.deregistering_at and workers.deleted_at; no column stores it.
+// workers.deleted_at; no column stores it.
 enum WorkerStatus {
   WORKER_STATUS_UNSPECIFIED = 0;
   WORKER_STATUS_ACTIVE = 1;
-  WORKER_STATUS_DEREGISTERING = 2;
-  WORKER_STATUS_DELETED = 3;
+  WORKER_STATUS_DELETED = 2;
 }
 
 message CreateRegistrationKeyRequest {}
@@ -284,11 +293,21 @@ message EmailRegistrationInstructionsResponse {}
 
 message ListWorkersRequest {
   PageRequest page = 1;
+  // Narrow to workers whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 2;
 }
 
 message ListWorkersResponse {
   repeated Worker workers = 1;
   PageResponse page = 2;
+}
+
+message GetWorkerInventoryRequest {}
+
+message GetWorkerInventoryResponse {
+  string owner_user_id = 1;
+  int64 revision = 2;
+  repeated string worker_ids = 3;
 }
 
 message GetWorkerRequest {

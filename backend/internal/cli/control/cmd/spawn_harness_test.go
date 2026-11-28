@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
@@ -57,6 +59,14 @@ func shortIPCSocket(t *testing.T) string {
 // therefore gets PermissionDenied here, which is the case each test
 // below asserts the command survives.
 type recordingHub struct {
+	listWorkspacesErr error
+	workspaces        []*leapmuxv1.Workspace
+	sections          *leapmuxv1.ListSectionsResponse
+	tabs              []*leapmuxv1.WorkspaceTab
+	systemBuild       *leapmuxv1.BuildInfo
+	readLayoutEvents  func(*leapmuxv1.ReadLayoutEventsRequest) (*leapmuxv1.ReadLayoutEventsResponse, error)
+	workerEnrollment  func() int64
+	workerInventory   func() *leapmuxv1.GetWorkerInventoryResponse
 	// listWorkerPages, when non-nil, makes the stub answer ListWorkers one
 	// page at a time: the cursor "" reads the first page, and the cursor
 	// "page-N" reads page N. Each page but the last carries the next cursor.
@@ -86,6 +96,9 @@ type recordingHub struct {
 	// is set, the way the hub answers for a quake terminal, which has no CRDT
 	// tab.
 	unlocatableTab bool
+
+	// locateTabErr simulates a failed read without asserting that the tab is absent.
+	locateTabErr error
 
 	// onSubmitOps, when non-nil, answers SubmitOps. A test that needs the
 	// CRDT write to fail in a particular way, or to block, supplies it.
@@ -123,6 +136,32 @@ type recordingHub struct {
 	// workerPageLimits records the page limit of each ListWorkers request
 	// that listWorkerPages answers.
 	workerPageLimits []int32
+	// listRequests records id_prefix, limit, and workspace_ids for List* RPCs.
+	listRequests []recordedListCall
+}
+
+type recordedListCall struct {
+	procedure    string
+	idPrefix     string
+	limit        int32
+	workspaceIDs []string
+}
+
+func (h *recordingHub) recordListCall(procedure, idPrefix string, limit int32, workspaceIDs []string) {
+	h.mu.Lock()
+	h.listRequests = append(h.listRequests, recordedListCall{
+		procedure:    procedure,
+		idPrefix:     idPrefix,
+		limit:        limit,
+		workspaceIDs: append([]string(nil), workspaceIDs...),
+	})
+	h.mu.Unlock()
+}
+
+func (h *recordingHub) recordedListCalls() []recordedListCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]recordedListCall(nil), h.listRequests...)
 }
 
 func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure string, payload []byte) ([]byte, error) {
@@ -130,9 +169,76 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 	h.procedures = append(h.procedures, procedure)
 	h.mu.Unlock()
 	switch {
+	case procedure == leapmuxv1connect.WorkerManagementServiceGetWorkerInventoryProcedure && (h.workerInventory != nil || h.workerEnrollment != nil):
+		if h.workerInventory != nil {
+			return proto.Marshal(h.workerInventory())
+		}
+		ids := make([]string, 0, len(h.workers))
+		for _, w := range h.workers {
+			ids = append(ids, w.GetId())
+		}
+		return proto.Marshal(&leapmuxv1.GetWorkerInventoryResponse{
+			OwnerUserId: "u-spawn", Revision: h.workerEnrollment(), WorkerIds: ids,
+		})
+	case procedure == leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure && h.readLayoutEvents != nil:
+		request := new(leapmuxv1.ReadLayoutEventsRequest)
+		if err := proto.Unmarshal(payload, request); err != nil {
+			return nil, err
+		}
+		page, err := h.readLayoutEvents(request)
+		if err != nil {
+			return nil, err
+		}
+		return proto.Marshal(page)
+	case procedure == leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure && h.listWorkspacesErr != nil:
+		return nil, h.listWorkspacesErr
+	case procedure == leapmuxv1connect.SystemServiceGetSystemInfoProcedure && h.systemBuild != nil:
+		return proto.Marshal(&leapmuxv1.GetSystemInfoResponse{Build: h.systemBuild})
+	case procedure == leapmuxv1connect.SectionServiceListSectionsProcedure && h.sections != nil:
+		var req leapmuxv1.ListSectionsRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
+		}
+		h.recordListCall(procedure, req.GetIdPrefix(), 0, nil)
+		sections := h.sections.GetSections()
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.Section, 0, len(sections))
+			for _, sec := range sections {
+				if strings.HasPrefix(sec.GetId(), prefix) {
+					filtered = append(filtered, sec)
+				}
+			}
+			sections = filtered
+		}
+		return proto.Marshal(&leapmuxv1.ListSectionsResponse{
+			Sections: sections,
+			Items:    h.sections.GetItems(),
+		})
 	case procedure == leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:
+		var req leapmuxv1.ListWorkspacesRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
+		}
+		h.recordListCall(procedure, req.GetIdPrefix(), 0, nil)
+		ws := h.workspaces
+		if ws == nil {
+			ws = []*leapmuxv1.Workspace{{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"}}
+		}
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.Workspace, 0, len(ws))
+			for _, w := range ws {
+				if strings.HasPrefix(w.GetId(), prefix) {
+					filtered = append(filtered, w)
+				}
+			}
+			ws = filtered
+		}
 		return proto.Marshal(&leapmuxv1.ListWorkspacesResponse{
-			Workspaces: []*leapmuxv1.Workspace{{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"}},
+			Workspaces: ws,
 		})
 	// The three round-trips a `tab` mutation makes before it touches the tab:
 	// the resolver's existence check and tab lookup, then the CRDT bootstrap.
@@ -142,6 +248,8 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 		return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
 			Workspace: &leapmuxv1.Workspace{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"},
 		})
+	case procedure == leapmuxv1connect.WorkspaceServiceLocateTabProcedure && h.locateTabErr != nil:
+		return nil, h.locateTabErr
 	case procedure == leapmuxv1connect.WorkspaceServiceLocateTabProcedure && h.unlocatableTab:
 		return nil, connect.NewError(connect.CodeNotFound, "tab not found")
 	case procedure == leapmuxv1connect.WorkspaceServiceLocateTabProcedure && (h.locateTab != nil || h.materialized != nil):
@@ -179,9 +287,89 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 		return h.answerGetWorker(payload)
 	case procedure == leapmuxv1connect.WorkerManagementServiceListWorkersProcedure && h.listWorkerPages != nil:
 		return h.answerWorkerPage(payload)
+	// The list calls that resolve a short target. They answer from the same
+	// rows that the lookups above serve, so a test that gives a short id
+	// resolves it the way the CLI resolves a prefix.
+	case procedure == leapmuxv1connect.WorkerManagementServiceListWorkersProcedure && h.workers != nil:
+		var req leapmuxv1.ListWorkersRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
+		}
+		h.recordListCall(procedure, req.GetIdPrefix(), req.GetPage().GetLimit(), nil)
+		workers := h.workers
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.Worker, 0, len(workers))
+			for _, w := range workers {
+				if strings.HasPrefix(w.GetId(), prefix) {
+					filtered = append(filtered, w)
+				}
+			}
+			workers = filtered
+		}
+		return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: workers, Page: &leapmuxv1.PageResponse{}})
+	case procedure == leapmuxv1connect.WorkspaceServiceListTabsProcedure && (h.tabs != nil || h.locateTab != nil || h.materialized != nil):
+		var req leapmuxv1.ListTabsRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
+		}
+		h.recordListCall(procedure, req.GetIdPrefix(), 0, req.GetWorkspaceIds())
+		tabs := h.tabs
+		if tabs == nil {
+			tabs = h.listedTabs()
+		}
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.WorkspaceTab, 0, len(tabs))
+			for _, tab := range tabs {
+				if strings.HasPrefix(tab.GetTab().GetTabId(), prefix) {
+					filtered = append(filtered, tab)
+				}
+			}
+			tabs = filtered
+		}
+		return proto.Marshal(&leapmuxv1.ListTabsResponse{Tabs: tabs})
 	default:
 		return nil, connect.NewError(connect.CodePermissionDenied, "delegation token cannot call this procedure: "+procedure)
 	}
+}
+
+// listedTabs is what ListTabs answers: the tab that LocateTab serves, and
+// every live tab of the snapshot, in workspace ws-1.
+func (h *recordingHub) listedTabs() []*leapmuxv1.WorkspaceTab {
+	var out []*leapmuxv1.WorkspaceTab
+	seen := map[string]bool{}
+	if h.locateTab != nil {
+		out = append(out, h.locateTab)
+		seen[h.locateTab.GetTab().GetTabId()] = true
+	}
+	tabMap := h.materialized.GetTabs()
+	ids := make([]string, 0, len(tabMap))
+	for id := range tabMap {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		rec := tabMap[id]
+		if seen[id] || rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
+			continue
+		}
+		workerID := rec.GetWorkerId().GetValue()
+		if workerID == "" {
+			// The hub places every tab on a worker. A snapshot that leaves the
+			// register unset means the spawn's own worker.
+			workerID = "worker-A"
+		}
+		out = append(out, &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: rec.GetTabType(), TabId: id},
+			TileId:      rec.GetTileId().GetValue(),
+			WorkerId:    workerID,
+			WorkspaceId: "ws-1",
+		})
+	}
+	return out
 }
 
 // answerGetWorker serves the row of workers whose id the request carries, and
@@ -216,9 +404,27 @@ func (h *recordingHub) answerWorkerPage(payload []byte) ([]byte, error) {
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
+	h.recordListCall(leapmuxv1connect.WorkerManagementServiceListWorkersProcedure, req.GetIdPrefix(), req.GetPage().GetLimit(), nil)
 	h.mu.Lock()
 	h.workerPageLimits = append(h.workerPageLimits, req.GetPage().GetLimit())
 	h.mu.Unlock()
+	if prefix := req.GetIdPrefix(); prefix != "" {
+		var matched []*leapmuxv1.Worker
+		for _, pageIDs := range h.listWorkerPages {
+			for _, id := range pageIDs {
+				if strings.HasPrefix(id, prefix) {
+					matched = append(matched, &leapmuxv1.Worker{Id: id})
+				}
+			}
+		}
+		sort.Slice(matched, func(i, j int) bool { return matched[i].GetId() < matched[j].GetId() })
+		next := ""
+		if limit := int(req.GetPage().GetLimit()); limit > 0 && len(matched) > limit {
+			matched = matched[:limit]
+			next = "page-prefix-next"
+		}
+		return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: matched, Page: &leapmuxv1.PageResponse{NextCursor: next}})
+	}
 	index := 0
 	if cursor := req.GetPage().GetCursor(); cursor != "" {
 		n, err := strconv.Atoi(strings.TrimPrefix(cursor, "page-"))
@@ -275,6 +481,17 @@ func writeProtoResponse(w channel.ResponseWriter, resp proto.Message) {
 //
 // Each configure function adjusts the router before the server starts, for a
 // test that needs a part of it the arguments do not state.
+// spawnTabSources describes the spawning tab agent-1 as the Worker's service
+// does, so a call that the router relays to a sibling Worker carries its
+// source, as it does in production.
+type spawnTabSources struct{}
+
+func (spawnTabSources) DescribeCallSource(_ context.Context, tabID string) (*leapmuxv1.CallSource, error) {
+	return &leapmuxv1.CallSource{TabId: tabID, Agent: &leapmuxv1.CallSourceAgent{
+		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Title: "Spawning agent",
+	}}, nil
+}
+
 func startSpawnIPC(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher, configure ...func(*controlipc.Router)) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -287,6 +504,7 @@ func startSpawnIPC(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatc
 		UserID:          userid.MustNew("u-spawn"),
 		Hub:             hub,
 		LocalDispatcher: disp,
+		Sources:         spawnTabSources{},
 	}
 	for _, apply := range configure {
 		apply(router)

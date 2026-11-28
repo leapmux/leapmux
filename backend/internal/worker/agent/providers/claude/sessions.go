@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
@@ -466,6 +468,92 @@ func (c *claudeTitleCandidates) take(rec claudeTranscriptRecord) {
 	if rec.LastPrompt != "" {
 		c.lastPrompt = rec.LastPrompt
 	}
+}
+
+// stageClaudeForkTranscript copies the source Claude JSONL transcript into the
+// target working directory's project folder before launching a cross-directory
+// or cross-worktree fork.
+//
+// Claude looks up --resume <id> under `<config dir>/projects/<mangled cwd>/`.
+// When the forked session launches in a different working directory or git
+// worktree, copying the source JSONL into the target project folder lets
+// `claude --resume <id> --fork-session --session-id <new-id>` locate it
+// immediately. Whenever sourcePath differs from targetPath, targetPath is
+// refreshed atomically from sourcePath so a subsequent fork sees later turns
+// written to the source session. It returns the staged target path when a file
+// was written, or empty string when staging was skipped.
+func stageClaudeForkTranscript(q agent.StoredSessionQuery, srcWorkingDir, targetWorkingDir, forkSessionID string) (string, error) {
+	srcWorkingDir = strings.TrimSpace(srcWorkingDir)
+	targetWorkingDir = strings.TrimSpace(targetWorkingDir)
+	if srcWorkingDir == "" || targetWorkingDir == "" || forkSessionID == "" {
+		return "", nil
+	}
+	// Reject path separators or dot segments so a token accepted by
+	// ValidateSessionID cannot escape the project directory.
+	if strings.ContainsAny(forkSessionID, `/\`) || forkSessionID == "." || forkSessionID == ".." {
+		return "", nil
+	}
+	configDir := claudeConfigDir(q)
+	if configDir == "" {
+		return "", nil
+	}
+
+	srcClean := filepath.Clean(srcWorkingDir)
+	targetClean := filepath.Clean(targetWorkingDir)
+	srcMangled := mangleClaudePath(srcClean)
+	targetMangled := mangleClaudePath(targetClean)
+	if srcMangled == targetMangled {
+		return "", nil
+	}
+
+	var targetProjectDir string
+	if len(targetMangled) <= claudeMangleMaxLength {
+		targetProjectDir = filepath.Join(configDir, claudeProjectsDirName, targetMangled)
+	} else {
+		// Long mangled paths include a CLI-specific hash suffix that we cannot
+		// synthesize for a brand-new directory; only stage when a single matching
+		// directory already exists.
+		existing, err := claudeProjectDirs(q, targetClean)
+		if err != nil {
+			if errors.Is(err, sessionstore.ErrAbsent) {
+				return "", fmt.Errorf("cannot stage Claude fork transcript for target working directory %q: mangled path length %d exceeds %d bytes and no existing project directory matches its prefix", targetClean, len(targetMangled), claudeMangleMaxLength)
+			}
+			return "", fmt.Errorf("resolve target Claude project directory for %q: %w", targetClean, err)
+		}
+		if len(existing) != 1 {
+			return "", fmt.Errorf("cannot stage Claude fork transcript for target working directory %q: mangled path length %d exceeds %d bytes and found %d matching project directories (expected 1)", targetClean, len(targetMangled), claudeMangleMaxLength, len(existing))
+		}
+		targetProjectDir = existing[0]
+	}
+
+	fileName := forkSessionID + ".jsonl"
+	targetPath := filepath.Join(targetProjectDir, fileName)
+
+	srcDirs, err := claudeProjectDirs(q, srcClean)
+	if err != nil {
+		if errors.Is(err, sessionstore.ErrAbsent) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	var srcPath string
+	for _, dir := range srcDirs {
+		candidate := filepath.Join(dir, fileName)
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && info.Mode().IsRegular() {
+			srcPath = candidate
+			break
+		}
+	}
+	if srcPath == "" || filepath.Clean(srcPath) == filepath.Clean(targetPath) {
+		return "", nil
+	}
+
+	if err := providerkit.StreamCopyRegularFile(srcPath, targetPath, 0o600); err != nil {
+		return "", fmt.Errorf("stage Claude transcript from %q to %q: %w", srcPath, targetPath, err)
+	}
+	return targetPath, nil
 }
 
 // best states the title precedence: the title the user set, then the title the

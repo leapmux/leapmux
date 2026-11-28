@@ -94,9 +94,16 @@ func TestAskHTMLKeepsNativeLabelsSeparateFromQuestionMetadata(t *testing.T) {
 	require.Len(t, request.Questions[0].Options, 2)
 	assert.Equal(t, "0", request.Questions[0].Options[0]["value"])
 	assert.Equal(t, "Alpha Fast const x = 1; x", request.Questions[0].Options[0]["label"], "keep the exact native protocol label")
-	assert.Contains(t, request.Questions[0].Options[0]["markup"], "<strong>Alpha</strong>")
-	assert.Contains(t, request.Questions[0].Options[0]["markup"], "const x = 1;")
-	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "rich-first", contracts.OhMyPiAskQuestionAnswer{ID: "style", Selected: []string{"0"}}), agent.StopContext{}))
+	assert.Equal(t, "Alpha", request.Questions[0].Options[0]["displayLabel"])
+	assert.Equal(t, "Fast", request.Questions[0].Options[0]["description"])
+	assert.Equal(t, "```\nconst x = 1;\nx\n```", request.Questions[0].Options[0]["preview"])
+	assert.NotContains(t, request.Questions[0].Options[0], "markup")
+	assert.Equal(t, "1", request.Questions[0].Options[1]["value"])
+	assert.Equal(t, "Beta", request.Questions[0].Options[1]["label"])
+	assert.Empty(t, request.Questions[0].Options[1]["displayLabel"])
+	assert.Empty(t, request.Questions[0].Options[1]["description"])
+	assert.Empty(t, request.Questions[0].Options[1]["preview"])
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: askAnswer(t, "rich-first", contracts.OhMyPiAskQuestionAnswer{ID: "style", Selected: []string{"0"}})}))
 	answers := r.waitForDialogAnswers(1)
 	assert.Equal(t, "Alpha Fast const x = 1; x", answers[0]["value"], "the native response uses the complete dialog label")
 }
@@ -118,7 +125,7 @@ func TestAskHTMLCanClearAPreselectedOptionalChoice(t *testing.T) {
 	require.Len(t, request.Questions, 1)
 	assert.Equal(t, []any{"0"}, request.Questions[0]["initialSelections"])
 	assert.Equal(t, true, request.Questions[0]["allowEmpty"])
-	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "checked-first", contracts.OhMyPiAskQuestionAnswer{ID: "langs"}), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: askAnswer(t, "checked-first", contracts.OhMyPiAskQuestionAnswer{ID: "langs"})}))
 	assert.Equal(t, "Go", r.waitForDialogAnswers(1)[0]["value"], "clear the native default before finishing")
 	r.emit(`{"type":"extension_ui_request","id":"checked-next","method":"select","title":"Languages","options":["Go","Rust","Other (type your own)","✔ Done selecting"]}`)
 	assert.Equal(t, "✔ Done selecting", r.waitForDialogAnswers(2)[1]["value"])
@@ -194,5 +201,80 @@ func TestAskHTMLChoiceBoundaries(t *testing.T) {
 	t.Run("deep form returns an error", func(t *testing.T) {
 		_, err := readAskChoiceQuestions(strings.Repeat("<div>", maxAskFormDepth+1) + `<input type=checkbox name=c>` + strings.Repeat("</div>", maxAskFormDepth+1))
 		require.ErrorContains(t, err, "depth")
+	})
+}
+
+func TestAskHTMLChoicePresentationAndDisambiguation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("plain repeated labels omit redundant displayLabel across suffixes", func(t *testing.T) {
+		t.Parallel()
+		markup := `<form><fieldset><legend>Pick</legend>` +
+			`<label><input type=radio name=choice value=a>Alpha</label>` +
+			`<label><input type=radio name=choice value=b>Alpha</label>` +
+			`<label><input type=radio name=choice value=c>Alpha</label>` +
+			`</fieldset></form>`
+		questions, err := readAskChoiceQuestions(markup)
+		require.NoError(t, err)
+		require.Len(t, questions, 1)
+		require.Len(t, questions[0].Options, 3)
+		assert.Equal(t, []contracts.OhMyPiAskOption{
+			{Value: "0", Label: "Alpha"},
+			{Value: "1", Label: "Alpha (2)"},
+			{Value: "2", Label: "Alpha (3)"},
+		}, questions[0].Options)
+	})
+
+	t.Run("rich repeated labels propagate disambiguation suffixes to displayLabel", func(t *testing.T) {
+		t.Parallel()
+		markup := `<form><fieldset><legend>Pick</legend>` +
+			`<label><input type=radio name=choice value=a><strong>Alpha</strong> <span>Fast</span></label>` +
+			`<label><input type=radio name=choice value=b><strong>Alpha</strong> <span>Fast</span></label>` +
+			`<label><input type=radio name=choice value=c><strong>Alpha</strong> <span>Fast</span></label>` +
+			`</fieldset></form>`
+		questions, err := readAskChoiceQuestions(markup)
+		require.NoError(t, err)
+		require.Len(t, questions, 1)
+		require.Len(t, questions[0].Options, 3)
+		assert.Equal(t, []contracts.OhMyPiAskOption{
+			{Value: "0", Label: "Alpha Fast", DisplayLabel: "Alpha", Description: "Fast"},
+			{Value: "1", Label: "Alpha Fast (2)", DisplayLabel: "Alpha (2)", Description: "Fast"},
+			{Value: "2", Label: "Alpha Fast (3)", DisplayLabel: "Alpha (3)", Description: "Fast"},
+		}, questions[0].Options)
+	})
+
+	t.Run("detached label for id extracts structured presentation", func(t *testing.T) {
+		t.Parallel()
+		markup := `<form><fieldset><legend>Pick</legend>` +
+			`<label for=opt1><strong>Detached</strong> <span>Details</span> <pre>x()</pre></label>` +
+			`<input id=opt1 type=radio name=choice value=a>` +
+			`</fieldset></form>`
+		questions, err := readAskChoiceQuestions(markup)
+		require.NoError(t, err)
+		require.Len(t, questions, 1)
+		require.Len(t, questions[0].Options, 1)
+		assert.Equal(t, contracts.OhMyPiAskOption{
+			Value:        "0",
+			Label:        "Detached Details x()",
+			DisplayLabel: "Detached",
+			Description:  "Details",
+			Preview:      "```\nx()\n```",
+		}, questions[0].Options[0])
+	})
+
+	t.Run("control without labelNode has empty presentation metadata", func(t *testing.T) {
+		t.Parallel()
+		markup := `<form><fieldset><legend>Pick</legend>` +
+			`<input type=radio name=choice value=a aria-label="Aria">` +
+			`<input type=radio name=choice value=b>` +
+			`</fieldset></form>`
+		questions, err := readAskChoiceQuestions(markup)
+		require.NoError(t, err)
+		require.Len(t, questions, 1)
+		require.Len(t, questions[0].Options, 2)
+		assert.Equal(t, []contracts.OhMyPiAskOption{
+			{Value: "0", Label: "Aria"},
+			{Value: "1", Label: "b"},
+		}, questions[0].Options)
 	})
 }

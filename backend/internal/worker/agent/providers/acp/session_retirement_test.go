@@ -593,7 +593,8 @@ func TestACPAdvertisesSessionClose(t *testing.T) {
 		`{}`:                       false,
 		`not json`:                 false,
 	} {
-		assert.Equal(t, want, advertisesSessionClose([]byte(response)), response)
+		gotClose, _ := readSessionCapabilities([]byte(response))
+		assert.Equal(t, want, gotClose, response)
 	}
 }
 
@@ -798,7 +799,7 @@ func TestACPControlRequestObserverReadsEachPublishedRequestFirst(t *testing.T) {
 	a, sink, _ := newRetiringTestAgent(t)
 	var observed []string
 	var publishedBefore []int
-	a.hooks.ControlRequestObserver = func(line *providerkit.ParsedLine) {
+	a.hooks.ControlRequestObserver = func(_ string, line *providerkit.ParsedLine) {
 		observed = append(observed, line.Method)
 		publishedBefore = append(publishedBefore, len(sink.PublishedControls()))
 	}
@@ -830,7 +831,7 @@ func TestACPStoresTheTextBeforeAControlRequest(t *testing.T) {
 	a.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", ChildAgentKey: "call-spawn", Title: "helper", Status: bgtask.StatusRunning, Spawns: true})
 	a.AttachChildSession(ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call-spawn"})
 	var mainAtObserve, childAtObserve [][]string
-	a.hooks.ControlRequestObserver = func(*providerkit.ParsedLine) {
+	a.hooks.ControlRequestObserver = func(string, *providerkit.ParsedLine) {
 		mainAtObserve = append(mainAtObserve, assembledTexts(t, sink.Messages()))
 		childAtObserve = append(childAtObserve, assembledTexts(t, sink.Child("child-of-call-spawn").Messages()))
 	}

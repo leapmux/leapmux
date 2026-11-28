@@ -60,8 +60,8 @@ func (b *Base) bindURLElicitation(line *providerkit.ParsedLine, publication prov
 }
 
 // SendRawInput delegates each answer and releases URL records that the transport no longer owns.
-func (b *Base) SendRawInput(data []byte, stop agent.StopContext) error {
-	err := b.JSONRPCProcess.SendRawInput(data, stop)
+func (b *Base) SendRawInput(input agent.RawInput) error {
+	err := b.JSONRPCProcess.SendRawInput(input)
 	b.forgetResolvedURLElicitations()
 	return err
 }
@@ -89,7 +89,7 @@ func (b *Base) CompleteURLElicitation(matchKey string, answer any) bool {
 	entry, found := b.urlElicitations[matchKey]
 	delete(b.urlElicitations, matchKey)
 	b.Mu.Unlock()
-	if !found || !b.WithdrawPublishedControlRequest(b.sink, entry.publication) {
+	if !found || !b.WithdrawPublishedControlRequest(entry.publication) {
 		return false
 	}
 	b.SendResponseDetached(entry.wireID, answer, "complete an ACP URL elicitation")

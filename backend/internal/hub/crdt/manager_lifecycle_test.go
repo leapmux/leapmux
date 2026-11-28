@@ -78,6 +78,13 @@ func (o *controllableOutbox) MarkLifecycleOutboxConsumed(_ context.Context, id i
 	return nil
 }
 
+func (o *controllableOutbox) ConsumeLifecycleOutboxWithLayoutFact(ctx context.Context, row crdt.LifecycleOutboxRow, consumedAt time.Time, fact *leapmuxv1.LayoutEventFact) error {
+	if fact == nil {
+		return errors.New("layout event fact is required")
+	}
+	return o.MarkLifecycleOutboxConsumed(ctx, row.ID, consumedAt)
+}
+
 func (o *controllableOutbox) consumedSnapshot() []int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -1595,6 +1602,10 @@ func (o *gatedOutbox) ListPendingLifecycleOutbox(context.Context, string) ([]crd
 }
 
 func (o *gatedOutbox) MarkLifecycleOutboxConsumed(context.Context, int64, time.Time) error {
+	return nil
+}
+
+func (o *gatedOutbox) ConsumeLifecycleOutboxWithLayoutFact(context.Context, crdt.LifecycleOutboxRow, time.Time, *leapmuxv1.LayoutEventFact) error {
 	return nil
 }
 

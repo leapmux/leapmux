@@ -134,3 +134,38 @@ func TestBuildCloseSubtreeOps_KeepRootFalseTombstonesRoot(t *testing.T) {
 	assert.Equal(t, "tombstoneNode:G", cases[len(cases)-1], "keepRoot=false must tombstone the target")
 	assert.Contains(t, cases, "tombstoneNode:c00")
 }
+
+// `tile close` refuses a grid and a cell of a grid, and the hint states the
+// command that removes the grid. Closing one cell would leave a slot that no
+// command can address, and a grid has its own command.
+func TestRunTileClose_RefusesAGridAndAGridCell(t *testing.T) {
+	gridHub := func() *recordingHub {
+		return &recordingHub{
+			workers: workerRows("worker-A"),
+			materialized: newStateBuilder().
+				workspace("ws-1", "root").
+				splitNode("root", "", "m").
+				leafNode("side", "root", "a").
+				gridNode("grid-1", "root", "b").
+				leafNode("cell-00", "grid-1", "0,0").
+				leafNode("cell-01", "grid-1", "0,1").
+				st,
+		}
+	}
+
+	hub := gridHub()
+	startSpawnIPC(t, hub, &closeDispatcher{})
+	// A prefix resolves through the tile listing that the state answers.
+	f := runControl(t, "tile", "close", "grid-1").requireFailure(t, "usage")
+	assert.Equal(t, "tile grid-1 is a grid", f.Message)
+	require.Len(t, f.Hints, 1)
+	assert.Contains(t, f.Hints[0], `"leapmux tile remove-grid grid-1"`)
+
+	hub = gridHub()
+	startSpawnIPC(t, hub, &closeDispatcher{})
+	f = runControl(t, "tile", "close", "cell-00").requireFailure(t, "usage")
+	assert.Contains(t, f.Message, "is a cell of grid grid-1")
+	require.Len(t, f.Hints, 1)
+	assert.Contains(t, f.Hints[0], `"leapmux tile remove-grid grid-1"`)
+	assert.NotContains(t, hub.called(), "/leapmux.v1.UserCRDT/SubmitOps", "a refusal submits nothing")
+}

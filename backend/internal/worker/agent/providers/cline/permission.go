@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -25,11 +26,14 @@ func (a *Agent) registerControl(requestID string, control *pendingControl) {
 		a.Mu.Unlock()
 		return
 	}
+	owner := a.out.toolOwner[control.toolCallID]
+	if reply := a.turn.inputReply; reply.ownsOutput(control.sessionID) && !reply.agentDone && reply.end == nil && (owner == nil || owner == a.out.lead) {
+		control.nativeTurnID = reply.receipt.TurnID
+	}
 	a.controls[requestID] = control
 	automatic := a.canApproveControlLocked(control)
 	if automatic {
 		control.ready = true
-		control.publicationOnce.Do(func() { close(control.publicationDone) })
 	}
 	a.Mu.Unlock()
 	if automatic {
@@ -46,7 +50,7 @@ func (a *Agent) canApproveControlLocked(control *pendingControl) bool {
 }
 
 func (a *Agent) publishRegisteredControl(requestID string, control *pendingControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.sessionID, RequestID: requestID,
+	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.sessionID, NativeTurnID: control.nativeTurnID, RequestID: requestID,
 		InstanceID: control.instanceID, Payload: control.payload, SourceSeq: control.sourceSeq})
 	a.Mu.Lock()
 	current := a.controls[requestID] == control
@@ -121,29 +125,44 @@ func (a *Agent) approvePendingPermissions() error {
 	for requestID, control := range publish {
 		a.publishRegisteredControl(requestID, control)
 	}
-	var failures []error
+	var (
+		wg       sync.WaitGroup
+		failMu   sync.Mutex
+		failures []error
+	)
 	for requestID, control := range claimed {
-		a.Mu.Lock()
-		current := a.controls[requestID] == control && control.sessionID == a.sessionID && !a.StoppedLocked()
-		a.Mu.Unlock()
-		if !current {
-			continue
-		}
-		err := a.respondApproval(contracts.ClineApprovalReply{ApprovalId: requestID, Approved: true})
-		a.finishControlAnswer(requestID, control, err)
-		if err != nil {
-			failures = append(failures, err)
-		}
+		wg.Add(1)
+		go func(requestID string, control *pendingControl) {
+			defer wg.Done()
+			a.Mu.Lock()
+			current := a.controls[requestID] == control && control.sessionID == a.sessionID && !a.StoppedLocked()
+			a.Mu.Unlock()
+			if !current {
+				return
+			}
+			err := a.respondApproval(contracts.ClineApprovalReply{ApprovalId: requestID, Approved: true})
+			a.finishControlAnswer(requestID, control, err)
+			if err != nil {
+				failMu.Lock()
+				failures = append(failures, err)
+				failMu.Unlock()
+			}
+		}(requestID, control)
 	}
+	wg.Wait()
 	return errors.Join(failures...)
 }
 
-func (a *Agent) claimPublishedControl(requestID string, kind controlKind) (*pendingControl, error) {
+func (a *Agent) claimPublishedControl(requestID string, kind controlKind, instanceID string) (*pendingControl, error) {
 	a.Mu.Lock()
 	control := a.controls[requestID]
+	answered := control != nil && control.answered
 	a.Mu.Unlock()
-	if control == nil || control.kind != kind {
+	if control == nil || control.kind != kind || answered {
 		return nil, errUnknownControl
+	}
+	if err := agent.ControlInstanceRefusal(control.instanceID, instanceID); err != nil {
+		return nil, err
 	}
 	select {
 	case <-control.publicationDone:
@@ -152,7 +171,13 @@ func (a *Agent) claimPublishedControl(requestID string, kind controlKind) (*pend
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	if a.controls[requestID] != control || !control.published || control.answering || a.StoppedLocked() {
+	if current := a.controls[requestID]; current != control {
+		if current != nil && current.kind == kind && current.instanceID != instanceID {
+			return nil, agent.ErrControlInstanceReplaced
+		}
+		return nil, errUnknownControl
+	}
+	if !control.published || control.answering || a.StoppedLocked() {
 		return nil, errUnknownControl
 	}
 	if control.sessionID != a.sessionID {
@@ -193,9 +218,11 @@ func (a *Agent) finishControlAnswer(requestID string, control *pendingControl, e
 	if current {
 		if gone {
 			delete(a.controls, requestID)
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
 		} else if err == nil || uncertain {
 			control.answered = true
 			control.published = false
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
 		} else {
 			control.answering = false
 			control.automaticFailed = control.automaticFailed || automatic

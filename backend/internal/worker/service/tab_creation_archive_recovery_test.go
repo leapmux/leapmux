@@ -74,11 +74,15 @@ func newCreationArchiveHarness(t *testing.T, kind leapmuxv1.TabType, state leapm
 		return result, err
 	}
 	svc.startAgentFn, svc.startBackgroundAgentFn = startAgent, startAgent
+	// Wrap the start that New wired, so the recovery runs the production
+	// start of a terminal whose stopped shell the manager still holds.
+	production := svc.startTerminalFn
+	require.NotNil(t, production, "New wires the terminal start")
 	svc.startTerminalFn = func(ctx context.Context, opts terminal.Options, output terminal.OutputHandler, exit terminal.ExitHandler) error {
 		if err := awaitPermit(ctx); err != nil {
 			return err
 		}
-		return svc.startTerminalProcess(ctx, opts, output, exit)
+		return production(ctx, opts, output, exit)
 	}
 	if kind == leapmuxv1.TabType_TAB_TYPE_TERMINAL {
 		testutil.RegisterTerminalCleanup(t, svc.Terminals, h.id)

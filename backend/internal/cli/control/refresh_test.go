@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
@@ -332,7 +333,7 @@ func TestRefresh_KeepsTheStoredScopeWhenTheHubAnswersNone(t *testing.T) {
 // TestRefresh_InvalidGrantDeletesTheCredential pins the permanent case. A
 // revoked, reused, or lifetime-expired credential can never work again, so
 // retrying it achieves nothing; deleting it makes the next command answer
-// ErrNotLoggedIn, whose message already specifies the remedy.
+// ErrNotLoggedIn, whose envelope states the remedy.
 func TestRefresh_InvalidGrantDeletesTheCredential(t *testing.T) {
 	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
 		w.Header().Set("Content-Type", "application/json")
@@ -488,16 +489,16 @@ func TestRefresh_AdoptsAConcurrentRotationInsteadOfPresentingADeadSecret(t *test
 // unauthorizedThenOKHandler answers Unauthenticated the first N times and
 // succeeds afterwards, recording the bearer each call presented.
 type unauthorizedThenOKHandler struct {
-	leapmuxv1connect.UnimplementedChannelServiceHandler
+	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
 	mu       sync.Mutex
 	bearers  []string
 	failures int
 }
 
-func (h *unauthorizedThenOKHandler) CloseChannel(
+func (h *unauthorizedThenOKHandler) ListWorkspaces(
 	ctx context.Context,
-	req *leapmuxv1.CloseChannelRequest,
-) (*leapmuxv1.CloseChannelResponse, error) {
+	_ *leapmuxv1.ListWorkspacesRequest,
+) (*leapmuxv1.ListWorkspacesResponse, error) {
 	info, _ := connect.CallInfoForServerContext(ctx)
 	h.mu.Lock()
 	h.bearers = append(h.bearers, info.RequestHeader().Get("Authorization"))
@@ -509,7 +510,7 @@ func (h *unauthorizedThenOKHandler) CloseChannel(
 	if remaining > 0 {
 		return nil, connect.NewError(connect.CodeUnauthenticated, "token expired")
 	}
-	return &leapmuxv1.CloseChannelResponse{}, nil
+	return &leapmuxv1.ListWorkspacesResponse{}, nil
 }
 
 func (h *unauthorizedThenOKHandler) presented() []string {
@@ -533,7 +534,7 @@ func TestAuthInterceptor_RetriesOnceAfterUnauthenticated(t *testing.T) {
 	handler := &unauthorizedThenOKHandler{failures: 1}
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
-	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, handler)
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, handler)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	// Serve the refresh endpoint from the SAME origin the credential specifies.
 	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
@@ -554,8 +555,8 @@ func TestAuthInterceptor_RetriesOnceAfterUnauthenticated(t *testing.T) {
 
 	c, err := NewClient(srv.URL)
 	require.NoError(t, err)
-	_, err = c.ChannelService().CloseChannel(context.Background(),
-		&leapmuxv1.CloseChannelRequest{ChannelId: "ch-1"})
+	_, err = c.WorkspaceService().ListWorkspaces(context.Background(),
+		&leapmuxv1.ListWorkspacesRequest{})
 	require.NoError(t, err, "one 401 must be recovered by a single refresh and retry")
 
 	presented := handler.presented()
@@ -572,7 +573,7 @@ func TestAuthInterceptor_DoesNotRetryTwice(t *testing.T) {
 	handler := &unauthorizedThenOKHandler{failures: 10}
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
-	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, handler)
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, handler)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
@@ -591,8 +592,8 @@ func TestAuthInterceptor_DoesNotRetryTwice(t *testing.T) {
 
 	c, err := NewClient(srv.URL)
 	require.NoError(t, err)
-	_, err = c.ChannelService().CloseChannel(context.Background(),
-		&leapmuxv1.CloseChannelRequest{ChannelId: "ch-1"})
+	_, err = c.WorkspaceService().ListWorkspaces(context.Background(),
+		&leapmuxv1.ListWorkspacesRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "the hub's own answer must survive")
 	assert.Len(t, handler.presented(), 2, "one attempt plus one retry, and no more")
@@ -600,19 +601,19 @@ func TestAuthInterceptor_DoesNotRetryTwice(t *testing.T) {
 
 // --- the interceptor's repair loop ------------------------------------
 
-// scriptedChannelHandler answers CloseChannel from a queue and records the
+// scriptedWorkspaceHandler answers ListWorkspaces from a queue and records the
 // bearer each attempt presented. An exhausted queue answers success.
-type scriptedChannelHandler struct {
-	leapmuxv1connect.UnimplementedChannelServiceHandler
+type scriptedWorkspaceHandler struct {
+	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
 	mu      sync.Mutex
 	bearers []string
 	answers []error
 }
 
-func (h *scriptedChannelHandler) CloseChannel(
+func (h *scriptedWorkspaceHandler) ListWorkspaces(
 	ctx context.Context,
-	req *leapmuxv1.CloseChannelRequest,
-) (*leapmuxv1.CloseChannelResponse, error) {
+	_ *leapmuxv1.ListWorkspacesRequest,
+) (*leapmuxv1.ListWorkspacesResponse, error) {
 	info, _ := connect.CallInfoForServerContext(ctx)
 	h.mu.Lock()
 	h.bearers = append(h.bearers, info.RequestHeader().Get("Authorization"))
@@ -631,10 +632,10 @@ func (h *scriptedChannelHandler) CloseChannel(
 		info.ResponseTrailer().Set(refusalTrailer, "1")
 		answer = marked.error
 	}
-	return &leapmuxv1.CloseChannelResponse{}, answer
+	return &leapmuxv1.ListWorkspacesResponse{}, answer
 }
 
-func (h *scriptedChannelHandler) presented() []string {
+func (h *scriptedWorkspaceHandler) presented() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.bearers...)
@@ -657,7 +658,7 @@ func elevationRequired() error {
 // repairHub serves everything one restricted unary call can touch: the RPC, the
 // refresh leg, and the step-up ceremony.
 type repairHub struct {
-	rpc       *scriptedChannelHandler
+	rpc       *scriptedWorkspaceHandler
 	elevation *elevationHub
 	rotations *atomic.Int64
 	server    *httptest.Server
@@ -669,13 +670,13 @@ type repairHub struct {
 func newRepairHub(t *testing.T, expiresIn int, answers ...error) *repairHub {
 	t.Helper()
 	h := &repairHub{
-		rpc:       &scriptedChannelHandler{answers: answers},
+		rpc:       &scriptedWorkspaceHandler{answers: answers},
 		elevation: newElevationRoutes(),
 		rotations: &atomic.Int64{},
 	}
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
-	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, h.rpc)
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, h.rpc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	// ONE token endpoint for both grants, routed by grant_type, because that
 	// is what the hub serves: the refresh leg and the device-code poll no
@@ -698,10 +699,10 @@ func newRepairHub(t *testing.T, expiresIn int, answers ...error) *repairHub {
 	return h
 }
 
-// call runs one CloseChannel through the interceptor.
-func (h *repairHub) call(c *Client) error {
-	_, err := c.ChannelService().CloseChannel(context.Background(),
-		&leapmuxv1.CloseChannelRequest{ChannelId: "ch-1"})
+// call runs one ListWorkspaces through the interceptor.
+func (h *repairHub) call(c *HubClient) error {
+	_, err := c.WorkspaceService().ListWorkspaces(context.Background(),
+		&leapmuxv1.ListWorkspacesRequest{})
 	return err
 }
 
@@ -719,11 +720,11 @@ func TestAuthInterceptor_RepairsBothRefusalsInOneCall(t *testing.T) {
 		elevationRequired(),
 	)
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = true
+	captureClientErr(c)
 
 	require.NoError(t, hub.call(c), "a call that needs both repairs must still land")
 
@@ -738,11 +739,11 @@ func TestAuthInterceptor_RepairsBothRefusalsInOneCall(t *testing.T) {
 func TestAuthInterceptor_RunsEachRepairAtMostOnce(t *testing.T) {
 	hub := newRepairHub(t, 3600, elevationRequired(), elevationRequired(), elevationRequired())
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = true
+	captureClientErr(c)
 
 	err = hub.call(c)
 	require.Error(t, err)
@@ -765,11 +766,11 @@ func TestAuthInterceptor_ReplaysWithATokenRenewedAfterThePrompt(t *testing.T) {
 	// presents is inside the renewal window again by the replay.
 	hub := newRepairHub(t, 1, elevationRequired())
 	seedCredentials(t, hub.server.URL, time.Now().Add(refreshSkew/2))
-	captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = true
+	captureClientErr(c)
 
 	require.NoError(t, hub.call(c))
 
@@ -787,11 +788,11 @@ func TestAuthInterceptor_ReplaysWithATokenRenewedAfterThePrompt(t *testing.T) {
 func TestAuthInterceptor_ReportsTheHubsRefusalWhenNobodyCanVerify(t *testing.T) {
 	hub := newRepairHub(t, 3600, elevationRequired())
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	out, errOut := captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = false
+	errOut := captureClientErr(c)
 
 	err = hub.call(c)
 	require.Error(t, err)
@@ -800,7 +801,6 @@ func TestAuthInterceptor_ReportsTheHubsRefusalWhenNobodyCanVerify(t *testing.T) 
 	assert.Len(t, hub.rpc.presented(), 1, "no replay, because nothing repaired the refusal")
 	starts, _ := hub.elevation.counts()
 	assert.Zero(t, starts, "a ceremony nobody can finish must never be opened")
-	assert.Empty(t, out.String())
 	assert.Empty(t, errOut.String())
 }
 
@@ -810,11 +810,11 @@ func TestAuthInterceptor_LeavesAnUnrepairableRefusalAlone(t *testing.T) {
 	hub := newRepairHub(t, 3600,
 		connect.NewError(connect.CodePermissionDenied, "administrator privileges are required"))
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = true
+	captureClientErr(c)
 
 	err = hub.call(c)
 	require.Error(t, err)
@@ -831,11 +831,11 @@ func TestAuthInterceptor_LeavesAnUnmarkedFailedPreconditionAlone(t *testing.T) {
 	hub := newRepairHub(t, 3600,
 		connect.NewError(connect.CodeFailedPrecondition, "this account has no password"))
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = true
+	captureClientErr(c)
 
 	require.Error(t, hub.call(c))
 	assert.Len(t, hub.rpc.presented(), 1)
@@ -859,11 +859,11 @@ func TestAuthInterceptor_RepairsAnExpiredTokenAfterTheStepUp(t *testing.T) {
 		connect.NewError(connect.CodeUnauthenticated, "token expired"),
 	)
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	out, errOut := captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = true
+	errOut := captureClientErr(c)
 
 	require.NoError(t, hub.call(c), "a call refused in this order must still land")
 
@@ -876,9 +876,8 @@ func TestAuthInterceptor_RepairsAnExpiredTokenAfterTheStepUp(t *testing.T) {
 	assert.Equal(t, int64(1), hub.rotations.Load(), "the refusal after the ceremony must rotate the credential")
 
 	// The JSON contract, under the interceptor that interrupts an ordinary
-	// verb: the prose reaches Err alone, so the verb's own envelope is the
-	// whole of Out and `... | jq` still parses it.
-	assert.Empty(t, out.String())
+	// verb: the prose reaches errOut, so the verb's own envelope is the whole of
+	// stdout and `... --json | jq` still parses it.
 	assert.Contains(t, errOut.String(), "verify your identity")
 }
 
@@ -894,11 +893,11 @@ func TestAuthInterceptor_StopsWhenEveryRepairIsUsed(t *testing.T) {
 		connect.NewError(connect.CodeUnauthenticated, "token expired"),
 	)
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	c.promptAllowed = true
+	captureClientErr(c)
 
 	err = hub.call(c)
 	require.Error(t, err)
@@ -915,7 +914,7 @@ func TestAuthInterceptor_StopsWhenEveryRepairIsUsed(t *testing.T) {
 // blockCredentialSaves makes the next SaveCredentials for hubURL fail,
 // after LoadCredentials has already succeeded.
 //
-// chmod 0500 on the config directory is the Unix form: the existing
+// chmod 0500 on the credentials directory is the Unix form: the existing
 // file stays readable (owner execute on the directory is enough) and
 // CreateTemp cannot create a sibling. Windows ignores a directory's
 // read-only bit for child creates, so the same chmod lets the save
@@ -923,15 +922,15 @@ func TestAuthInterceptor_StopsWhenEveryRepairIsUsed(t *testing.T) {
 // the Windows form: ReadFile still works and the replace cannot.
 func blockCredentialSaves(t *testing.T, hubURL string) {
 	t.Helper()
+	path, err := CredentialsPath(hubURL)
+	require.NoError(t, err)
 	if runtime.GOOS == "windows" {
-		path, err := CredentialsPath(hubURL)
-		require.NoError(t, err)
 		require.NoError(t, os.Chmod(path, 0o400))
 		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 		return
 	}
-	dir, err := ConfigDir()
-	require.NoError(t, err)
+	dir := filepath.Dir(path)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, os.Chmod(dir, 0o500))
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 }
@@ -988,10 +987,9 @@ func TestAuthInterceptor_ReportsALocalDiskFailureAsSuchNotAsASignIn(t *testing.T
 		// Inside the skew, so the call renews before it dials.
 		ExpiresAt: time.Now().Add(refreshSkew / 2),
 	}))
-	captureStreams(t)
-
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
+	captureClientErr(c)
 
 	blockCredentialSaves(t, hub.server.URL)
 
@@ -1244,9 +1242,9 @@ func TestUnaryReplayStream_ReportsAnOpeningFailureAfterRepair(t *testing.T) {
 func TestAuthInterceptor_ReportsAReactiveRefreshPersistenceFailure(t *testing.T) {
 	hub := newRepairHub(t, 3600, connect.NewError(connect.CodeUnauthenticated, "token expired"))
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
+	captureClientErr(c)
 	blockCredentialSaves(t, hub.server.URL)
 	err = hub.call(c)
 	require.Error(t, err)
@@ -1274,12 +1272,12 @@ func TestAuthInterceptor_ReplayReportsOnlyTheFinalAttemptsMetadata(t *testing.T)
 			}
 			hub := newRepairHub(t, 3600, answers...)
 			seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-			captureStreams(t)
 			c, err := NewClient(hub.server.URL)
 			require.NoError(t, err)
 			c.promptAllowed = true
+			captureClientErr(c)
 			ctx, info := connect.NewClientContext(t.Context())
-			_, err = c.ChannelService().CloseChannel(ctx, &leapmuxv1.CloseChannelRequest{ChannelId: "ch-1"})
+			_, err = c.WorkspaceService().ListWorkspaces(ctx, &leapmuxv1.ListWorkspacesRequest{})
 			if refused {
 				require.Error(t, err)
 				assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))

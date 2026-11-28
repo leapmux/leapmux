@@ -66,6 +66,33 @@ func TestPiQuestionIndexMatchesMultiSelectAndCustomInput(t *testing.T) {
 	assert.Equal(t, 1, index)
 }
 
+// The runtime's matcher reads the questions as the prompt does: a question
+// that the dialog cannot have asked is skipped, not a reason to refuse the
+// whole call. (The matcher once decoded the list into one struct, and a
+// question of the wrong shape refused every other question with it.)
+func TestPiQuestionIndexSkipsAQuestionThatTheDialogCannotAsk(t *testing.T) {
+	t.Parallel()
+	args := json.RawMessage(`{"questions":[7,{"question":"Bad","options":[{"label":5,"description":"x"}]},{"question":"Choose","options":[{"label":"A","description":"first"}]}]}`)
+	index, matches := piQuestionIndex(piQuestionDialog{Method: "select", Title: "Choose", Options: []string{"1. A — first", "2. Other"}}, args)
+	assert.True(t, matches)
+	assert.Equal(t, 2, index, "the index is the question's place in the call's own list")
+
+	_, matches = piQuestionIndex(piQuestionDialog{Method: "select", Title: "Choose", Options: []string{"1. A — first", "2. Other"}}, json.RawMessage(`{"questions":"text"}`))
+	assert.False(t, matches)
+	_, matches = piQuestionIndex(piQuestionDialog{Method: "select", Title: "Choose", Options: []string{"1. A — first", "2. Other"}}, json.RawMessage(`not json`))
+	assert.False(t, matches)
+
+	dialog := piQuestionDialog{Method: "select", Title: "Choose", Options: []string{"1. A — first", "2. Other"}}
+	for name, rawArgs := range map[string]json.RawMessage{
+		"nil args":   nil,
+		"empty args": {},
+	} {
+		idx, ok := piQuestionIndex(dialog, rawArgs)
+		assert.False(t, ok, name)
+		assert.Zero(t, idx, name)
+	}
+}
+
 func TestPiControlSourceRejectsAmbiguousAndChangedTools(t *testing.T) {
 	for _, change := range []string{"second tool", "completed", "changed arguments"} {
 		t.Run(change, func(t *testing.T) {

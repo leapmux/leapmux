@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -149,7 +150,7 @@ func TestParseRatiosCSV_RejectsMalformedNumber(t *testing.T) {
 // leaf. layout set turns this into "root becomes a single LEAF and
 // every tab migrates onto it" — a uniform reset.
 func TestValidateTree_LeafHappyPath(t *testing.T) {
-	tr := &targetNode{Kind: "leaf"}
+	tr := &layoutNode{Kind: "leaf"}
 	require.NoError(t, validateAndNormalizeTree(tr, "root"))
 }
 
@@ -157,11 +158,11 @@ func TestValidateTree_LeafHappyPath(t *testing.T) {
 // with both direction and ratios specified. Verifies normalize-in-place
 // on the user's ratios so the wire payload is sum=1.0.
 func TestValidateTree_SplitHappyPath(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
 		Ratios:    []float64{1, 1},
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"},
 			{Kind: "leaf"},
 		},
@@ -176,10 +177,10 @@ func TestValidateTree_SplitHappyPath(t *testing.T) {
 // specify ratios" path. The renderer falls back to equal weights, so
 // the validator must allow ratios to be empty.
 func TestValidateTree_SplitOmittedRatiosAccepted(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "horizontal",
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"},
 			{Kind: "leaf"},
 		},
@@ -191,13 +192,13 @@ func TestValidateTree_SplitOmittedRatiosAccepted(t *testing.T) {
 // TestValidateTree_GridHappyPath covers a 2x3 grid with explicit
 // row and column ratios. 6 children required (rows*cols).
 func TestValidateTree_GridHappyPath(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "grid",
 		Rows:      2,
 		Cols:      3,
 		RowRatios: []float64{1, 1},
 		ColRatios: []float64{1, 1, 1},
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"}, {Kind: "leaf"}, {Kind: "leaf"},
 			{Kind: "leaf"}, {Kind: "leaf"}, {Kind: "leaf"},
 		},
@@ -214,15 +215,15 @@ func TestValidateTree_GridHappyPath(t *testing.T) {
 // regardless of depth and report path-anchored errors when something
 // breaks (covered separately below).
 func TestValidateTree_NestedHappyPath(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"},
 			{
 				Kind: "grid",
 				Rows: 1, Cols: 2,
-				Children: []*targetNode{
+				Children: []*layoutNode{
 					{Kind: "leaf"},
 					{Kind: "leaf"},
 				},
@@ -235,7 +236,7 @@ func TestValidateTree_NestedHappyPath(t *testing.T) {
 // TestValidateTree_RejectsUnknownKind catches the basic typo path
 // (e.g. "splt" or empty string at the root).
 func TestValidateTree_RejectsUnknownKind(t *testing.T) {
-	tr := &targetNode{Kind: "splt"}
+	tr := &layoutNode{Kind: "splt"}
 	err := validateAndNormalizeTree(tr, "root")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized kind")
@@ -245,10 +246,10 @@ func TestValidateTree_RejectsUnknownKind(t *testing.T) {
 // emits `"children": [null, {...}]` from a buggy generator. We catch
 // the nil so downstream walkers don't dereference it.
 func TestValidateTree_RejectsNullChild(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			nil,
 			{Kind: "leaf"},
 		},
@@ -264,9 +265,9 @@ func TestValidateTree_RejectsNullChild(t *testing.T) {
 // accept children on it the projection would either drop them (silent
 // data loss) or trip the projection's "leaf has children" guard.
 func TestValidateTree_RejectsLeafWithChildren(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:     "leaf",
-		Children: []*targetNode{{Kind: "leaf"}},
+		Children: []*layoutNode{{Kind: "leaf"}},
 	}
 	err := validateAndNormalizeTree(tr, "root")
 	require.Error(t, err)
@@ -278,7 +279,7 @@ func TestValidateTree_RejectsLeafWithChildren(t *testing.T) {
 // early protects against trees where a typo turned a SPLIT into a
 // LEAF but kept its decorators.
 func TestValidateTree_RejectsLeafWithDecorators(t *testing.T) {
-	cases := map[string]*targetNode{
+	cases := map[string]*layoutNode{
 		"direction":  {Kind: "leaf", Direction: "vertical"},
 		"ratios":     {Kind: "leaf", Ratios: []float64{0.5, 0.5}},
 		"rows":       {Kind: "leaf", Rows: 1},
@@ -297,10 +298,10 @@ func TestValidateTree_RejectsLeafWithDecorators(t *testing.T) {
 // exactly 2 children at creation; layout set allows any N >= 2 so a
 // scripted layout can pre-bake 3+ panes, but it must not allow 0 or 1.
 func TestValidateTree_RejectsSplitWithOneChild(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
-		Children:  []*targetNode{{Kind: "leaf"}},
+		Children:  []*layoutNode{{Kind: "leaf"}},
 	}
 	err := validateAndNormalizeTree(tr, "root")
 	require.Error(t, err)
@@ -310,7 +311,7 @@ func TestValidateTree_RejectsSplitWithOneChild(t *testing.T) {
 // TestValidateTree_RejectsSplitWithNoChildren catches the zero case
 // specifically — the more-than-one-child guard's "got 0" branch.
 func TestValidateTree_RejectsSplitWithNoChildren(t *testing.T) {
-	tr := &targetNode{Kind: "split", Direction: "vertical"}
+	tr := &layoutNode{Kind: "split", Direction: "vertical"}
 	err := validateAndNormalizeTree(tr, "root")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "got 0")
@@ -320,9 +321,9 @@ func TestValidateTree_RejectsSplitWithNoChildren(t *testing.T) {
 // pick an axis without direction; default-empty would write
 // UNSPECIFIED into the SPLIT and confuse downstream consumers.
 func TestValidateTree_RejectsSplitWithoutDirection(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind: "split",
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"}, {Kind: "leaf"},
 		},
 	}
@@ -335,24 +336,24 @@ func TestValidateTree_RejectsSplitWithoutDirection(t *testing.T) {
 // a SPLIT with rows/cols/row_ratios/col_ratios is a sign the author
 // confused the two node kinds; surface it with a hint.
 func TestValidateTree_RejectsSplitWithGridFields(t *testing.T) {
-	cases := map[string]*targetNode{
+	cases := map[string]*layoutNode{
 		"rows": {
 			Kind: "split", Direction: "vertical", Rows: 2,
-			Children: []*targetNode{{Kind: "leaf"}, {Kind: "leaf"}},
+			Children: []*layoutNode{{Kind: "leaf"}, {Kind: "leaf"}},
 		},
 		"cols": {
 			Kind: "split", Direction: "vertical", Cols: 2,
-			Children: []*targetNode{{Kind: "leaf"}, {Kind: "leaf"}},
+			Children: []*layoutNode{{Kind: "leaf"}, {Kind: "leaf"}},
 		},
 		"row_ratios": {
 			Kind: "split", Direction: "vertical",
 			RowRatios: []float64{1, 1},
-			Children:  []*targetNode{{Kind: "leaf"}, {Kind: "leaf"}},
+			Children:  []*layoutNode{{Kind: "leaf"}, {Kind: "leaf"}},
 		},
 		"col_ratios": {
 			Kind: "split", Direction: "vertical",
 			ColRatios: []float64{1, 1},
-			Children:  []*targetNode{{Kind: "leaf"}, {Kind: "leaf"}},
+			Children:  []*layoutNode{{Kind: "leaf"}, {Kind: "leaf"}},
 		},
 	}
 	for label, tr := range cases {
@@ -365,11 +366,11 @@ func TestValidateTree_RejectsSplitWithGridFields(t *testing.T) {
 // needs a per-child fraction; len(ratios) != len(children) is
 // undefined behavior.
 func TestValidateTree_RejectsSplitRatiosLengthMismatch(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
 		Ratios:    []float64{0.3, 0.3, 0.4},
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"}, {Kind: "leaf"},
 		},
 	}
@@ -381,7 +382,7 @@ func TestValidateTree_RejectsSplitRatiosLengthMismatch(t *testing.T) {
 // TestValidateTree_RejectsGridZeroDimensions. Both rows and cols
 // must be >= 1; without children there's nothing to project.
 func TestValidateTree_RejectsGridZeroDimensions(t *testing.T) {
-	tr := &targetNode{Kind: "grid", Rows: 0, Cols: 2}
+	tr := &layoutNode{Kind: "grid", Rows: 0, Cols: 2}
 	err := validateAndNormalizeTree(tr, "root")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GRID requires rows>=1")
@@ -391,7 +392,7 @@ func TestValidateTree_RejectsGridZeroDimensions(t *testing.T) {
 // boundary. Server enforces 20; CLI must reject earlier so the user
 // gets a useful message instead of BATCH_REJECTION_VALUE_DOMAIN.
 func TestValidateTree_RejectsGridOverCap(t *testing.T) {
-	tr := &targetNode{Kind: "grid", Rows: 21, Cols: 1}
+	tr := &layoutNode{Kind: "grid", Rows: 21, Cols: 1}
 	err := validateAndNormalizeTree(tr, "root")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "capped at 20")
@@ -400,9 +401,9 @@ func TestValidateTree_RejectsGridOverCap(t *testing.T) {
 // TestValidateTree_RejectsGridWrongCellCount catches the most common
 // hand-authored mistake: rows=2 cols=2 means 4 cells, not 3 or 5.
 func TestValidateTree_RejectsGridWrongCellCount(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind: "grid", Rows: 2, Cols: 2,
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"}, {Kind: "leaf"}, {Kind: "leaf"},
 		},
 	}
@@ -414,14 +415,14 @@ func TestValidateTree_RejectsGridWrongCellCount(t *testing.T) {
 // TestValidateTree_RejectsGridWithSplitFields. Mirror of the SPLIT
 // rejection: GRID + direction / ratios is a sign of confusion.
 func TestValidateTree_RejectsGridWithSplitFields(t *testing.T) {
-	cases := map[string]*targetNode{
+	cases := map[string]*layoutNode{
 		"direction": {
 			Kind: "grid", Rows: 1, Cols: 1, Direction: "vertical",
-			Children: []*targetNode{{Kind: "leaf"}},
+			Children: []*layoutNode{{Kind: "leaf"}},
 		},
 		"ratios": {
 			Kind: "grid", Rows: 1, Cols: 1, Ratios: []float64{1.0},
-			Children: []*targetNode{{Kind: "leaf"}},
+			Children: []*layoutNode{{Kind: "leaf"}},
 		},
 	}
 	for label, tr := range cases {
@@ -433,10 +434,10 @@ func TestValidateTree_RejectsGridWithSplitFields(t *testing.T) {
 // TestValidateTree_RejectsGridRowRatiosLengthMismatch covers the
 // row-axis ratio length rule.
 func TestValidateTree_RejectsGridRowRatiosLengthMismatch(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind: "grid", Rows: 2, Cols: 2,
 		RowRatios: []float64{0.3, 0.3, 0.4},
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"}, {Kind: "leaf"},
 			{Kind: "leaf"}, {Kind: "leaf"},
 		},
@@ -449,10 +450,10 @@ func TestValidateTree_RejectsGridRowRatiosLengthMismatch(t *testing.T) {
 // TestValidateTree_RejectsGridColRatiosLengthMismatch is the
 // column-axis counterpart.
 func TestValidateTree_RejectsGridColRatiosLengthMismatch(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind: "grid", Rows: 2, Cols: 2,
 		ColRatios: []float64{0.5},
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"}, {Kind: "leaf"},
 			{Kind: "leaf"}, {Kind: "leaf"},
 		},
@@ -466,15 +467,15 @@ func TestValidateTree_RejectsGridColRatiosLengthMismatch(t *testing.T) {
 // breadcrumb. When a 4-level-deep node is malformed the user must
 // be able to find it without bisecting the JSON.
 func TestValidateTree_NestedErrorIncludesPath(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"},
 			{
 				Kind:      "split",
 				Direction: "horizontal",
-				Children: []*targetNode{
+				Children: []*layoutNode{
 					{Kind: "leaf"},
 					{Kind: "leaf", Direction: "vertical"}, // <- bad
 				},
@@ -490,16 +491,16 @@ func TestValidateTree_NestedErrorIncludesPath(t *testing.T) {
 // validation runs deep too — a SPLIT three levels in with malformed
 // ratios should still be flagged with its path.
 func TestValidateTree_NestedRatiosRejectionBubbles(t *testing.T) {
-	tr := &targetNode{
+	tr := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"},
 			{
 				Kind:      "split",
 				Direction: "horizontal",
 				Ratios:    []float64{0, 0}, // can't normalize
-				Children: []*targetNode{
+				Children: []*layoutNode{
 					{Kind: "leaf"}, {Kind: "leaf"},
 				},
 			},
@@ -588,7 +589,7 @@ func TestValidateSplitRatiosLength_RejectsMismatch(t *testing.T) {
 	code, msg := captureEmit(t, func() error {
 		return validateSplitRatiosLength(state, "T", []float64{0.5, 0.5})
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "length 2")
 	assert.Contains(t, msg, "child count 3")
 }
@@ -641,7 +642,7 @@ func TestValidateGridRatiosShape_RejectsRowMismatch(t *testing.T) {
 	code, msg := captureEmit(t, func() error {
 		return validateGridRatiosShape(state, "G", []float64{0.5}, nil)
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "--row-ratios length 1")
 	assert.Contains(t, msg, "rows 2")
 }
@@ -658,7 +659,7 @@ func TestValidateGridRatiosShape_RejectsColMismatch(t *testing.T) {
 	code, msg := captureEmit(t, func() error {
 		return validateGridRatiosShape(state, "G", nil, []float64{0.5, 0.5})
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "--col-ratios length 2")
 	assert.Contains(t, msg, "cols 3")
 }
@@ -679,7 +680,7 @@ func TestBuildLayoutSetOps_LeafTarget(t *testing.T) {
 		tab("tab-1", "a", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
 		tab("tab-2", "b", leapmuxv1.TabType_TAB_TYPE_AGENT).
 		st
-	target := &targetNode{Kind: "leaf"}
+	target := &layoutNode{Kind: "leaf"}
 
 	bs := testBootstrap(state)
 	ops, rootID, firstLeaf, err := buildLayoutSetOps(bs, "ws-1", target)
@@ -711,10 +712,10 @@ func TestBuildLayoutSetOps_SplitTarget(t *testing.T) {
 		leafNode("R", "", "").
 		tab("tab-1", "R", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
 		st
-	target := &targetNode{
+	target := &layoutNode{
 		Kind:      "split",
 		Direction: "vertical",
-		Children: []*targetNode{
+		Children: []*layoutNode{
 			{Kind: "leaf"},
 			{Kind: "leaf"},
 		},
@@ -741,10 +742,10 @@ func TestBuildLayoutSetOps_RejectsMissingRoot(t *testing.T) {
 	state := newStateBuilder().workspace("ws-1", "").st
 	bs := testBootstrap(state)
 	code, msg := captureEmit(t, func() error {
-		_, _, _, err := buildLayoutSetOps(bs, "ws-1", &targetNode{Kind: "leaf"})
+		_, _, _, err := buildLayoutSetOps(bs, "ws-1", &layoutNode{Kind: "leaf"})
 		return err
 	})
-	assert.Equal(t, "invalid_state", code)
+	assert.Equal(t, "conflict", code)
 	assert.Contains(t, msg, "no root node")
 }
 
@@ -760,7 +761,7 @@ func TestBuildLayoutSetOps_SkipsTombstonedTabs(t *testing.T) {
 		tombstonedTab("dead", "R", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
 		st
 	bs := testBootstrap(state)
-	ops, _, _, err := buildLayoutSetOps(bs, "ws-1", &targetNode{Kind: "leaf"})
+	ops, _, _, err := buildLayoutSetOps(bs, "ws-1", &layoutNode{Kind: "leaf"})
 	require.NoError(t, err)
 	cases := opCases(ops)
 	assert.Contains(t, cases, "setTabTileId:live=R")
@@ -784,4 +785,150 @@ func TestValidateGridRatiosShape_NilSlicesSkipChecks(t *testing.T) {
 	assert.NoError(t, validateGridRatiosShape(state, "G", nil, nil))
 	assert.NoError(t, validateGridRatiosShape(state, "G", []float64{0.5, 0.5}, nil))
 	assert.NoError(t, validateGridRatiosShape(state, "G", nil, []float64{0.5, 0.5}))
+}
+
+// TRAPS-4: normalizeRatios rejects float64 sum overflow and normalizes -0.0 to
+// +0.0 so emitted ratios remain finite and free of negative zero.
+func TestNormalizeRatios_RejectsSumOverflowAndNormalizesNegativeZero(t *testing.T) {
+	_, err := normalizeRatios([]float64{1e308, 1e308})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finite")
+
+	negZero := math.Copysign(0, -1)
+	require.True(t, math.Signbit(negZero))
+	out, err := normalizeRatios([]float64{negZero, 1.0})
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, 0.0, out[0])
+	assert.False(t, math.Signbit(out[0]), "-0.0 must be normalized to +0.0")
+	assert.Equal(t, 1.0, out[1])
+}
+
+// TRAPS-5: computeResizedRatios must never produce +Inf or NaN even when
+// existing sibling ratios contain subnormal, overflowing, or non-positive
+// values.
+func TestComputeResizedRatios_HandlesSubnormalAndOverflowWeights(t *testing.T) {
+	cases := []struct {
+		name       string
+		cur        []float64
+		childCount int
+		idx        int
+		target     float64
+		want       []float64
+	}{
+		{
+			name:       "subnormal sibling after target",
+			cur:        []float64{1.0, 1e-320},
+			childCount: 2,
+			idx:        0,
+			target:     0.7,
+			want:       []float64{0.7, 0.3},
+		},
+		{
+			name:       "subnormal sibling before target",
+			cur:        []float64{1e-320, 1.0},
+			childCount: 2,
+			idx:        1,
+			target:     0.6,
+			want:       []float64{0.4, 0.6},
+		},
+		{
+			name:       "overflowing sibling sum falls back to equal remainder",
+			cur:        []float64{0.5, 1e308, 1e308},
+			childCount: 3,
+			idx:        0,
+			target:     0.4,
+			want:       []float64{0.4, 0.3, 0.3},
+		},
+		{
+			name:       "non-positive sibling weights fall back to equal remainder",
+			cur:        []float64{0.5, 0, -1},
+			childCount: 3,
+			idx:        0,
+			target:     0.4,
+			want:       []float64{0.4, 0.3, 0.3},
+		},
+		{
+			name:       "mismatched ratio slice uses EqualRatios baseline",
+			cur:        []float64{1.0},
+			childCount: 3,
+			idx:        1,
+			target:     0.5,
+			want:       []float64{0.25, 0.5, 0.25},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeResizedRatios(tc.cur, tc.childCount, tc.idx, tc.target)
+			require.Len(t, got, tc.childCount)
+			sum := 0.0
+			for i, v := range got {
+				assert.False(t, math.IsNaN(v) || math.IsInf(v, 0), "ratio[%d]=%v must be finite", i, v)
+				assert.False(t, math.Signbit(v), "ratio[%d]=%v must not be negative zero", i, v)
+				assert.InDelta(t, tc.want[i], v, 1e-12)
+				sum += v
+			}
+			assert.InDelta(t, 1.0, sum, 1e-9)
+		})
+	}
+}
+
+// EFFICIENCY-26 + TileRef: synthesizeSubtree emits exactly one SetNodeKind op
+// per synthesized node, records leaf TileRef mappings in tileMap, and omits
+// TileRef from layout JSON.
+func TestSynthesizeSubtree_SingleKindOpAndTileRefMap(t *testing.T) {
+	target := &layoutNode{
+		Kind:      "split",
+		Direction: "vertical",
+		Children: []*layoutNode{
+			{Kind: "leaf", TileRef: "left-pane"},
+			{Kind: "leaf", TileRef: "right-pane"},
+		},
+	}
+	raw, err := json.Marshal(target)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "left-pane", "TileRef must not serialize in layout JSON")
+
+	state := newStateBuilder().workspace("ws-1", "R").leafNode("R", "", "").st
+	tileMap := map[string]string{}
+	ops, firstLeaf := synthesizeSubtree(testBootstrap(state), target, "R", "n", tileMap)
+	require.NotEmpty(t, firstLeaf)
+	assert.Equal(t, firstLeaf, tileMap["left-pane"])
+	assert.NotEmpty(t, tileMap["right-pane"])
+	assert.NotEqual(t, tileMap["left-pane"], tileMap["right-pane"])
+
+	kindCount := map[string]int{}
+	for _, op := range ops {
+		set := op.GetSetNodeRegister()
+		if set == nil {
+			continue
+		}
+		if _, ok := set.GetField().(*leapmuxv1.SetNodeRegisterOp_Kind); ok {
+			kindCount[set.GetNodeId()]++
+		}
+	}
+	require.Len(t, kindCount, 3, "split + 2 leaves should each get a kind op")
+	for nodeID, count := range kindCount {
+		assert.Equal(t, 1, count, "node %s must receive exactly one SetNodeKind op", nodeID)
+	}
+}
+
+func TestDecodeTargetTree_RejectsLegacyProtoAndUppercaseEnums(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"proto leaf kind", `{"kind":"NODE_KIND_LEAF"}`},
+		{"uppercase leaf kind", `{"kind":"LEAF"}`},
+		{"proto split kind", `{"kind":"NODE_KIND_SPLIT","direction":"vertical","children":[{"kind":"leaf"},{"kind":"leaf"}]}`},
+		{"proto vertical direction", `{"kind":"split","direction":"SPLIT_DIRECTION_VERTICAL","children":[{"kind":"leaf"},{"kind":"leaf"}]}`},
+		{"proto horizontal direction", `{"kind":"split","direction":"SPLIT_DIRECTION_HORIZONTAL","children":[{"kind":"leaf"},{"kind":"leaf"}]}`},
+		{"proto grid kind", `{"kind":"NODE_KIND_GRID","rows":1,"cols":1,"children":[{"kind":"leaf"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := decodeTargetTree(strings.NewReader(tc.raw))
+			require.Error(t, err)
+		})
+	}
 }

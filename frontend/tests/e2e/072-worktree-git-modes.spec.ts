@@ -5,6 +5,7 @@ import { expect } from '@playwright/test'
 import { TabType, WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import { test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { chooseGitMode, fillWorkspaceTitle, loginViaToken, menuOptionTexts, openMenu, openNewAgentDialog, openNewTerminalDialog, openNewWorkspaceDialogAt, openWorkspace, pickMenuOption, submitNewWorkspaceDialog, waitForActiveTabContext } from './helpers/ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI, waitForSoleAgentViaAPI } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
@@ -16,6 +17,82 @@ function headCommit(dir: string): string {
 }
 
 test.describe('Worktree Git Modes', () => {
+  test('selects an existing worktree by branch through the CLI', async ({ leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const repoDir = createGitRepo(dataDir, 'cli-worktree-repo')
+    const branch = 'feature/cli-selection'
+    const worktreeDir = realpathSync(addWorktree(repoDir, dataDir, 'cli-selected worktree', branch))
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'CLI selected worktree')
+    const scope = [
+      '--worker',
+      workerId,
+      '--dir',
+      repoDir,
+    ]
+    const selector = `branch:${branch}`
+    const selection = await runCLI(cli, [
+      'git',
+      'worktree',
+      'get',
+      selector,
+      ...scope,
+    ])
+    expect(selection).toMatchObject({
+      worker_id: workerId,
+      repo_root: realpathSync(repoDir),
+      path: worktreeDir,
+      branch,
+      main: false,
+      locked: false,
+    })
+
+    const openScope = [
+      '--workspace',
+      workspaceId,
+      '--use-worktree',
+      selector,
+      ...scope,
+    ]
+    const agent = await runCLI(cli, [
+      'agent',
+      'open',
+      '--provider',
+      'claude',
+      ...openScope,
+    ]) as { id: string }
+    const terminal = await runCLI(cli, ['terminal', 'open', ...openScope]) as { id: string }
+    const agents = await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    expect(agents).toContainEqual(expect.objectContaining({ id: agent.id, workingDir: worktreeDir }))
+    await expect.poll(() => runCLI(cli, ['terminal', 'get', terminal.id]))
+      .toMatchObject({ id: terminal.id, working_dir: worktreeDir, status: 'ready' })
+
+    execFileSync('git', ['branch', 'unplaced'], { cwd: repoDir })
+    await expect(runCLI(cli, [
+      'git',
+      'worktree',
+      'get',
+      'branch:unplaced',
+      ...scope,
+    ])).rejects.toMatchObject({ code: 'not_found' })
+
+    const duplicateDir = join(dataDir, 'cli-duplicate worktree')
+    execFileSync('git', [
+      'worktree',
+      'add',
+      '--force',
+      duplicateDir,
+      branch,
+    ], { cwd: repoDir })
+    await expect(runCLI(cli, [
+      'git',
+      'worktree',
+      'get',
+      selector,
+      ...scope,
+    ])).rejects.toMatchObject({ code: 'ambiguous_target' })
+  })
+
   // ─── Worktree-from-Worktree ──────────────────────────────────────
 
   test('create worktree from existing worktree starts from correct branch', async ({
@@ -258,11 +335,16 @@ test.describe('Worktree Git Modes', () => {
     const worktreeDir = addWorktree(repoDir, dataDir, 'test-repo-use-wt-api-existing', 'existing-wt-branch')
     expect(existsSync(worktreeDir)).toBe(true)
 
-    // Create workspace using the use_worktree_path field.
+    // Create the workspace using the existing worktree's path.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Use WT API WS')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       gitSetup: {
-        mode: { case: 'useWorktreePath', value: worktreeDir },
+        mode: {
+          case: 'useWorktree',
+          value: {
+            selector: { case: 'path', value: worktreeDir },
+          },
+        },
       },
     })
 
@@ -290,7 +372,12 @@ test.describe('Worktree Git Modes', () => {
     // Now open a second agent using "use existing worktree" pointing to the same managed worktree.
     const secondAgentId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       gitSetup: {
-        mode: { case: 'useWorktreePath', value: worktreeDir },
+        mode: {
+          case: 'useWorktree',
+          value: {
+            selector: { case: 'path', value: worktreeDir },
+          },
+        },
       },
     })
 
@@ -325,7 +412,12 @@ test.describe('Worktree Git Modes', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Unmanaged WT WS')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       gitSetup: {
-        mode: { case: 'useWorktreePath', value: worktreeDir },
+        mode: {
+          case: 'useWorktree',
+          value: {
+            selector: { case: 'path', value: worktreeDir },
+          },
+        },
       },
     })
 

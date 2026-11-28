@@ -1,6 +1,6 @@
 import { createStore } from 'solid-js/store'
 import { describe, expect, it } from 'vitest'
-import { buildElicitationResponse, createElicitationForm, elicitationFieldKey, elicitationURL } from './elicitationForm'
+import { createElicitationForm, ELICITATION_ACCEPT_CHOICE, elicitationAcceptChoiceKey, elicitationFieldKey, elicitationURL } from './elicitationForm'
 
 const key = elicitationFieldKey
 
@@ -198,22 +198,29 @@ describe('elicitation form', () => {
   ])('refuses %s', (_name, value) => {
     expect(elicitationURL(value)).toBeUndefined()
   })
+})
 
-  it('keeps request IDs opaque and omits content on rejection', () => {
-    expect(buildElicitationResponse('9007199254740993', 'accept', { count: 0 })).toMatchObject({
-      response: {
-        request_id: '9007199254740993',
-        response: {
-          action: 'accept',
-          content: { count: 0 },
-        },
-      },
-    })
-    expect(buildElicitationResponse('request', 'decline', { secret: 'unused' })).toMatchObject({
-      response: {
-        response: { action: 'decline' },
-      },
-    })
-    expect(JSON.stringify(buildElicitationResponse('request', 'decline', { secret: 'unused' }))).not.toContain('secret')
+describe('elicitationAcceptChoiceKey', () => {
+  const offering = (...keys: string[]) => ({
+    mode: 'form',
+    message: '',
+    acceptChoices: keys.map(key => ({ key, label: key })),
+  })
+
+  it('sends the choice that the reader picked', () => {
+    expect(elicitationAcceptChoiceKey(offering('once', 'session'), { [ELICITATION_ACCEPT_CHOICE]: 'session' })).toBe('session')
+  })
+
+  it('sends the first offered choice when the reader picked none, as the pills draw it', () => {
+    expect(elicitationAcceptChoiceKey(offering('once', 'session'), {})).toBe('once')
+  })
+
+  it('sends the first offered choice for a pick that the request does not offer', () => {
+    expect(elicitationAcceptChoiceKey(offering('once', 'session'), { [ELICITATION_ACCEPT_CHOICE]: 'always' })).toBe('once')
+  })
+
+  it('sends a plain accept for a request that offers no choice', () => {
+    expect(elicitationAcceptChoiceKey({ mode: 'form', message: '' }, { [ELICITATION_ACCEPT_CHOICE]: 'session' })).toBe('')
+    expect(elicitationAcceptChoiceKey(offering(), {})).toBe('')
   })
 })

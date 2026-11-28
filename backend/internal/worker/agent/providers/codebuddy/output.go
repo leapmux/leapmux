@@ -44,6 +44,9 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	case contracts.CodebuddyFrameKindResult:
 		a.handleResult(line.Raw)
 	case contracts.CodebuddyFrameKindUser:
+		if a.consumeInputEcho(line.Raw) {
+			return
+		}
 		a.observeAgentToolResults(line.Raw)
 		rejectedPlan := a.observePlanModeToolResults(line.Raw)
 		a.persistRaw(line.Raw)
@@ -209,9 +212,16 @@ func (a *Agent) handleAssistant(raw []byte) {
 		if msg.SessionID != "" && a.sessionID == "" {
 			a.sessionID = msg.SessionID
 		}
+		reply := a.turnReplyLocked()
+		root := msg.ParentToolUseID == nil || *msg.ParentToolUseID == ""
+		ownsOutput := root && reply.owns(msg.SessionID, msg.RequestID)
 		for _, block := range msg.Message.Content {
 			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-				a.assistantTextStreamed = true
+				if ownsOutput {
+					reply.streamedText = true
+				} else {
+					a.assistantTextStreamed = true
+				}
 			}
 			if block.Type == "tool_use" && block.ID != "" {
 				if strings.TrimSpace(block.ID) != "" && strings.TrimSpace(block.Name) != "" {
@@ -219,6 +229,12 @@ func (a *Agent) handleAssistant(raw []byte) {
 						a.turnToolCalls = make(map[string]struct{})
 					}
 					a.turnToolCalls[block.ID] = struct{}{}
+					if ownsOutput {
+						if reply.tools == nil {
+							reply.tools = make(map[string]struct{})
+						}
+						reply.tools[block.ID] = struct{}{}
+					}
 				}
 				kind := (codebuddyProvider{}).PlanModeControl(block.Name)
 				if kind == agent.PlanModeControlEnter || kind == agent.PlanModeControlExit {
@@ -240,9 +256,19 @@ func (a *Agent) handleAssistant(raw []byte) {
 // task_notification frames after it, so the reader keeps going.
 func (a *Agent) handleResult(raw []byte) {
 	var result resultMessage
-	if err := json.Unmarshal(raw, &result); err != nil {
-		slog.Warn("codebuddy: malformed result", "agent_id", a.AgentID(), "error", err)
+	decodeErr := json.Unmarshal(raw, &result)
+	requestID, _ := providerkit.RawString(result.RequestID)
+	if decodeErr != nil {
+		slog.Warn("codebuddy: malformed result", "agent_id", a.AgentID(), "error", decodeErr)
 	} else {
+		a.mu.Lock()
+		reply := a.turnReplyLocked()
+		foreign := reply != nil && reply.admitted && result.SessionID != "" && requestID != "" &&
+			!reply.matches(result.SessionID, result.RequestID)
+		a.mu.Unlock()
+		if foreign {
+			return
+		}
 		a.backfillMissingAssistantText(result)
 		a.broadcastContextUsage(result.codebuddyUsageSnapshot)
 	}
@@ -263,6 +289,11 @@ func (a *Agent) handleResult(raw []byte) {
 	a.permissionInterruptPending = false
 	sessionID := a.sessionID
 	interrupted := stopRequested && (result.statesAbortedTurn() || permissionStop && codebuddyPermissionInterruptedResult(result))
+	reply := a.turnReplyLocked()
+	outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
+	if decodeErr == nil {
+		outcome = reply.outcome(result, interrupted)
+	}
 	a.mu.Unlock()
 	// The SDK refusal must finish the main run before the global stop cancels
 	// child tasks and workflows. Send that stop before the input queue resumes.
@@ -272,8 +303,11 @@ func (a *Agent) handleResult(raw []byte) {
 		}
 	}
 	content := agent.WithToolUseCount(agent.MessageContent{Original: raw}, toolUses)
-	requestID, _ := providerkit.RawString(result.RequestID)
-	if diagnostic != nil && result.IsError && len(result.Errors) > 0 &&
+	if outcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+		content.AgentSessionID, content.NativeTurnID = reply.receipt.SessionID, reply.receipt.TurnID
+		content.InputTurnOutcome = outcome
+	}
+	if diagnostic != nil && result.failed() && len(result.Errors) > 0 &&
 		requestID == diagnostic.requestID && result.SessionID == diagnostic.sessionID && result.Errors[0] == diagnostic.text {
 		supplement, err := json.Marshal(contracts.CodebuddyResultSupplement{
 			RequestID: diagnostic.requestID, SessionID: diagnostic.sessionID, RepeatedError: diagnostic.text,
@@ -297,7 +331,7 @@ func (a *Agent) handleResult(raw []byte) {
 		switch {
 		case interrupted:
 			outcome = providerkit.CompactionEndAborted
-		case result.IsError:
+		case result.failed():
 			outcome = providerkit.CompactionEndFailed
 		}
 		providerkit.PersistCompactionEnded(a.sink, outcome, "")
@@ -305,21 +339,27 @@ func (a *Agent) handleResult(raw []byte) {
 	if interrupted {
 		a.closeOpenToolsLocked(agent.MessageCompletionInterrupted, false, false)
 	}
-	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
+	err := a.sink.PersistTurnEnd(content, agent.SpanInfo{})
+	if err != nil {
 		slog.Warn("codebuddy: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
 	foregroundStatus := bgtask.StatusEndedWithUnknownOutcome
 	switch {
 	case interrupted:
 		foregroundStatus = bgtask.StatusStopped
-	case result.IsError:
+	case result.failed():
 		foregroundStatus = bgtask.StatusFailed
 	}
 	a.closeForegroundChildren(foregroundStatus)
-	if interrupted {
-		providerkit.ResetSpansAndProgress(a.sink)
+	var settledReply *inputReply
+	if content.NativeTurnID != "" && agent.OutputRetained(err) {
+		settledReply = reply
 	}
-	a.setTurnActive(false)
+	steerOutcome := agent.SteerOutcomeUncertain
+	if decodeErr == nil {
+		steerOutcome = agent.SteerOutcomeDropped
+	}
+	a.finishTurn(settledReply, steerOutcome, interrupted)
 	a.mu.Lock()
 	refreshStyles := a.outputStyles != nil
 	a.mu.Unlock()
@@ -447,7 +487,7 @@ func (a *Agent) observePlanModeToolResults(raw []byte) bool {
 // CodeBuddy can omit streamed text after reasoning, while result.result still
 // holds the answer. Publish that answer once before the turn-end frame.
 func (a *Agent) backfillMissingAssistantText(result resultMessage) {
-	if result.IsError {
+	if result.failed() {
 		return
 	}
 	var answer string
@@ -456,6 +496,13 @@ func (a *Agent) backfillMissingAssistantText(result resultMessage) {
 	}
 	a.mu.Lock()
 	streamed := a.assistantTextStreamed
+	if reply := a.turnReplyLocked(); reply != nil {
+		if reply.owns(result.SessionID, result.RequestID) {
+			streamed = reply.streamedText || (a.compactionLive && streamed)
+		} else {
+			streamed = streamed || reply.streamedText
+		}
+	}
 	sessionID := a.sessionID
 	a.mu.Unlock()
 	if streamed {
@@ -464,14 +511,18 @@ func (a *Agent) backfillMissingAssistantText(result resultMessage) {
 	if result.SessionID != "" {
 		sessionID = result.SessionID
 	}
-	frame, err := json.Marshal(map[string]any{
+	message := map[string]any{
 		"type":       contracts.CodebuddyFrameKindAssistant,
 		"session_id": sessionID,
 		"message": map[string]any{
 			"role":    "assistant",
 			"content": []map[string]string{{"type": "text", "text": answer}},
 		},
-	})
+	}
+	if requestID, ok := providerkit.RawString(result.RequestID); ok {
+		message["_requestId"] = requestID
+	}
+	frame, err := json.Marshal(message)
 	if err != nil {
 		slog.Warn("codebuddy: encode missing assistant answer", "agent_id", a.AgentID(), "error", err)
 		return
@@ -561,7 +612,7 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 	}
 	reqID := envelope.Response.RequestID
 	a.pendingControlMu.Lock()
-	ch, ok := a.pendingControl[reqID]
+	waiter, ok := a.pendingControl[reqID]
 	a.pendingControlMu.Unlock()
 	if !ok {
 		return false
@@ -610,8 +661,15 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		result.Steered = inner.Steered
 		result.SteerReason = inner.Reason
 	}
+	if waiter.observe != nil {
+		var respErr error
+		if !result.Success {
+			respErr = errString(result.Error)
+		}
+		waiter.observe(result, respErr)
+	}
 	select {
-	case ch <- result:
+	case waiter.ch <- result:
 	default:
 	}
 	return true
@@ -620,7 +678,7 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 // sendControlFire sends a control request without waiting for its response.
 func (a *Agent) sendControlFire(requestBody string) error {
 	msg := `{"type":"control_request","request_id":"` + shortID() + `","request":` + requestBody + `}`
-	return a.SendRawInput([]byte(msg), agent.StopContext{})
+	return a.SendRawInput(agent.RawInput{Data: []byte(msg)})
 }
 
 // codebuddyControlTimerTag labels the timers of sendControlAndWait. The timers
@@ -639,10 +697,17 @@ const codebuddyControlExitWait = time.Second
 // An error answer returns the result together with the error of CodeBuddy. A
 // failed write, a process exit and a timeout return an unanswered result.
 func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (codebuddyControlResult, error) {
+	return a.sendControlAndWaitObserved(requestBody, timeout, nil)
+}
+
+func (a *Agent) sendControlAndWaitObserved(requestBody string, timeout time.Duration, observe func(codebuddyControlResult, error)) (codebuddyControlResult, error) {
 	requestID := shortID()
 	ch := make(chan codebuddyControlResult, 1)
 	a.pendingControlMu.Lock()
-	a.pendingControl[requestID] = ch
+	if a.pendingControl == nil {
+		a.pendingControl = make(map[string]pendingControlWaiter)
+	}
+	a.pendingControl[requestID] = pendingControlWaiter{ch: ch, observe: observe}
 	a.pendingControlMu.Unlock()
 	defer func() {
 		a.pendingControlMu.Lock()
@@ -651,7 +716,7 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (c
 	}()
 
 	msg := `{"type":"control_request","request_id":"` + requestID + `","request":` + requestBody + `}`
-	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
+	if err := a.SendRawInput(agent.RawInput{Data: []byte(msg)}); err != nil {
 		exitWait := a.Clock().NewTimer(codebuddyControlExitWait, codebuddyControlTimerTag)
 		defer exitWait.Stop(codebuddyControlTimerTag)
 		select {
@@ -724,8 +789,10 @@ func (a *Agent) persistUnknown(raw []byte) {
 // persistRaw forwards one verbatim NDJSON frame to the transcript.
 func (a *Agent) persistRaw(raw []byte) {
 	var frame struct {
-		Type            string `json:"type"`
-		ParentToolUseID string `json:"parent_tool_use_id"`
+		Type            string          `json:"type"`
+		SessionID       string          `json:"session_id"`
+		RequestID       json.RawMessage `json:"_requestId"`
+		ParentToolUseID string          `json:"parent_tool_use_id"`
 		Message         struct {
 			Content []struct {
 				Type      string `json:"type"`
@@ -775,7 +842,21 @@ func (a *Agent) persistRaw(raw []byte) {
 		}
 	}
 	content := agent.MessageContent{Original: raw}
+	var reply *inputReply
+	if decoded && frame.ParentToolUseID == "" && frame.Type == contracts.CodebuddyFrameKindAssistant {
+		a.mu.Lock()
+		if current := a.turnReplyLocked(); current.owns(frame.SessionID, frame.RequestID) {
+			reply = current
+			content.AgentSessionID, content.NativeTurnID = reply.receipt.SessionID, reply.receipt.TurnID
+		}
+		a.mu.Unlock()
+	}
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, info); err != nil {
+		if reply != nil && !agent.OutputRetained(err) {
+			a.mu.Lock()
+			reply.incomplete = true
+			a.mu.Unlock()
+		}
 		slog.Debug("codebuddy: persist message", "agent_id", a.AgentID(), "error", err)
 		return
 	}

@@ -30,10 +30,10 @@ func seedStore(t *testing.T, root, name string, thread threadRecord, turn *turnR
 	state := filepath.Join(store.runtimeDir(), "state.json")
 	require.NoError(t, os.WriteFile(state, []byte(`{"schema_version":1,"next_seq":9}`), 0o600))
 	require.NoError(t, os.Chtimes(state, touched, touched))
-	require.NoError(t, os.WriteFile(store.threadPath(thread.ID), mustJSON(t, thread), 0o600))
+	require.NoError(t, os.WriteFile(store.threadPath(thread.ID), agenttest.MustJSON(t, thread), 0o600))
 	require.NoError(t, os.Chtimes(store.threadPath(thread.ID), touched, touched))
 	if turn != nil {
-		require.NoError(t, os.WriteFile(filepath.Join(store.runtimeDir(), "turns", turn.ID+".json"), mustJSON(t, turn), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(store.runtimeDir(), "turns", turn.ID+".json"), agenttest.MustJSON(t, turn), 0o600))
 	}
 	return store
 }
@@ -222,7 +222,7 @@ func TestCodewhaleStoredSessionsKeepsTimestampTies(t *testing.T) {
 				older := old
 				older.ID = "older"
 				older.UpdatedAt = stamp.Add(-time.Hour).Format(time.RFC3339)
-				require.NoError(t, os.WriteFile(store.threadPath(older.ID), mustJSON(t, older), 0o600))
+				require.NoError(t, os.WriteFile(store.threadPath(older.ID), agenttest.MustJSON(t, older), 0o600))
 				limit = 2
 			}
 			seedStore(t, root, "store-z", threadRecord{ID: "new", Workspace: workDir, LatestTurnID: "turn-new", UpdatedAt: stamp.Add(time.Hour).Format(time.RFC3339)}, nil, stamp)

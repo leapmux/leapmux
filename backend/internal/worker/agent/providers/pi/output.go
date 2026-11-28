@@ -4,14 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -94,9 +92,9 @@ type piToolState struct {
 }
 
 // piExtensionUIRequestHeader captures the routing fields of an
-// extension_ui_request event. The full payload is forwarded verbatim to the
-// frontend through PublishControlRequest / PersistLeapMuxNotification so renderers
-// can read every method-specific field.
+// extension_ui_request event. The full payload is forwarded verbatim through
+// PublishControlRequest / PersistLeapMuxNotification, so ReadControlRequest and
+// the browser's renderers can read every method-specific field.
 type piExtensionUIRequestHeader struct {
 	ID        string `json:"id"`
 	Method    string `json:"method"`
@@ -107,18 +105,10 @@ type piExtensionUIRequestHeader struct {
 	Timeout float64 `json:"timeout"`
 }
 
-// maxPiDialogTimeoutMillis is the largest timeout that a time.Duration holds. A
-// larger one states no limit in practice, and a float conversion past it has no
-// defined result.
-const maxPiDialogTimeoutMillis = float64(math.MaxInt64 / int64(time.Millisecond))
-
 // deadline returns the wait after which Pi answers the dialog itself, or zero
 // when Pi waits with no limit.
 func (h piExtensionUIRequestHeader) deadline() time.Duration {
-	if h.Timeout <= 0 || h.Timeout >= maxPiDialogTimeoutMillis {
-		return 0
-	}
-	return time.Duration(h.Timeout * float64(time.Millisecond))
+	return providerkit.DialogTimeoutDuration(h.Timeout)
 }
 
 // piAgentEndMessage holds the native outcome fields of one assistant message.
@@ -179,7 +169,7 @@ const piRetryableWebSocketError = "WebSocket error"
 
 // piDialogMethods is the set of extension UI methods that block waiting for an
 // extension_ui_response. These are surfaced as control requests so the
-// frontend can render a dialog and ship a response back.
+// frontend can render a dialog and send a decision back.
 var piDialogMethods = map[string]struct{}{
 	contracts.PiDialogMethodSelect:  {},
 	contracts.PiDialogMethodConfirm: {},
@@ -200,6 +190,9 @@ func handlePiOutput(a *Agent, line *providerkit.ParsedLine) {
 func handlePiOutputObserved(a *Agent, line *providerkit.ParsedLine, observedAt time.Time) {
 	slog.Debug("pi HandleOutput", "agent_id", a.AgentID(), "type", line.Type, "len", len(line.Raw))
 
+	if line.Type == contracts.PiEventResponse && a.handlePiReplyResponse(line) {
+		return
+	}
 	switch line.Type {
 	case contracts.PiEventAgentStart:
 		a.handlePiAgentStartObserved(observedAt)
@@ -207,9 +200,12 @@ func handlePiOutputObserved(a *Agent, line *providerkit.ParsedLine, observedAt t
 		a.handlePiAgentEnd(line.Raw)
 	case contracts.PiEventAgentSettled:
 		a.handlePiAgentSettled(line.Raw, observedAt)
-	case contracts.PiEventTurnStart, contracts.PiEventTurnEnd,
-		contracts.PiEventMessageStart:
-		// These native lifecycle markers require no UI state change.
+	case contracts.PiEventTurnEnd:
+		a.updatePiAssistantBoundary(line.Raw, true)
+	case contracts.PiEventMessageStart:
+		a.updatePiAssistantBoundary(line.Raw, false)
+	case contracts.PiEventTurnStart:
+		// This native lifecycle marker requires no UI state change.
 	case contracts.PiEventMessageUpdate:
 		a.handlePiMessageUpdate(line.Raw)
 	case contracts.PiEventMessageEnd:
@@ -311,6 +307,9 @@ func (a *Agent) handlePiAgentStartObserved(startedAt time.Time) {
 		a.turnStartedAt = startedAt
 		a.interruptRequests = nil
 		a.turnGeneration++
+		if run := a.replyRun; run != nil {
+			run.started = run.receipt.SessionID == a.sessionHandleLocked()
+		}
 	}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
@@ -395,21 +394,6 @@ func (a *Agent) takePiInterruptOutcome(env piAgentEndEnvelope) bool {
 	return interrupted
 }
 
-// piTurnDurationMs measures one Pi turn in milliseconds. Pi's agent_end carries
-// no duration of its own, so the worker brackets the turn instead.
-//
-// It returns nil for a turn whose start this worker never saw, and for a clock
-// that moved backwards. The envelope then carries no duration at all, rather
-// than a false 0. The frontend tells those two apart: it draws no time for an
-// absent field, and "(0ms)" for a real zero.
-func piTurnDurationMs(startedAt, endedAt time.Time) *int64 {
-	if startedAt.IsZero() || endedAt.Before(startedAt) {
-		return nil
-	}
-	ms := endedAt.Sub(startedAt).Milliseconds()
-	return &ms
-}
-
 // isRetryableFailure reports whether the turn ended on the one transient
 // failure that LeapMux itself retries automatically.
 func (env piAgentEndEnvelope) isRetryableFailure() bool {
@@ -431,14 +415,16 @@ func (env piAgentEndEnvelope) retainedCompletion() agent.MessageCompletion {
 // message becomes a row of its own before it (see persistPiThinking).
 func (a *Agent) handlePiMessageEnd(raw []byte) {
 	var header struct {
-		Message struct {
-			Role string `json:"role"`
-		} `json:"message"`
+		Message map[string]json.RawMessage `json:"message"`
 	}
 	if json.Unmarshal(raw, &header) == nil {
-		switch header.Message.Role {
+		role := providerkit.ObjectString(header.Message, "role")
+		switch role {
 		case piRoleUser:
-			if text, ok := piUserMessageText(raw); ok && a.steers.EchoKey(text) {
+			if a.observePiSteerEcho(piSteerMessageInputID(header.Message)) {
+				return
+			}
+			if text, ok := piUserMessageTextFromContent(header.Message["content"]); ok && a.steers.EchoKey(text) {
 				a.steers.Settle(a.orderedSink())
 			}
 			return
@@ -455,7 +441,7 @@ func (a *Agent) handlePiMessageEnd(raw []byte) {
 	// Update child status from the nested custom message before persisting it.
 	piApplySubagentNotificationTracked(a.sink, raw, a.trackOpenBgTask, a.untrackOpenBgTask)
 	a.persistPiThinking(raw)
-	if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+	if err := a.persistPiReplyRow(content, agent.SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.AgentID(), "error", err)
 		if !agent.OutputRetained(err) {
 			return
@@ -475,11 +461,15 @@ func piUserMessageText(raw []byte) (string, bool) {
 	if json.Unmarshal(raw, &envelope) != nil {
 		return "", false
 	}
-	if text, ok := providerkit.RawString(envelope.Message.Content); ok {
+	return piUserMessageTextFromContent(envelope.Message.Content)
+}
+
+func piUserMessageTextFromContent(content json.RawMessage) (string, bool) {
+	if text, ok := providerkit.RawString(content); ok {
 		return text, true
 	}
 	var blocks []*piContentBlock
-	if json.Unmarshal(envelope.Message.Content, &blocks) != nil || blocks == nil {
+	if json.Unmarshal(content, &blocks) != nil || blocks == nil {
 		return "", false
 	}
 	var text strings.Builder
@@ -610,6 +600,15 @@ func (a *Agent) handlePiMessageUpdate(raw []byte) {
 }
 
 func (a *Agent) flushPiGeneration(completion agent.MessageCompletion) {
+	for _, scopeID := range a.generationBuffer.ScopeIDs() {
+		kind, text, open := a.generationBuffer.ScopeSnapshot(scopeID)
+		if open && kind == agent.AssembledMessageKindText && agent.TrimJavaScriptSpace(text) != "" {
+			// The transcript can retain this prefix, but Pi never committed
+			// it as a message_end in the reply.
+			a.noteUnfinishedPiReplyText()
+			break
+		}
+	}
 	if err := providerkit.FlushGeneration(&a.generationBuffer, a.sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("pi failed to persist partial generation", "agent_id", a.AgentID(), "error", err)
 	}
@@ -670,7 +669,15 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 	// providerkit.OpenToolSpanWithParent records the type for both root and nested calls.
 	// Closing messages from Claude and Agent Client Protocol (ACP) providers read that recorded type.
 	spawns := env.ToolName == contracts.PiToolAgent || env.ToolName == contracts.PiToolSubagentWorkflow
-	if err := providerkit.OpenToolSpanWithParent(a.orderedSink(), agent.MessageContent{Original: raw}, env.ToolCallID, env.ToolName, parentSpanID, spawns); err != nil {
+	content := agent.MessageContent{Original: raw}
+	var reply *piReplyRun
+	var item agent.NativeReplyItem
+	if env.ToolName == contracts.PiToolPlanComplete {
+		reply, item = a.preparePiReplyRow(&content)
+	}
+	err := providerkit.OpenToolSpanWithParent(a.orderedSink(), content, env.ToolCallID, env.ToolName, parentSpanID, spawns)
+	a.recordPiReplyRow(reply, item, err)
+	if err != nil {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.AgentID(), "error", err)
 	}
 	if env.ToolName == contracts.PiToolAgent {
@@ -912,12 +919,19 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 	a.ClearCumulativeOutput(env.ToolCallID)
 	a.sink.ReportProgress(agent.CompleteOutputProgress(env.ToolCallID))
 
-	if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{
+	span := agent.SpanInfo{
 		SpanID:   env.ToolCallID,
 		SpanType: env.ToolName,
 		Closing:  true,
-	}); err != nil {
-		slog.Error("pi persist tool_execution_end", "agent_id", a.AgentID(), "error", err)
+	}
+	var endErr error
+	if env.ToolName == contracts.PiToolPlanComplete {
+		endErr = a.persistPiReplyRow(agent.MessageContent{Original: raw}, span)
+	} else {
+		endErr = a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, span)
+	}
+	if endErr != nil {
+		slog.Error("pi persist tool_execution_end", "agent_id", a.AgentID(), "error", endErr)
 	}
 	a.sink.CloseSpan(env.ToolCallID)
 	a.reportPiGoalResult(env.ToolName, env.Result)
@@ -963,10 +977,6 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 			a.untrackOpenBgTask(closedKey)
 		}
 	}
-}
-
-func (a *Agent) discardIncompletePiTools() {
-	a.discardIncompletePiToolsWithStatus(bgtask.StatusStopped)
 }
 
 func (a *Agent) discardIncompletePiToolsWithStatus(status bgtask.Status) {
@@ -1189,7 +1199,7 @@ func (a *Agent) handlePiEntryAppended(raw []byte) {
 		if json.Unmarshal(event.Entry.Display, &display) != nil || !display {
 			return
 		}
-		if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
+		if err := a.persistPiReplyRow(agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
 			slog.Error("persist Pi session entry", "agent_id", a.AgentID(), "error", err)
 		}
 	case contracts.PiEntryTypeCompaction:
@@ -1290,17 +1300,21 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 		// deadline passes. The deadline is armed BEFORE the publish, so an answer
 		// that the reader sends at once finds it to disarm.
 		a.dialogDeadlines.Arm(a.Clock(), head.ID, head.deadline(), func() { a.withdrawTimedOutPiDialog(head.ID) })
-		if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: head.ID, Payload: raw, SourceSeq: a.piControlSourceSeq(question)}); err != nil {
+		receipt := a.piReplyControlReceipt()
+		if err := a.sink.PublishControlRequest(agent.ControlRequest{
+			AgentSessionID: receipt.SessionID, NativeTurnID: receipt.TurnID, RequestID: head.ID,
+			Payload: raw, SourceSeq: a.piControlSourceSeq(question),
+		}); err != nil {
 			a.dialogDeadlines.Disarm(head.ID)
 			a.forgetOpenDialog(head.ID)
 			slog.Error("publish pi control request", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
 			// Pi offers cancellation but no error response for extension dialogs.
-			response, marshalErr := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": head.ID, "cancelled": true})
+			answer, marshalErr := piCancelResponse(head.ID).answer()
 			if marshalErr != nil {
 				slog.Error("encode pi control cancellation", "agent_id", a.AgentID(), "error", marshalErr)
 				return
 			}
-			if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
+			if err := a.SendRawInput(agent.RawInput{Data: answer.Content}); err != nil {
 				slog.Warn("send pi control cancellation", "agent_id", a.AgentID(), "error", err)
 			}
 		}

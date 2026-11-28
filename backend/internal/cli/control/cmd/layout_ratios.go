@@ -3,99 +3,104 @@ package cmd
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
-// RunTileSetRatios writes a fresh `ratios` slice on a SPLIT node.
-// The split's tile id flows through the universal resolver, so
-// `--tile-id` can be derived from `--tab-id` / env defaults like
-// every other tile verb. The handler rejects non-SPLIT targets
-// explicitly — `set-grid-ratios` is the GRID-node counterpart.
-func RunTileSetRatios(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, ratiosCSV string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.StringVar(&ratiosCSV, "ratios", "", "comma-separated ratios summing to 1.0 (required)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
+type splitRatiosResult struct {
+	SplitTileID string    `json:"split_tile_id"`
+	Ratios      []float64 `json:"ratios"`
+}
+
+func (r splitRatiosResult) QuietLines() []string { return []string{r.SplitTileID} }
+
+type gridRatiosResult struct {
+	GridTileID string    `json:"grid_tile_id"`
+	RowRatios  []float64 `json:"row_ratios,omitempty"`
+	ColRatios  []float64 `json:"col_ratios,omitempty"`
+}
+
+func (r gridRatiosResult) QuietLines() []string { return []string{r.GridTileID} }
+
+// runTileSetRatios writes a fresh `ratios` slice on a SPLIT node. The
+// <tile> argument takes every target form, as every other tile command's
+// does. The handler rejects a target that is not a SPLIT explicitly —
+// `set-grid-ratios` is the GRID-node counterpart.
+func runTileSetRatios(inv *cli.Invocation) (any, error) {
+	ratiosCSV := stringFlag(inv, "ratios")
 	if ratiosCSV == "" {
-		return control.EmitError("invalid_request", "--ratios is required")
+		return nil, cli.Usagef("--ratios is required")
 	}
 	ratios, err := parseRatiosCSV(ratiosCSV)
 	if err != nil {
-		return control.EmitErrorWith("invalid_request", err)
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
-	cc, _, splitID, err := openTileCRDTCall(hub, in)
+	s, err := openSession(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer cc.close()
+	defer s.Close()
+	cc, _, splitID, err := s.openTile(inv.Arg("tile"))
+	if err != nil {
+		return nil, err
+	}
 	if err := preflightTileKind(cc.bs.State, splitID, leapmuxv1.NodeKind_NODE_KIND_SPLIT, "set-ratios", "SPLIT", "(use set-grid-ratios for grids)"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateSplitRatiosLength(cc.bs.State, splitID, ratios); err != nil {
-		return err
+		return nil, err
 	}
 	if err := cc.submitOps([]*leapmuxv1.CrdtOp{opSetNodeRatios(cc.bs, splitID, ratios)}); err != nil {
-		return err
+		return nil, err
 	}
-	return control.EmitData(map[string]any{"split_tile_id": splitID, "ratios": ratios})
+	return splitRatiosResult{SplitTileID: splitID, Ratios: ratios}, nil
 }
 
-// RunTileSetGridRatios writes rowRatios and/or colRatios on a GRID
+// runTileSetGridRatios writes rowRatios and/or colRatios on a GRID
 // node. At least one of --row-ratios / --col-ratios must be supplied;
 // passing both updates both axes in the same batch (one CRDT op per
-// axis). The grid's tile id flows through the universal resolver, so
-// `--tile-id` can be derived from `--tab-id` / env defaults like
-// every other tile verb.
-func RunTileSetGridRatios(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, rowRatiosCSV, colRatiosCSV string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.StringVar(&rowRatiosCSV, "row-ratios", "", "comma-separated row ratios (at least one of --row-ratios / --col-ratios is required)")
-	fs.StringVar(&colRatiosCSV, "col-ratios", "", "comma-separated column ratios (at least one of --row-ratios / --col-ratios is required)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
+// axis). The <tile> argument takes every target form, as every other
+// tile command's does.
+func runTileSetGridRatios(inv *cli.Invocation) (any, error) {
+	rowRatiosCSV := stringFlag(inv, "row-ratios")
+	colRatiosCSV := stringFlag(inv, "col-ratios")
 	if rowRatiosCSV == "" && colRatiosCSV == "" {
-		return control.EmitError("invalid_request", "at least one of --row-ratios / --col-ratios is required")
+		return nil, cli.Usagef("at least one of --row-ratios / --col-ratios is required")
 	}
 	var rowRatios, colRatios []float64
 	if rowRatiosCSV != "" {
 		r, err := parseRatiosCSV(rowRatiosCSV)
 		if err != nil {
-			return control.EmitErrorWith("invalid_request", fmt.Errorf("--row-ratios: %w", err))
+			return nil, cli.Wrap(cli.CodeUsage, fmt.Errorf("--row-ratios: %w", err), "")
 		}
 		rowRatios = r
 	}
 	if colRatiosCSV != "" {
 		c, err := parseRatiosCSV(colRatiosCSV)
 		if err != nil {
-			return control.EmitErrorWith("invalid_request", fmt.Errorf("--col-ratios: %w", err))
+			return nil, cli.Wrap(cli.CodeUsage, fmt.Errorf("--col-ratios: %w", err), "")
 		}
 		colRatios = c
 	}
-	cc, _, gridID, err := openTileCRDTCall(hub, in)
+	s, err := openSession(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer cc.close()
+	defer s.Close()
+	cc, _, gridID, err := s.openTile(inv.Arg("tile"))
+	if err != nil {
+		return nil, err
+	}
 	if err := preflightTileKind(cc.bs.State, gridID, leapmuxv1.NodeKind_NODE_KIND_GRID, "set-grid-ratios", "GRID", ""); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateGridRatiosShape(cc.bs.State, gridID, rowRatios, colRatios); err != nil {
-		return err
+		return nil, err
 	}
 	ops := []*leapmuxv1.CrdtOp{}
 	if rowRatios != nil {
@@ -105,16 +110,108 @@ func RunTileSetGridRatios(rawCtx any, args []string) error {
 		ops = append(ops, opSetNodeColRatios(cc.bs, gridID, colRatios))
 	}
 	if err := cc.submitOps(ops); err != nil {
-		return err
+		return nil, err
 	}
-	out := map[string]any{"grid_tile_id": gridID}
-	if rowRatios != nil {
-		out["row_ratios"] = rowRatios
+	return gridRatiosResult{GridTileID: gridID, RowRatios: rowRatios, ColRatios: colRatios}, nil
+}
+
+// runTileResize adjusts one tile's ratio inside its parent SPLIT node, scaling
+// its siblings proportionally so all ratios remain finite, non-negative, and
+// sum to 1.
+func runTileResize(inv *cli.Invocation) (any, error) {
+	ratio, err := floatFlag(inv, "ratio")
+	if err != nil {
+		return nil, err
 	}
-	if colRatios != nil {
-		out["col_ratios"] = colRatios
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 || ratio >= 1 {
+		return nil, cli.Usagef("--ratio must be strictly between 0 and 1; got %v", ratio)
 	}
-	return control.EmitData(out)
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	cc, _, tileID, err := s.openTile(inv.Arg("tile"))
+	if err != nil {
+		return nil, err
+	}
+	node := cc.bs.State.GetNodes()[tileID]
+	parentID := node.GetParentId()
+	if parentID == "" {
+		return nil, cli.Newf(cli.CodeConflict, "tile %s is the workspace root and has no parent split to resize", tileID)
+	}
+	parent := cc.bs.State.GetNodes()[parentID]
+	if parent == nil || !crdt.HLCIsZero(parent.GetTombstoneAt()) || parent.GetKind().GetValue() != leapmuxv1.NodeKind_NODE_KIND_SPLIT {
+		return nil, cli.Newf(cli.CodeConflict, "tile %s is not a child of a split container", tileID).
+			WithHint(`for grid cells, use "leapmux tile set-grid-ratios <grid> --row-ratios ... --col-ratios ..."`)
+	}
+	childrenByParent := crdt.LiveChildrenByParent(cc.bs.State)
+	children := crdt.LayoutChildIDs(cc.bs.State.GetNodes(), childrenByParent, parentID)
+	idx := slices.Index(children, tileID)
+	if idx < 0 || len(children) < 2 {
+		return nil, cli.Newf(cli.CodeConflict, "parent split %s has fewer than 2 live children", parentID)
+	}
+	ratios := computeResizedRatios(parent.GetRatios().GetValue().GetValues(), len(children), idx, ratio)
+	if err := cc.submitOps([]*leapmuxv1.CrdtOp{opSetNodeRatios(cc.bs, parentID, ratios)}); err != nil {
+		return nil, err
+	}
+	return splitRatiosResult{SplitTileID: parentID, Ratios: ratios}, nil
+}
+
+// computeResizedRatios sets ratios[idx] to target (0 < target < 1) and scales
+// the remaining siblings proportionally to fill 1 - target. When the current
+// sibling weights are non-positive, overflow, or produce a non-finite scale,
+// it falls back to equal shares of the remainder so emitted ratios stay finite
+// and sum to 1.
+func computeResizedRatios(cur []float64, childCount, idx int, target float64) []float64 {
+	var ratios []float64
+	if len(cur) == childCount {
+		ratios = slices.Clone(cur)
+	} else {
+		ratios = crdt.EqualRatios(childCount)
+	}
+	otherSum := 0.0
+	for i, v := range ratios {
+		if i == idx {
+			continue
+		}
+		if v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) {
+			otherSum += v
+		} else {
+			ratios[i] = 0
+		}
+	}
+	rem := 1.0 - target
+	ratios[idx] = target
+
+	fillEqualRemainder := func() []float64 {
+		share := rem / float64(childCount-1)
+		for i := range ratios {
+			if i != idx {
+				ratios[i] = share
+			}
+		}
+		return ratios
+	}
+
+	if otherSum <= 0 || math.IsNaN(otherSum) || math.IsInf(otherSum, 0) {
+		return fillEqualRemainder()
+	}
+
+	for i := range ratios {
+		if i == idx {
+			continue
+		}
+		scaled := (ratios[i] / otherSum) * rem
+		if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled < 0 {
+			return fillEqualRemainder()
+		}
+		if scaled == 0 {
+			scaled = 0 // normalize -0.0 to +0.0
+		}
+		ratios[i] = scaled
+	}
+	return ratios
 }
 
 // parseRatiosCSV parses a comma-separated float list and normalizes
@@ -123,8 +220,8 @@ func RunTileSetGridRatios(rawCtx any, args []string) error {
 // input: users can pass any positive weights ("1,2,1" -> [0.25, 0.5,
 // 0.25]) or already-normalized values ("0.5, 0.5" -> [0.5, 0.5]).
 // Rejects empty lists, malformed numbers, negative weights, NaN/Inf,
-// and all-zero inputs — every one of those would either drop on the
-// wire as a value-domain rejection or produce a meaningless layout.
+// overflow, and all-zero inputs — every one of those would either drop
+// on the wire as a value-domain rejection or produce a meaningless layout.
 func parseRatiosCSV(s string) ([]float64, error) {
 	if strings.TrimSpace(s) == "" {
 		return nil, fmt.Errorf("ratios cannot be empty")
@@ -145,9 +242,11 @@ func parseRatiosCSV(s string) ([]float64, error) {
 // slice sums to exactly 1.0. Returns an error when:
 //   - the slice is empty,
 //   - any value is NaN, +/-Inf, or negative,
+//   - the sum overflows to a non-finite float,
 //   - every value is zero (no positive weight to normalize against).
 //
-// The output is always a fresh slice — the input is not mutated.
+// The output is always a fresh slice — the input is not mutated — and any
+// negative zero is normalized to +0.0.
 func normalizeRatios(values []float64) ([]float64, error) {
 	if len(values) == 0 {
 		return nil, fmt.Errorf("ratios cannot be empty")
@@ -162,14 +261,37 @@ func normalizeRatios(values []float64) ([]float64, error) {
 		}
 		sum += v
 	}
+	if math.IsInf(sum, 0) || math.IsNaN(sum) {
+		return nil, fmt.Errorf("ratios sum overflows to a non-finite value")
+	}
 	if sum <= 0 {
 		return nil, fmt.Errorf("ratios must include at least one positive value")
 	}
 	out := make([]float64, len(values))
 	for i, v := range values {
-		out[i] = v / sum
+		r := v / sum
+		if r == 0 {
+			r = 0 // normalize -0.0 to +0.0
+		}
+		out[i] = r
 	}
 	return out, nil
+}
+
+// ratiosForLayoutSize fills missing weights the way the browser does and
+// normalizes the result for import. A size change can discard every
+// positive weight, in which case the remaining cells take equal weights.
+func ratiosForLayoutSize(values []float64, count int) []float64 {
+	if len(values) == count {
+		return values
+	}
+	resized := crdt.EqualRatios(count)
+	copy(resized, values)
+	normalized, err := normalizeRatios(resized)
+	if err != nil {
+		return crdt.EqualRatios(count)
+	}
+	return normalized
 }
 
 // validateSplitRatiosLength rejects --ratios whose length doesn't
@@ -181,9 +303,8 @@ func normalizeRatios(values []float64) ([]float64, error) {
 func validateSplitRatiosLength(state *leapmuxv1.UserMaterialized, splitID string, ratios []float64) error {
 	live := crdt.LiveChildrenByParent(state)[splitID]
 	if len(ratios) != len(live) {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("--ratios length %d does not match SPLIT %s live child count %d",
-				len(ratios), splitID, len(live)))
+		return cli.Usagef("--ratios length %d does not match SPLIT %s live child count %d",
+			len(ratios), splitID, len(live))
 	}
 	return nil
 }
@@ -198,14 +319,12 @@ func validateGridRatiosShape(state *leapmuxv1.UserMaterialized, gridID string, r
 	rows := int(rec.GetRows().GetValue())
 	cols := int(rec.GetCols().GetValue())
 	if len(rowRatios) > 0 && len(rowRatios) != rows {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("--row-ratios length %d does not match GRID %s rows %d",
-				len(rowRatios), gridID, rows))
+		return cli.Usagef("--row-ratios length %d does not match GRID %s rows %d",
+			len(rowRatios), gridID, rows)
 	}
 	if len(colRatios) > 0 && len(colRatios) != cols {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("--col-ratios length %d does not match GRID %s cols %d",
-				len(colRatios), gridID, cols))
+		return cli.Usagef("--col-ratios length %d does not match GRID %s cols %d",
+			len(colRatios), gridID, cols)
 	}
 	return nil
 }

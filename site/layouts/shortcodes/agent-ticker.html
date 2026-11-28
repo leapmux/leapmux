@@ -1,0 +1,26 @@
+{{- /*
+  agent-ticker renders a continuous single-row marquee of every coding-agent
+  provider from data/feature_matrix/checklist.json using the shared
+  provider-icon.html partial and fingerprinted assets/js/agent-ticker.js.
+*/ -}}
+{{- $providers := partialCached "agent-providers.html" . -}}
+{{- if gt (len $providers) 0 -}}
+<div class="agent-ticker" role="region" aria-label="Supported coding agents" style="{{ printf "--agent-ticker-count: %d;" (len $providers) | safeCSS }}">
+  <div class="agent-ticker-viewport">
+    <div class="agent-ticker-track">
+      {{- /* list-style none makes Safari drop the implicit list role, so the role is explicit. */ -}}
+      {{- range $isDuplicate := slice false true -}}
+      <ul class="agent-ticker-list" role="list"{{ if $isDuplicate }} aria-hidden="true"{{ end }}>
+        {{- range $provider := $providers -}}
+          <li class="agent-ticker-item">
+            <a class="agent-ticker-link" href="{{ $provider.url }}"{{ if $isDuplicate }} tabindex="-1"{{ end }} title="{{ $provider.label }}">
+              {{- partial "provider-icon.html" (dict "provider" $provider "size" 24 "alt" (cond $isDuplicate "" $provider.label)) -}}
+            </a>
+          </li>
+        {{- end -}}
+      </ul>
+      {{- end -}}
+    </div>
+  </div>
+</div>
+{{- end -}}

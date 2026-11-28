@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/terminput"
 )
 
 // TerminalFreezer is the subset of terminal.Manager methods needed to stop a
@@ -14,7 +16,7 @@ type TerminalFreezer interface {
 	StopTerminal(id string)
 	WaitForExit(id string)
 	WaitForReadDrained(id string) bool
-	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool)
+	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool, bool)
 }
 
 // FreezeTerminalOutput ends the terminal's PTY, waits for the shell to be
@@ -38,7 +40,8 @@ func FreezeTerminalOutput(t *testing.T, mgr TerminalFreezer, id string) int64 {
 	mgr.StopTerminal(id)
 	mgr.WaitForExit(id)
 	require.True(t, mgr.WaitForReadDrained(id), "terminal %s is not in the manager", id)
-	_, offset, _ := mgr.ScreenSnapshotSince(id, 0)
+	_, offset, _, ok := mgr.ScreenSnapshotSince(id, 0)
+	require.True(t, ok, "terminal %s is not in the manager", id)
 	return offset
 }
 
@@ -75,8 +78,8 @@ func RegisterTerminalCleanup(t *testing.T, mgr TerminalCleaner, id string) {
 // TerminalJobRunner is the subset of terminal.Manager methods needed to send a
 // background job to a test shell and observe whether job-control setup failed.
 type TerminalJobRunner interface {
-	SendInput(id string, data []byte) error
-	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool)
+	SendInput(id string, input terminput.Input) error
+	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool, bool)
 }
 
 // jobGroupFailure is the text that bash prints when a job did not get a process
@@ -89,14 +92,14 @@ const jobGroupFailure = "child setpgid"
 // setpgid calls with EPERM under load).
 func SendShellJobUntil(t *testing.T, mgr TerminalJobRunner, id, line string, done func() bool, msgAndArgs ...any) bool {
 	t.Helper()
-	send := func() { assert.NoError(t, mgr.SendInput(id, []byte(line+TestShellEnter()))) }
+	send := func() { assert.NoError(t, mgr.SendInput(id, terminput.Input{Data: []byte(line + TestShellEnter())})) }
 	send()
 	sent := 1
 	return AssertEventually(t, func() bool {
 		if done() {
 			return true
 		}
-		screen, _, _ := mgr.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := mgr.ScreenSnapshotSince(id, 0)
 		if bytes.Count(screen, []byte(jobGroupFailure)) >= sent {
 			send()
 			sent++

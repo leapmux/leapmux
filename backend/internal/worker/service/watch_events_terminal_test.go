@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -12,8 +14,10 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 // collectTerminalData drains all TerminalData events (snapshot or
@@ -39,10 +43,10 @@ func collectTerminalData(t *testing.T, w *testResponseWriter, terminalID string)
 
 // TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate:
 // a resubscribe with after_offset == the terminal's current cumulative
-// offset produces NO TerminalData event. The backend has nothing new
-// to send, so the client's xterm must not receive any replay — seeing
-// one would mean the backend is re-sending bytes the client already
-// has, which manifests as duplicated prompt output in the live UI.
+// offset produces one empty catch-up TerminalData frame with
+// replay_complete=true and no duplicated bytes. The backend has nothing new
+// to send, so the client's xterm receives no replayed bytes while still
+// learning that catch-up is complete at currentOffset.
 func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testing.T) {
 	t.Parallel()
 
@@ -50,27 +54,34 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-resub")
 
-	require.NoError(t, svc.Terminals.SendInput("t-resub", []byte("echo resubscribe_test"+testutil.TestShellEnter())))
+	require.NoError(t, svc.Terminals.SendInput("t-resub", terminput.Input{Data: []byte("echo resubscribe_test" + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
-		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-resub", 0)
+		_, off, _, _ := svc.Terminals.ScreenSnapshotSince("t-resub", 0)
 		return off > 0
 	}, "initial shell output")
 
 	// First subscribe: after_offset=0 delivers a cold-catch-up event with
-	// the current screen contents.
+	// the current screen contents and replay_complete=true.
 	w1 := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w1)
 
+	var firstCatchUp *leapmuxv1.TerminalData
 	testutil.AssertEventually(t, func() bool {
 		for _, data := range collectTerminalData(t, w1, "t-resub") {
-			if data.GetEndOffset() > 0 {
+			if data.GetReplayComplete() {
+				firstCatchUp = data
 				return true
 			}
 		}
 		return false
-	}, "first subscribe delivered the current screen")
+	}, "first subscribe delivered the catch-up screen")
+	require.NotNil(t, firstCatchUp)
+	assert.Greater(t, firstCatchUp.GetEndOffset(), int64(0),
+		"catch-up frame must carry the current screen offset")
+	assert.True(t, firstCatchUp.GetReplayComplete(),
+		"catch-up frame with bytes must set replay_complete=true")
 
 	// Freeze the screen buffer before reading the head offset. cmd.exe keeps
 	// emitting prompt-setup bytes (alt-screen, title bar, cursor toggles) for
@@ -83,10 +94,18 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: currentOffset, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w2)
 
-	// dispatch is synchronous: catch-up has run by the time it returns.
-	datas := collectTerminalData(t, w2, "t-resub")
-	assert.Empty(t, datas,
+	var datas []*leapmuxv1.TerminalData
+	testutil.AssertEventually(t, func() bool {
+		datas = collectTerminalData(t, w2, "t-resub")
+		return len(datas) > 0
+	}, "resubscribe with after_offset=current must emit one empty catch-up marker")
+	require.Len(t, datas, 1,
+		"resubscribe with after_offset=current must emit exactly one catch-up marker")
+	assert.Empty(t, datas[0].GetData(),
 		"resubscribe with after_offset=current must not replay bytes — the client already has them")
+	assert.Equal(t, currentOffset, datas[0].GetEndOffset())
+	assert.False(t, datas[0].GetIsSnapshot())
+	assert.True(t, datas[0].GetReplayComplete())
 }
 
 // TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe: client
@@ -110,7 +129,7 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	firstMarker := []byte("FIRST_CHUNK_MARKER_BYTES\r\n")
 	require.True(t, svc.Terminals.AppendOutput("t-delta", firstMarker))
 
-	_, firstOffset, _ := svc.Terminals.ScreenSnapshotSince("t-delta", 0)
+	_, firstOffset, _, _ := svc.Terminals.ScreenSnapshotSince("t-delta", 0)
 	require.GreaterOrEqual(t, firstOffset, int64(len(firstMarker)))
 
 	secondMarker := []byte("SECOND_CHUNK_MARKER_BYTES\r\n")
@@ -126,14 +145,17 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	var delta *leapmuxv1.TerminalData
 	testutil.AssertEventually(t, func() bool {
 		for _, data := range collectTerminalData(t, w2, "t-delta") {
-			delta = data
-			return true
+			if data.GetReplayComplete() {
+				delta = data
+				return true
+			}
 		}
 		return false
 	}, "resubscribe delivered a catch-up event")
 	require.NotNil(t, delta)
 	assert.False(t, delta.GetIsSnapshot(),
 		"in-window resume must NOT be flagged as snapshot — frontend would reset unnecessarily")
+	assert.True(t, delta.GetReplayComplete())
 	assert.Contains(t, string(delta.GetData()), string(secondMarker),
 		"delta must contain the bytes the absent client missed")
 	assert.NotContains(t, string(delta.GetData()), string(firstMarker),
@@ -171,6 +193,7 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	require.NotNil(t, snap)
 	require.True(t, snap.GetIsSnapshot(),
 		"fell-behind cold subscribe must be a snapshot so the frontend resets first")
+	assert.True(t, snap.GetReplayComplete())
 	assert.True(t, bytes.HasPrefix(snap.GetData(), []byte(altScreenEnter)),
 		"snapshot must lead with the alt-screen restore — without it, vim/less render garbage after the frontend's terminal.reset()")
 
@@ -240,7 +263,7 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	require.True(t, svc.Terminals.AppendOutput("t-wrap", big))
 	wantEnd := baseline + int64(len(big))
 	testutil.AssertEventually(t, func() bool {
-		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-wrap", 0)
+		_, off, _, _ := svc.Terminals.ScreenSnapshotSince("t-wrap", 0)
 		return off >= wantEnd
 	}, "appended bytes arrived")
 
@@ -262,6 +285,7 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	require.NotNil(t, snap)
 	assert.True(t, snap.GetIsSnapshot(),
 		"fell-behind-ring cold subscribe must be flagged as snapshot so the frontend resets")
+	assert.True(t, snap.GetReplayComplete())
 
 	data := snap.GetData()
 	// Retained ring is ringSize bytes. Fallen-behind snapshots may also
@@ -382,7 +406,7 @@ func TestReplayTerminalCatchUpStatesTheDerivedStatus(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			row := tc.setup(t, svc, "term-replay")
 			w := newTestWriter()
-			svc.replayTerminalCatchUp(newReplaySink(w, 0, nil, nil), row.ID, 0, terminalRecordFromDB(row))
+			svc.replayTerminalCatchUp(newReplaySink(w, 0, nil, nil), &leapmuxv1.WatchTerminalEntry{TerminalId: row.ID}, terminalRecordFromDB(row))
 			waitForWireTerminalStatuses(t, w, 1)
 
 			var changes []*leapmuxv1.TerminalStatusChange
@@ -401,4 +425,254 @@ func TestReplayTerminalCatchUpStatesTheDerivedStatus(t *testing.T) {
 			assert.Nil(t, changes[0].GetGitStatus(), "a replayed status carries no git status")
 		})
 	}
+}
+
+// Every subscriber receives one TerminalData catch-up frame with
+// replay_complete=true, including DB-only exited terminals that have no live
+// PTY buffer in memory, regardless of screen_geometry.
+func TestReplayTerminalCatchUp_DBOnlyTerminalSetsReplayComplete(t *testing.T) {
+	t.Parallel()
+
+	storedScreen := []byte("persisted screen output\r\n")
+	storedLen := int64(len(storedScreen))
+
+	cases := []struct {
+		name           string
+		rowScreen      []byte
+		afterOffset    int64
+		wantData       []byte
+		wantEndOffset  int64
+		wantIsSnapshot bool
+	}{
+		{
+			name:           "cold subscribe replays persisted screen as snapshot",
+			rowScreen:      storedScreen,
+			afterOffset:    0,
+			wantData:       storedScreen,
+			wantEndOffset:  storedLen,
+			wantIsSnapshot: true,
+		},
+		{
+			name:           "caught-up subscribe sends empty frame with persisted end offset",
+			rowScreen:      storedScreen,
+			afterOffset:    storedLen,
+			wantData:       nil,
+			wantEndOffset:  storedLen,
+			wantIsSnapshot: false,
+		},
+		{
+			name:           "empty persisted screen at offset 0 sends empty caught-up marker",
+			rowScreen:      nil,
+			afterOffset:    0,
+			wantData:       nil,
+			wantEndOffset:  0,
+			wantIsSnapshot: false,
+		},
+		{
+			name:           "empty non-nil persisted screen at offset 0 sends empty caught-up marker",
+			rowScreen:      []byte{},
+			afterOffset:    0,
+			wantData:       nil,
+			wantEndOffset:  0,
+			wantIsSnapshot: false,
+		},
+		{
+			name:           "reconnect past persisted screen length preserves client scrollback",
+			rowScreen:      storedScreen,
+			afterOffset:    storedLen + 500,
+			wantData:       nil,
+			wantEndOffset:  storedLen + 500,
+			wantIsSnapshot: false,
+		},
+		{
+			name:           "reconnect with positive offset and empty persisted screen preserves client scrollback",
+			rowScreen:      nil,
+			afterOffset:    256,
+			wantData:       nil,
+			wantEndOffset:  256,
+			wantIsSnapshot: false,
+		},
+		{
+			name:           "reconnect with positive offset below persisted length preserves client scrollback",
+			rowScreen:      storedScreen,
+			afterOffset:    5,
+			wantData:       nil,
+			wantEndOffset:  5,
+			wantIsSnapshot: false,
+		},
+		{
+			name:           "negative offset replays persisted screen as snapshot",
+			rowScreen:      storedScreen,
+			afterOffset:    -1,
+			wantData:       storedScreen,
+			wantEndOffset:  storedLen,
+			wantIsSnapshot: true,
+		},
+	}
+
+	for _, screenGeometry := range []bool{false, true} {
+		modeName := "screen_geometry=false"
+		if screenGeometry {
+			modeName = "screen_geometry=true"
+		}
+		t.Run(modeName, func(t *testing.T) {
+			t.Parallel()
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					svc, _, _ := setupTestService(t)
+					w := newTestWriter()
+					row := terminalRecord{ID: "db-only-term", Screen: tc.rowScreen}
+					svc.replayTerminalCatchUp(newReplaySink(w, 0, nil, nil), &leapmuxv1.WatchTerminalEntry{
+						TerminalId:     row.ID,
+						AfterOffset:    tc.afterOffset,
+						ScreenGeometry: screenGeometry,
+					}, row)
+
+					datas := collectTerminalData(t, w, row.ID)
+					require.Len(t, datas, 1)
+					assert.Equal(t, tc.wantData, datas[0].GetData())
+					assert.Equal(t, tc.wantEndOffset, datas[0].GetEndOffset())
+					assert.Equal(t, tc.wantIsSnapshot, datas[0].GetIsSnapshot())
+					assert.True(t, datas[0].GetReplayComplete())
+					if screenGeometry {
+						assert.NotNil(t, datas[0].GetScreenTimeline())
+					} else {
+						assert.Nil(t, datas[0].GetScreenTimeline())
+					}
+				})
+			}
+		})
+	}
+}
+
+// Geometry-aware WatchEvents catch-up frames for live terminals set
+// replay_complete=true and include a non-nil ScreenTimeline on both cold
+// subscribes and caught-up resubscribes.
+func TestWatchEvents_Terminal_ScreenGeometryCatchUpSetsReplayComplete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-geom-replay")
+
+	baseline := testutil.FreezeTerminalOutput(t, svc.Terminals, "t-geom-replay")
+	marker := []byte("SCREEN_GEOMETRY_REPLAY_MARKER\r\n")
+	require.True(t, svc.Terminals.AppendOutput("t-geom-replay", marker))
+	wantOffset := baseline + int64(len(marker))
+
+	// Cold subscribe with ScreenGeometry=true.
+	w1 := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId:     "t-geom-replay",
+			AfterOffset:    0,
+			Mode:           leapmuxv1.WatchMode_WATCH_MODE_FULL,
+			ScreenGeometry: true,
+		}},
+	}, w1)
+
+	var cold *leapmuxv1.TerminalData
+	testutil.AssertEventually(t, func() bool {
+		datas := collectTerminalData(t, w1, "t-geom-replay")
+		if len(datas) == 0 {
+			return false
+		}
+		cold = datas[0]
+		return true
+	}, "cold ScreenGeometry=true subscribe delivered catch-up frame")
+	require.NotNil(t, cold)
+	assert.True(t, cold.GetReplayComplete())
+	require.NotNil(t, cold.GetScreenTimeline())
+	require.NotNil(t, cold.GetScreenTimeline().GetBase())
+	assert.Equal(t, wantOffset, cold.GetEndOffset())
+	assert.Contains(t, string(cold.GetData()), string(marker))
+
+	epoch := cold.GetScreenTimeline().GetBase().GetEpoch()
+	revision := cold.GetScreenTimeline().GetBase().GetRevision()
+	if changes := cold.GetScreenTimeline().GetChanges(); len(changes) > 0 {
+		last := changes[len(changes)-1]
+		epoch = last.GetEpoch()
+		revision = last.GetRevision()
+	}
+
+	// Caught-up resubscribe at wantOffset preserves offset with empty data.
+	w2 := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId:            "t-geom-replay",
+			AfterOffset:           wantOffset,
+			Mode:                  leapmuxv1.WatchMode_WATCH_MODE_FULL,
+			ScreenGeometry:        true,
+			ScreenEpoch:           epoch,
+			AfterGeometryRevision: revision,
+		}},
+	}, w2)
+
+	var resumed *leapmuxv1.TerminalData
+	testutil.AssertEventually(t, func() bool {
+		datas := collectTerminalData(t, w2, "t-geom-replay")
+		if len(datas) == 0 {
+			return false
+		}
+		resumed = datas[0]
+		return true
+	}, "caught-up ScreenGeometry=true resubscribe delivered catch-up frame")
+	require.NotNil(t, resumed)
+	assert.True(t, resumed.GetReplayComplete())
+	require.NotNil(t, resumed.GetScreenTimeline())
+	require.NotNil(t, resumed.GetScreenTimeline().GetBase())
+	assert.Empty(t, resumed.GetData())
+	assert.False(t, resumed.GetIsSnapshot())
+	assert.Equal(t, wantOffset, resumed.GetEndOffset())
+}
+
+// replayTerminalCatchUp with ScreenGeometry=false uses the live terminal buffer
+// even when zero bytes have been buffered yet, and does not fall back to a
+// stale persisted DB row.Screen.
+func TestReplayTerminalCatchUp_LiveTrackedZeroBytesDoesNotFallBackToDBScreen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ConPTY emits terminal-setup bytes before the shell writes; zero-byte live PTY test is POSIX-only")
+	}
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	const id = "t-live-zero-bytes"
+	workingDir := t.TempDir()
+	silentShell := filepath.Join(t.TempDir(), "silent-shell")
+	testutil.WriteExecutable(t, silentShell, "#!/bin/sh\nexec cat >/dev/null\n")
+
+	require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
+		ID:         id,
+		Shell:      silentShell,
+		WorkingDir: workingDir,
+		Cols:       80,
+		Rows:       24,
+	}, func(terminal.Output) {}, nil))
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
+
+	data, endOffset, isSnapshot, ok := svc.Terminals.ScreenSnapshotSince(id, 0)
+	require.True(t, ok, "precondition: terminal must be tracked in the manager")
+	require.Nil(t, data, "precondition: silent shell must buffer zero bytes")
+	require.Zero(t, endOffset)
+	require.False(t, isSnapshot)
+
+	w := newTestWriter()
+	row := terminalRecord{
+		ID:     id,
+		Screen: []byte("stale persisted screen from prior session\r\n"),
+	}
+	svc.replayTerminalCatchUp(newReplaySink(w, 0, nil, nil), &leapmuxv1.WatchTerminalEntry{
+		TerminalId:     id,
+		AfterOffset:    0,
+		ScreenGeometry: false,
+	}, row)
+
+	datas := collectTerminalData(t, w, id)
+	require.Len(t, datas, 1)
+	assert.Nil(t, datas[0].GetData(), "live tracked terminal with zero buffered bytes must not fall back to row.Screen")
+	assert.Zero(t, datas[0].GetEndOffset())
+	assert.False(t, datas[0].GetIsSnapshot())
+	assert.True(t, datas[0].GetReplayComplete())
+	assert.Nil(t, datas[0].GetScreenTimeline())
 }

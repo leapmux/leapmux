@@ -25,13 +25,18 @@ export interface TlsProxyHandle {
   close: () => Promise<void>
 }
 
-async function mintSelfSignedCert(directory?: string): Promise<{ key: Buffer, cert: Buffer, dir: string }> {
+async function mintSelfSignedCert(directory: string | undefined, dnsNames: readonly string[]): Promise<{ key: Buffer, cert: Buffer, dir: string }> {
   const dir = directory === undefined
     ? createTestDirectory('leapmux-e2e-tls-')
     : mkdtempSync(join(directory, 'leapmux-e2e-tls-'))
   return cleanupOnFailure(async () => {
     const keyPath = join(dir, 'key.pem')
     const certPath = join(dir, 'cert.pem')
+    const subjectAltNames = [
+      'DNS:localhost',
+      'IP:127.0.0.1',
+      ...dnsNames.map(name => `DNS:${name}`),
+    ].join(',')
     const result = spawnSync('openssl', [
       'req',
       '-x509',
@@ -46,9 +51,8 @@ async function mintSelfSignedCert(directory?: string): Promise<{ key: Buffer, ce
       '-nodes',
       '-subj',
       '/CN=localhost',
-      // Subject Alternative Names identify both loopback names that the tests use.
       '-addext',
-      'subjectAltName=DNS:localhost,IP:127.0.0.1',
+      `subjectAltName=${subjectAltNames}`,
     ], { encoding: 'utf-8' })
     if (result.error)
       throw new Error('OpenSSL could not create the test certificate.', { cause: result.error })
@@ -138,12 +142,12 @@ function reportProxyFailure(response: ServerResponse, error: Error): void {
 }
 
 /** Start a private HTTPS listener that forwards HTTP and WebSocket requests. */
-export async function startTlsProxy(hubUrl: string, certificateDirectory?: string): Promise<TlsProxyHandle> {
+export async function startTlsProxy(hubUrl: string, certificateDirectory?: string, dnsNames: readonly string[] = []): Promise<TlsProxyHandle> {
   const target = new URL(hubUrl)
   if (target.protocol !== 'http:')
     throw new Error(`startTlsProxy expects a cleartext hub URL, got ${hubUrl}`)
 
-  const { key, cert, dir } = await mintSelfSignedCert(certificateDirectory)
+  const { key, cert, dir } = await mintSelfSignedCert(certificateDirectory, dnsNames)
   // A private HTTP Agent prevents one proxy's shutdown from closing another proxy's pooled connections.
   const upstreamAgent = new http.Agent({ keepAlive: true })
   const sockets = new Set<Duplex>()

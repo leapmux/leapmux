@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -78,11 +79,41 @@ type ampProcess struct {
 	// handled closes when the exit handler returns. A new process waits for it,
 	// so the handler cannot end the new process's turn.
 	handled chan struct{}
+	// endingMu guards endingCh, which closes when markEnding runs so in-flight
+	// inline steer exports cancel on Interrupt, result, exit, or Stop.
+	endingMu sync.Mutex
+	endingCh chan struct{}
 }
 
 func (p *ampProcess) ending() bool { return p.exiting.Load() || p.IsStopped() }
 
-func (p *ampProcess) markEnding() { p.exiting.Store(true) }
+func (p *ampProcess) markEnding() {
+	p.exiting.Store(true)
+	p.endingMu.Lock()
+	if p.endingCh == nil {
+		p.endingCh = make(chan struct{})
+		close(p.endingCh)
+	} else {
+		select {
+		case <-p.endingCh:
+		default:
+			close(p.endingCh)
+		}
+	}
+	p.endingMu.Unlock()
+}
+
+func (p *ampProcess) endingSignal() <-chan struct{} {
+	p.endingMu.Lock()
+	defer p.endingMu.Unlock()
+	if p.endingCh == nil {
+		p.endingCh = make(chan struct{})
+		if p.ending() {
+			close(p.endingCh)
+		}
+	}
+	return p.endingCh
+}
 
 // writeLine writes one JSON line to Amp's stdin.
 func (p *ampProcess) writeLine(line []byte) error {
@@ -160,14 +191,17 @@ func (c launchConfig) setEnv() []string {
 	return []string{c.helperEnv, envSkipUpdateCheck + "=1"}
 }
 
-// startProcess writes the settings file and starts one `amp` process, a new
-// thread in mode when threadID is empty and a resume otherwise. The caller holds
-// sendMu.
-func (a *Agent) startProcess(threadID string, config threadConfiguration) (*ampProcess, error) {
+// startProcess writes the settings file (unless settingsPath is already prepared)
+// and starts one `amp` process, a new thread in mode when threadID is empty and
+// a resume otherwise. The caller holds sendMu.
+func (a *Agent) startProcess(threadID string, config threadConfiguration, settingsPath string) (*ampProcess, error) {
 	registration := Registration()
-	settingsPath, err := a.launch.writeSettings(a.userSettingsFile())
-	if err != nil {
-		return nil, err
+	if settingsPath == "" {
+		var err error
+		settingsPath, err = a.launch.writeSettings(a.userSettingsFile())
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -284,6 +318,9 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 		return
 	}
 
+	// Wait for any in-flight live steer observation to observe markEnding and
+	// exit before recovery inspects a.nativeSteers.
+	a.waitSteerWork()
 	// Computed here from the stderr read above, and not inside the callback,
 	// because endTurn runs the callback under the agent's lock.
 	recoverSteers := a.prepareSteerRecovery()

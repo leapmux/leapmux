@@ -1,360 +1,115 @@
 ---
 title: "Settings & Preferences"
-description: "Every Preferences dialog category in order: Account, Apps, Appearance, Notifications, Chat & Composer, Terminal, Desktop, Files & Applications, Keyboard Shortcuts, Advanced — and the Administration group hub administrators see."
+description: "Configure LeapMux in the Preferences dialog: account, apps, themes, fonts, notifications, chat, terminal, desktop app behavior, files, shortcuts, and device overrides."
 type: docs
 weight: 10
 ---
 
-LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category in the dialog's own order, the additional in-context toggles, and how each preference is stored and resolved.
+All personal and device preferences live in the searchable **Preferences** dialog. Open it from the avatar menu (**Preferences...**), the macOS desktop menu bar, or by pressing `⌘,` / `Ctrl+,`. Press `Esc` or click outside the modal to close it.
 
-## Opening Preferences
+## Navigating and scope tiers
 
-The dialog opens from the **user menu** — the avatar dropdown in the app shell — via **Preferences...**, or with its keyboard shortcut:
+{{< screenshot src="preferences-dialog" alt="LeapMux Preferences dialog showing category navigation, search box, Appearance theme and diff controls, and Account default scope chips" caption="The Preferences dialog organizes every user and device setting with live search and Account vs. This device scope chips." width="1280" height="856" >}}
 
-| Platform | Shortcut |
-|---|---|
-| macOS | `⌘,` |
-| Windows / Linux | `Ctrl+,` |
+Press `/` anywhere in the dialog to focus **Search settings** and filter every category at once (`Esc` clears the search before closing the dialog).
 
-This is the `app.openPreferences` command (default binding `$mod+Comma`). On macOS, the desktop app's native menu also has a **Preferences...** item that opens the same dialog.
+Settings resolve in two tiers:
+
+```text
+This device override (if set)  →  Account default  →  Built-in default
+```
+
+- **Account** — stored on the Hub and synced to every browser and desktop app where you sign in. Different settings edited on two devices merge independently without overwriting each other.
+- **This device** — overrides a dual-tier setting in the current browser or desktop install only. Click the row's scope chip to switch between **Use account default** and **Override on this device**. Clearing browser site data removes local overrides while keeping your account defaults intact.
 
 {{< callout type="info" >}}
-The dialog is a tall modal with a titled header. Press `Escape` to close, or click outside the dialog body.
+**Hub administrators** also see an **ADMINISTRATION** section below the user categories (**General**, **Sign-up & Access**, **Network access**, **Email (SMTP)**, **Hub-wide Apps**, **Bot Protection**, **Rate Limits**, **Limits & Timeouts**, and **Advanced**). For all instance-level Hub settings, see [Configuration Guide](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/).
 {{< /callout >}}
 
-## The dialog
+## Account and Apps
 
-The dialog's left side is a category navigation; the right side shows the selected category's rows. Press `/` to move focus to the **Search settings** box — the navigation is replaced by flat results across every category while you type, each result labeled with its `Category › Setting` breadcrumb. `Escape` clears the search before it closes the dialog.
+- **Account** — manages your username and display name (**Profile**), **Email**, **Password**, **Passkeys**, and **Linked accounts** (OAuth/OIDC). Solo mode hides every row except **Password**. Email, password, passkeys, and unlinking providers require a verified session.
+- **Apps** — displays **Connected apps** (authorized CLIs and integrations, with one-click **Revoke** or **Disconnect**) and **App registrations** (private OAuth apps you register for your own scripts and tools).
 
-Every row shows a label, a one-line description, and a control. Rows that exist at two tiers additionally show a **scope chip** that identifies the tier which currently wins:
+{{< screenshot src="preferences-apps" alt="LeapMux Preferences Apps panel showing Connected apps and App registrations with verified badges, permission scope chips, and management actions" caption="Manage Connected apps and private App registrations under Preferences → Apps." width="1280" height="856" >}}
 
-- **Account** — the setting follows you to every device where you sign in.
-- **This device** — the setting is overridden in this browser (or desktop install) only.
-
-Opening the chip offers **Use account default** or **Override on this device**. Single-tier rows show the tier as static text instead of a chip.
-
-The user categories, in navigation order:
-
-| Category | Covers |
-|---|---|
-| **Account** | Profile name, email, password, passkeys, linked accounts. The section the dialog opens on. Solo mode keeps **Password** alone and hides the other four rows. |
-| **Apps** | The apps feature in two rows: **Connected apps** (what your account authorized) and the app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. Both rows stay in solo mode, because a solo Hub authorizes apps like any other. See [App Authorization](/docs/admin/app-authorization/). |
-| **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
-| **Notifications** | Turn-end sound and volume, terminal OS notifications. |
-| **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
-| **Terminal** | Terminal renderer, and the Quake terminal's position, size, animation and background opacity. |
-| **Desktop** | The tray (menu bar) icon, what closing and minimizing a window do, and the login launch. The desktop app only; in a browser the category disappears from the dialog. |
-| **Files & Applications** | Preferred application (desktop), reveal after download (desktop), hidden files in directory picker. |
-| **Keyboard Shortcuts** | The keybinding editor (see below). |
-| **Advanced** | Debug logging, trusted worker keys, reset all browser overrides. |
-
-Administrators additionally see an **ADMINISTRATION** group in the navigation, below these categories — see [Administration](#administration) below.
-
-## Account
-
-The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides all of them but **Password**, which sets the `solo` account's first password as well as changes it; [Network access](#network-access) asks for that first password too, beside the addresses it guards. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
-
-- **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
-- **Email** — changing it requires verification when the Hub has a mail relay configured (see [Email (SMTP)](#email-smtp) below); a pending change shows a notice until confirmed.
-- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and disconnects every app; your current session stays signed in. OAuth-only accounts, and the `solo` account, set their first password here.
-- **Passkeys** — the credentials registered to this account, with add, rename and remove. See [Managing passkeys in your profile](/docs/using/accounts/#managing-passkeys-in-your-profile).
-- **Linked accounts** — your linked OAuth/OIDC providers, each with an **Unlink** button. You cannot detach your only sign-in method without a password set.
-
-Four of those five rows need a **verified session**: email, password, passkeys, and linked accounts. Your profile name does not. While the session is verified, a panel at the top of the section says so and offers **End now**. Every **ADMINISTRATION** section takes the same rule and shows the same panel. See [Session elevation](/docs/admin/security/#session-elevation).
-
-## Apps
-
-The category holds the whole apps feature in two rows, authorization first.
-
-**Connected apps** lists every app holding access to your account, grouped by app, with the permissions each was granted. **Disconnect** on the app's line ends every machine it runs on; **Revoke** on one row ends that machine alone. See [Connected Apps](/docs/using/connected-apps/).
-
-**App registrations** lists the apps you registered, with **Register an app**, and per row the permission ceiling it may ask for, whether an administrator vouched for it, **Edit** (the name, home page, redirect addresses and that ceiling), **Allow step-up** or **Refuse step-up**, and **Retire**.
-
-Narrowing that ceiling also removes that permission from every credential the app already holds; retiring the app is the only stronger action. Yours are visible to you alone; an administrator's are visible to everybody and only an administrator can edit them. Administrators also get **Vouch** and **Withdraw vouch** on every row. See [App Authorization](/docs/admin/app-authorization/) for what each field decides.
-
-**App registrations** needs a **verified session**; **Connected apps**, the row above it, does not. Disconnecting reduces access. Editing a registration rewrites **where a consent redirects**, so it can divert an authorization code already in flight to an address the editor chose — which is why that row needs the proof. Registering an app, allowing it the step-up ceremony, and vouching for it take the same rule.
-
-Administrators additionally see the **Hub-wide Apps** category under **ADMINISTRATION** — see [Hub-wide Apps](#hub-wide-apps) below.
+See [Accounts & Connected Apps](/docs/using/accounts-and-apps/) for the full walkthrough of both categories.
 
 ## Appearance
 
-### Theme
+Every row in **Appearance** is dual-tier (account default with optional per-device override):
 
-Two choices on one line: a **color palette**, and whether it follows the system or is pinned.
-
-The palette drop-down lists LeapMux's own palette and ten adapted from permissively licensed community themes, which `NOTICE` credits. Some of them offer more than one look, and a second drop-down appears beside the palette when they do.
-
-The tri-switch picks **System** (follows your OS `prefers-color-scheme` and switches live), **Light**, or **Dark**.
-
-The palette and the mode are one setting, so one scope chip and one reset cover both. A dual-tier setting; the built-in default is **Default** at **System**.
-
-The same control appears once outside the dialog, so a new user can set the look before anything else: on the empty state that offers to create your first workspace. It writes the same preference, so a choice made there is the one this dialog shows afterwards.
-
-The screens shown *before* you sign in carry no theme control: the desktop launcher, the sign-in page, and first-run setup. Your theme is stored per account, so there is nothing to read until LeapMux knows who you are. Those screens paint the **Default** palette and follow your system light/dark setting, and your own theme applies as soon as you are signed in.
-
-### Terminal theme
-
-The same two choices, for terminal tabs, plus one more palette: **Match UI**. Choosing **Match UI** links the row to the app theme: the mode pills are disabled and show the app's mode. Choosing any other palette unlinks the row. The pills then start from the app's mode, so the terminal keeps its current look.
-
-The palettes are the same ones the app offers. Each supplies its own sixteen ANSI colors, and the terminal's background, foreground, cursor and selection come from that same palette, so a terminal on a theme other than the app's stays consistent. Where a palette's ANSI set belongs to another project, the entry names that project beside the palette.
-
-A dual-tier setting; the built-in default is **Match UI**. That default is why the theme picker on the empty state moves the terminal too — there is only one choice to make until you come here and detach it. See [Terminals](/docs/using/terminals/).
-
-### Syntax theme
-
-Colors for highlighted code, in chat, the editor, diffs and file views. The same control and the same **Match UI** default as the terminal theme, and independent of both other settings.
-
-Each palette highlights with its own project's editor theme, credited in `NOTICE`. Where a palette has no editor theme of its own, its entry identifies the one it borrows, the same way the terminal list does.
-
-Unlike the palette and the mode, this one costs more to change: highlighting stores each token's color, so a switch re-highlights the code and it repaints as you scroll back through it.
-
-### Diff view
-
-How file diffs render in chat tool results and the file viewer: **Unified** (single column) or **Side by side** (two columns). A dual-tier setting; the built-in default is **Unified**.
-
-{{< callout >}}
-This setting is the *default* for new diffs. Individual diffs keep their own per-diff control so you can flip a single diff without changing your preference.
-{{< /callout >}}
-
-### Fonts
-
-Fonts are a dual-tier setting like the other appearance rows — the account default stack follows you across devices, and either family can be overridden per device. Each family (**Custom UI fonts**, **Custom monospace fonts**) has a master switch and, when enabled, an ordered list editor:
-
-- **Add** a font: type a name in the add box (**Add UI font** or **Add monospace font**) and press Enter, or click the **+** button.
-- **Reorder** fonts: drag a row by its handle (`⠿`). Order is priority — the first installed font wins.
-- **Edit** a font: double-click its name. Enter commits, Escape cancels.
-- **Remove** a font: click the **×** button on its row.
-
-The override unit is the whole family configuration (switch + list together), so a device override can never end up half-applied.
-
-A family holds up to 32 names, and the panel reports a name it cannot use. For monospace, LeapMux tries your custom fonts first and appends the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack as a fallback; for UI fonts only your custom list applies. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly with no configuration.
-
-{{< callout >}}
-Custom fonts only take effect for families actually installed on the machine running the browser. List several fallbacks so the app degrades gracefully on devices that lack your first choice.
-{{< /callout >}}
+- **Theme** — picks a color palette (LeapMux's default or ten adapted community palettes, some with multiple variants) and light/dark mode (**System**, **Light**, or **Dark**). Built-in default: **Default** at **System**. Pre-login screens always use the default palette following your OS mode until you sign in.
+- **Terminal theme** — defaults to **Match UI**, following your app theme automatically. Pick any other palette to detach terminal colors (all sixteen ANSI colors, background, foreground, cursor, and selection stay coordinated).
+- **Syntax theme** — controls code highlighting in chat, diffs, and the file viewer. Defaults to **Match UI** and can be detached independently.
+- **Diff view** — sets the default layout for new diffs (**Unified** or **Side by side**; default **Unified**). Individual diffs still keep their own toggle.
+- **Custom UI fonts / Custom monospace fonts** — enable an ordered priority list (up to 32 fonts per family; drag handles reorder, double-click edits). Monospace appends LeapMux's bundled **Hack NF** stack (`"Hack NF", Hack, "SF Mono", Consolas, monospace`) as a fallback so Nerd Font icons render by default.
 
 ## Notifications
 
-### Turn-end sound
-
-Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained. Only the focused client plays it, so it does not double across tabs or devices. Single-exchange turns are skipped, and it plays at most once per minute. See [Device Sync](/docs/using/device-sync/).
-
-### Turn-end volume
-
-A 0–100% slider (built-in default 100%), shown unless the sound is **None** on both this device and the account. A dual-tier setting.
-
-### Terminal OS notifications
-
-Whether terminal alerts raise OS-level notifications (browser-only; the browser asks for notification permission when you enable it). Off by default.
+- **Turn-end sound** (dual-tier) — plays **Ding dong** (default) or **None** when an agent finishes a non-trivial turn (at most once per minute, on your active client only; see [Workspaces](/docs/using/workspaces/#live-sync-across-devices)).
+- **Turn-end volume** (dual-tier) — 0–100% slider (default 100%), hidden when the sound is **None** on both tiers.
+- **Desktop notifications** (device-only, default off) — requests browser notification permission to surface terminal alerts (OSC 9 / 777 / 99) and `leapmux notify` messages while the window is hidden.
 
 ## Chat & Composer
 
-Per-device toggles for the chat surface. The in-context controls — the tab-bar **Advanced** menu and the composer **[+]** menu — change the same stored value, so a toggle in one place is reflected everywhere.
+These settings control chat display, composer behavior, and Worker-installed Agent Skills:
 
-| Setting | Default | Also toggled from | What it does |
-|---|---|---|---|
-| **Expand agent thoughts** | On | Tab bar menu | Whether agent thinking/reasoning bubbles start expanded. |
-| **Show hidden messages** | Off | Tab bar menu | Developer view that reveals hidden chat messages. |
-| **Enter key behavior** | **Cmd/Ctrl+Enter sends** | Composer **[+]** menu (**Send with ⌘/Ctrl+⏎**) | Whether plain Enter sends a chat message or inserts a newline. The other choice is **Enter sends**. |
-| **Composer status bar** | On | Composer **[+]** menu | Whether the branch/model/effort/mode chips show beneath the editor box. |
+| Setting | Scope | Default | Also controlled from | What it does |
+| --- | --- | --- | --- | --- |
+| **Expand agent thoughts** | This device | On | Tab bar **+** → **Advanced** | Starts agent thinking blocks expanded. |
+| **Show hidden messages** | This device | Off | Tab bar **+** → **Advanced** | Reveals hidden developer/bookkeeping chat rows. |
+| **Enter key behavior** | This device | `⌘Enter` / `Ctrl+Enter` sends | Composer **[+]** menu | Switches between `⌘Enter` / `Ctrl+Enter` sends and plain `Enter` sends. |
+| **Composer status bar** | This device | On | Composer **[+]** menu | Shows or hides the branch, model, effort, and mode chips below the composer. |
+| **Agent skills** | Account (per Worker) | None enabled | `leapmux skill` CLI | Installs and optionally auto-syncs curated LeapMux skills on each connected Worker across `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.cursor/skills`, and `~/.gemini/skills`. See [Agent Skills](/docs/using/agent-skills/). |
 
 ## Terminal
 
-| Setting | Default | What it does |
-|---|---|---|
-| **Terminal renderer** | Auto | Renderer backend for terminals (auto / WebGL / canvas). Automatic selection avoids WebGL on Linux desktop. |
-| **Quake terminal position** | Top | Edge of the centre area the Quake terminal slides in from: **Top**, **Bottom**, **Left** or **Right**. A dual-tier setting. |
-| **Quake terminal size** | 65% | Share of the centre area the Quake terminal covers — height for top and bottom, width for left and right. A dual-tier setting. |
-| **Quake terminal animation** | 200 ms | How long the Quake terminal takes to slide in and out. The system reduced-motion setting overrides it. A dual-tier setting. |
-| **Quake terminal background opacity** | 0.9 | Opacity of the Quake terminal's background. The terminal text stays fully opaque. A dual-tier setting. |
-
-See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) for what the panel is and how to open it.
+| Setting | Scope | Default | What it does |
+| --- | --- | --- | --- |
+| **Terminal renderer** | This device | Auto | Picks Auto, WebGL, or Canvas rendering (Auto avoids WebGL on Linux desktop). |
+| **Quake terminal position** | Dual-tier | Top | Edge the Quake panel slides from: **Top**, **Bottom**, **Left**, or **Right**. |
+| **Quake terminal size** | Dual-tier | 65% | Share of the center canvas covered by the Quake panel. |
+| **Quake terminal animation** | Dual-tier | 200 ms | Slide duration (disabled automatically when OS reduced motion is active). |
+| **Quake terminal background opacity** | Dual-tier | 0.9 | Panel background opacity (terminal text remains fully opaque). |
 
 ## Desktop
 
-The **Desktop** category appears in the desktop app only. A browser has no tray, no menu bar item and no login items, so the whole category disappears from the dialog there.
+Shown in **LeapMux Desktop** only (hidden in web browsers). All five rows are dual-tier:
 
-Every row is a dual-tier setting: the account default follows you to each machine you sign in on, and any machine can override it.
-
-### Tray icon
-
-On Linux and Windows this row is **Tray icon** and the icon sits in the system tray. On macOS it is **Menu bar icon** and the icon sits in the menu bar. Turn it on to keep LeapMux available when no window is open. The built-in default is **off**.
-
-The next two rows apply only while this one is on, so the dialog hides them while the tray is off on both tiers.
+- **Tray icon** (Linux/Windows) / **Menu bar icon** (macOS) — default **Off**. Keeps LeapMux accessible when no window is open. On Linux, requires `libayatana-appindicator3`; if unavailable, closing and minimizing keep standard window behavior.
+- **When you close the window** — **Hide to the tray / menu bar** (default) or **Quit LeapMux** (shown when the tray icon is enabled).
+- **When you minimize the window** — **Keep in the taskbar / Dock** (default) or **Hide to the tray / menu bar** (shown when the tray icon is enabled).
+- **Start at login** — default **Off**. Registers LeapMux with your OS login items.
+- **Window at login** — **Show the window** (default) or **Hide the window** (shown when **Start at login** is enabled; applies only to login launches).
 
 {{< callout type="info" >}}
-On Linux the tray needs a status-icon library (`libayatana-appindicator3`). The `.deb` package recommends it rather than requiring it, because many desktop environments have no tray at all. Where the library is absent, the **Tray icon** row reports that LeapMux could not create the icon. LeapMux then never hides a window: closing and minimizing keep their ordinary behaviour.
-{{< /callout >}}
-
-### When you close the window
-
-What LeapMux does when you close the last window: **Hide to the tray** (**Hide to the menu bar** on macOS), or **Quit LeapMux**. The built-in default is to hide to the tray.
-
-### When you minimize the window
-
-What LeapMux does when you minimize a window: **Hide to the tray**, or **Keep in the taskbar**. On macOS the two options read **Hide to the menu bar** and **Keep in the Dock**. The built-in default keeps it in the taskbar.
-
-### Start at login
-
-Registers LeapMux with your operating system's login items, so it starts when you sign in to the computer. Off by default. Some systems ask you to approve the login item the first time. A system that declines it reports so on this row.
-
-### Window at login
-
-Applies to the **login launch only** — starting LeapMux yourself always shows a window. **Show the window** is the built-in default. **Hide the window** starts LeapMux in the tray (menu bar) when the tray icon is on. It starts LeapMux minimized when the tray icon is off. The dialog hides this row while **Start at login** is off on both tiers.
-
-{{< callout type="info" >}}
-The desktop app must decide the window state before it can read your preferences. It therefore keeps a copy of the tray and login-launch settings on the machine. LeapMux rewrites the copy whenever a setting changes, and your account stays the source of truth. The copy belongs to the operating-system user, not to a LeapMux account. On a machine that two LeapMux accounts sign in on, LeapMux starts with the settings of the account that signed in last. A change made on another device reaches this machine when you next sign in there, so one launch can still follow the previous choice.
+LeapMux Desktop caches tray and login-launch choices locally per OS user so it can apply window state before signing in to your Hub; your account preference remains the source of truth once signed in.
 {{< /callout >}}
 
 ## Files & Applications
 
-Per-device toggles for files and external applications. As with the chat toggles, the in-context controls — the application menu on **Open in …**, the file viewer's save action, the directory picker — change the same stored value as these rows.
+Device-local settings for external editors, downloads, and the directory picker:
 
-| Setting | Default | Also toggled from | What it does |
-|---|---|---|---|
-| **Preferred application** | First detected editor (desktop only) | The application menu on **Open in …** | Which editor or file manager opens a working directory. |
-| **Reveal after download** | On (desktop only) | The file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
-| **Hidden files in directory picker** | On | The directory picker itself | Whether the directory picker lists dotfiles. |
+| Setting | Control | Default | What it does |
+| --- | --- | --- | --- |
+| **Preferred application** (desktop only) | Validated text input (also set from **Open in …**) | Blank (first detected editor) | Accepts a supported editor or file-manager ID (for example, `vscode`) used by `⇧⌘E` / `Ctrl+Shift+E`; leave blank to fall back to the first detected editor. |
+| **Reveal after download** (desktop only) | Toggle (also in save dialog) | On | Highlights saved files in Finder, Explorer, or your Linux file manager. |
+| **Hidden files in directory picker** | Toggle (also in directory picker) | On | Lists dotfiles inside the **Working Directory** picker. |
 
-## Keyboard Shortcuts
+## Keyboard Shortcuts and Advanced
 
-The **Keyboard Shortcuts** category is a table of every command with its default binding and source (**Default** or **Custom**). Click a binding to capture a new chord; the panel refuses a chord already bound in the same context and gives the name of the conflicting command; **Reset** on a customized row returns it to its default. Overrides are stored account-level (up to 200 of them) and follow you to every device. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the command catalogue.
+{{< screenshot src="preferences-keyboard-shortcuts" alt="LeapMux Preferences Keyboard Shortcuts table showing commands, bindings, and Default or Custom source badges" caption="Remap workspace keybindings under Preferences → Keyboard Shortcuts." width="1280" height="856" >}}
 
-## Advanced
-
-- **Debug logging** — verbose client-side logging in the browser console; a dual-tier setting, off by default.
-- **Trusted worker keys** — the list of worker keys that your browser trusts (TOFU). Remove individual pins or clear them all; the next connect re-prompts.
-- **Reset all browser overrides** — the **Reset overrides** button removes every **This device** override at once. Dual-tier settings return to their account default, and browser-only settings return to their built-in default. Trusted worker keys are kept.
-
-## Administration
-
-Administrators see **ADMINISTRATION** below the user categories. Before step-up, it shows **Hub-wide Apps** and **Unlock administration...**. The other rows appear after step-up opens a window. In desktop solo mode or with a current window, the full list appears without an unlock entry.
-
-The Hub requires a current step-up window to read or change instance settings. Hub-wide app registrations follow the rules in [App Authorization](/docs/admin/app-authorization/). See [Session elevation](/docs/admin/security/#session-elevation).
-
-Most rows apply without a restart. The serving Hub applies hot settings when the write commits. A replacement Hub loads stored settings when it starts. The dialog re-reads the Hub's state after every accepted write. For example, publish the Hub's URL and **Add passkey** in the **Account** category stops being disabled, with no page reload. The two rows that apply only after a Hub restart carry a **Requires Restart** badge. Solo mode omits the categories a single-user Hub has no use for; each category below states what stays.
-
-### General
-
-- **Public base URL** — the browser-facing URL when the Hub runs behind a TLS-terminating reverse proxy (scheme and host only). Mail links, the CLI's login endpoints, and passkey ceremonies all derive from it. See [Passkeys](/docs/admin/configuration/#passkeys).
-- **Session duration** — how long a session lives after your last activity. See [Sessions and signing out](/docs/using/accounts/#sessions-and-signing-out).
-- **Secure cookies** — serve the session cookie with the `__Host-` prefix behind TLS; changing it signs everybody out.
-
-Every row here stays in solo mode. A solo Hub whose account holds a password signs its network callers in with an ordinary session and an ordinary cookie, so both of the last two apply to it.
-
-### Network access
-
-This section appears in solo, hub, and dev modes. It contains two separate rows.
-
-**Network access** appears only in solo mode. It controls which addresses the Hub answers on beside the addresses `-listen` gives it.
-
-**TCP listeners** lists the TCP addresses the Hub answers on right now, with the reason for each entry — from `-listen`, an address you added, or one socket serving both. **Local access** lists the local endpoints the Hub opened at startup (its Unix socket or Windows named pipe): a read-only inventory for local CLI tools, which the editor does not touch. **Additional addresses** is the editable TCP list: pick an interface (or **All interfaces**) and a port for each, then **Apply**. The Hub binds them at once and again on every later start.
-
-Applying an address makes every TCP address require a sign-in as `solo`, including `127.0.0.1`. The panel stores the first password before it publishes a non-loopback address. The desktop app's local socket stays credential-free.
-
-Overlapping addresses merge: ask for every interface on the port `-listen` already uses and one socket serves both, which the "TCP listeners" list says. An address the Hub cannot bind stays configured and is reported with the operating system's own reason. See [Network access](/docs/admin/configuration/#network-access) and [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
-
-**Trusted reverse proxies** appears in every Hub mode. Add an IP address, CIDR, inclusive range, short IPv4 range, or the `cloudflare` or `cloudfront` provider preset. Rows stay staged until **Apply**. **Cancel** restores the stored list, and backend validation errors leave the staged rows in place.
-
-The provider warning cannot be dismissed. Provider ranges identify shared infrastructure, not your account. Restrict the origin to your distribution or use authenticated origin requests. Configure every proxy to remove client-supplied forwarding headers or append only verified values. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies) for header precedence and the full selector rules.
-
-### Sign-up & Access
-
-One row: **Open sign-up**, off by default. With it off, new accounts come only from an administrator or from a linked OAuth identity; with it on, the `/signup` page works. Email verification has no row of its own — it follows the mail relay: configuring **Email (SMTP)** below is what turns verification on. Hidden entirely in solo mode.
-
-### Email (SMTP)
-
-One row, **SMTP relay**: host, port, username, from address, TLS mode, and a password kept in the row's secret half. Configuring it enables verification emails and account recovery; with no relay, sign-ups skip verification entirely. Hidden entirely in solo mode.
-
-### Hub-wide Apps
-
-- **Open app registration** — whether anonymous callers may register an app through [RFC 7591 dynamic registration](/docs/admin/app-authorization/#open-registration). Off by default.
-- **Hub-wide app registrations** — the registrations an administrator creates for every account on the Hub to authorize. Registering one is an administrator's act, so it asks for a fresh proof first.
-
-Shown in solo mode: a solo Hub authorizes apps like any other.
-
-### Bot Protection
-
-- **Bot protection enabled** — whether captcha verification runs on the protected forms: sign-in, sign-up, account recovery, and email verification. The honeypot check stays active either way.
-- **Provider** — the active provider: the built-in **ALTCHA** (the default), **Google reCAPTCHA v3**, or **Cloudflare Turnstile**.
-- **ALTCHA parameters**, **Google reCAPTCHA v3**, **Cloudflare Turnstile** — one row per provider's key fields. Every provider's fields are visible at all times, so an administrator fills one in and then switches **Provider** to it.
-
-See [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits) for where the built-in ALTCHA runs and what the parameters cost. Hidden entirely in solo mode.
-
-### Rate Limits
-
-One row per counted operation:
-
-- **Rate limit - elevation** — failed attempts to verify your identity for a sensitive change: 5 per 15 minutes, per user.
-- **Rate limit - email_change** — requests to change an account email that reach the mail machinery: 6 per 15 minutes, per user.
-- **Rate limit - login_anonymous** — failed passwords at the sign-in form: 10 per 15 minutes, per client address.
-- **Rate limit - oauth_anonymous** — the authorization server's anonymous endpoints: 600 per 10 minutes, per client address.
-
-In solo mode the two address-keyed limits stay, and the two user-keyed ones are hidden.
-
-### Limits & Timeouts
-
-- **Timeouts** — the API timeout and the agent-startup timeout, each in seconds. The agent-startup timeout applies to the Worker that solo and dev run inside the Hub. A standalone Worker uses its `--agent-startup-timeout` flag.
-- **Per-user caps** — a user's maximum simultaneous connections (default 32) and Workers (default 64); `0` means unlimited.
-
-Shown in solo mode.
-
-### Advanced
-
-Two rows, both carrying a **Requires Restart** badge:
-
-- **Maximum message size** — the application payload ceiling.
-- **Queue budgets** — memory budgets for the Hub's outbound queue pools; `0` auto-sizes them.
-
-Shown in solo mode.
-
-See [Configuration](/docs/admin/configuration/) for what each instance setting does, and [Admin CLI](/docs/admin/admin-cli/) for the CLI surface over the same settings.
-
-## How preferences persist
-
-### Per-key account storage
-
-Account settings are stored on the Hub **one key at a time**. Each change sends only the changed key, and the Hub merges it under a row lock — so **two devices (or two tabs) can edit different settings without overwriting each other**, and a rejected change never partially applies. A value the Hub considers invalid is refused with the row's error; your other settings are untouched.
-
-### Device overrides
-
-Device (**This device**) overrides live entirely in the browser's local storage under one consolidated key with a 1-year rolling expiry — a browser you use within any rolling one-year window keeps its overrides indefinitely. Choosing **Use account default** (or **Reset all browser overrides**) removes the override so the account default takes over. Clearing your browser's site data wipes all device overrides; your account settings are unaffected and reappear after you sign in again.
-
-### Resolution order
-
-For any dual-tier setting:
-
-```
-Device override (if set)  →  Account default  →  built-in default
-```
-
-### Built-in defaults
-
-| Setting | Default |
-|---|---|
-| Theme | Default palette, System mode |
-| Terminal theme | Match UI |
-| Syntax theme | Match UI |
-| Diff view | Unified |
-| Turn-end sound | Ding dong |
-| Turn-end volume | 100% |
-| Quake terminal position | Top |
-| Quake terminal size | 65% |
-| Quake terminal animation | 200 ms |
-| Quake terminal background opacity | 0.9 |
-| Debug logging | Off |
-| Tray / menu bar icon | Off |
-| When you close the window | Hide to the tray |
-| When you minimize the window | Keep in the taskbar |
-| Start at login | Off |
-| Window at login | Show the window |
-| Custom UI / monospace fonts | Off (empty) |
-| Keybinding overrides | None |
+- **Keyboard Shortcuts** — account-synced keybinding editor supporting single shortcuts and two-step chords with conflict detection (up to 200 custom bindings). See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/).
+- **Advanced:**
+  - **Debug logging** (dual-tier, default off) — enables verbose client diagnostics in the browser console.
+  - **Trusted worker keys** — lists pinned Worker public keys trusted by this browser (trust on first use) so you can remove individual pins or clear all pins.
+  - **Reset all browser overrides** — clears every **This device** override at once (restoring account or built-in defaults) without removing trusted Worker keys.
 
 ## Related chapters
 
-- [Accounts & Authentication](/docs/using/accounts/) — sign-up, login, OAuth, email verification, sessions.
-- [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — the shortcut system, default bindings, and customization.
-- [Configuration](/docs/admin/configuration/) — the hub instance settings the administration panels manage.
-- [`leapmux control admin`](/docs/using/control-cli/) — the CLI surface over the same hub settings.
-- [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode.
+- [Accounts & Connected Apps](/docs/using/accounts-and-apps/) — profile, passkeys, recovery, and app authorization.
+- [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — complete shortcut catalog.
+- [Configuration Guide](/docs/admin/configuration/) — Hub administrator settings.
+- [Configuration Reference](/docs/admin/configuration-reference/) — flags, environment variables, and Hub setting keys.

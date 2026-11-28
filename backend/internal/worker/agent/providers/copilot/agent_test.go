@@ -215,6 +215,25 @@ type copilotSteerScript struct {
 	withdrawResult json.RawMessage
 }
 
+func testCopilotSteerRequest(content string) agent.SteerRequest {
+	return agent.SteerRequest{InputID: "queued-steer", AttemptID: "steer-attempt", Content: content}
+}
+
+func testCopilotSteerResolution(outcome agent.SteerOutcome) agent.SteerResolution {
+	resolution := agent.SteerResolution{InputID: "queued-steer", AttemptID: "steer-attempt", Outcome: outcome}
+	if outcome == agent.SteerOutcomeEchoed {
+		resolution.Receipt = agent.NativeInputReceipt{SessionID: "session-1", InputID: "native-steer", TurnID: "native-steer"}
+	}
+	return resolution
+}
+
+func copilotSteerEcho(t *testing.T, agentID, content string) []byte {
+	t.Helper()
+	return nativeCopilotEvent(t, agentID, "user.message", map[string]any{
+		"content": content, "messageId": "native-steer", "interactionId": "steer-interaction",
+	})
+}
+
 // copilotRuntimeHarness is an agent whose requests reach a fake runtime that
 // answers each method from a table.
 type copilotRuntimeHarness struct {
@@ -324,7 +343,7 @@ func newCopilotSteeringAgent(t *testing.T, script copilotSteerScript) (*Agent, *
 				return len(raw), nil
 			}
 			if script.earlyEcho {
-				a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": providerkit.StringField(request.Params, "prompt")}))
+				a.HandleOutput(copilotSteerEcho(t, "", providerkit.StringField(request.Params, "prompt")))
 			}
 			result = json.RawMessage(`{"messageId":"native-steer"}`)
 			if script.sendResult != nil {
@@ -332,7 +351,7 @@ func newCopilotSteeringAgent(t *testing.T, script copilotSteerScript) (*Agent, *
 			}
 		case "session.queue.withdrawMessage":
 			if script.echoOnWithdraw {
-				a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": providerkit.StringField(request.Params, "expectedPrompt")}))
+				a.HandleOutput(copilotSteerEcho(t, "", providerkit.StringField(request.Params, "expectedPrompt")))
 			}
 			if script.withdrawError {
 				a.Deliver(request.ID, []byte(`{"error":{"code":-32603,"message":"withdrawal refused"}}`))
@@ -384,7 +403,7 @@ func TestFleetSendsEachNewTurnAsAFleetRequest(t *testing.T) {
 		t.Run(fmt.Sprintf("fleet %q", test.fleet), func(t *testing.T) {
 			t.Parallel()
 			h := newCopilotFleetHarness(t, test.fleet, `{"started":true}`)
-			require.NoError(t, h.agent.SendInput("Split the work.", attachment))
+			require.NoError(t, agenttest.SendInput(h.agent, "Split the work.", attachment))
 			assert.Equal(t, []string{test.method}, h.methods())
 			params := h.lastParams(t)
 			assert.Equal(t, "Split the work.", params["prompt"])
@@ -415,7 +434,7 @@ func TestFleetRequestFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			h := newCopilotFleetHarness(t, "true", test.answer)
-			err := h.agent.SendInput("Split the work.", nil)
+			err := agenttest.SendInput(h.agent, "Split the work.", nil)
 			require.Error(t, err)
 			if test.wantErr != nil {
 				require.ErrorIs(t, err, test.wantErr)
@@ -434,7 +453,7 @@ func TestFleetPreWriteFailureRejectsTheTurn(t *testing.T) {
 	t.Parallel()
 	h := newCopilotFleetHarness(t, "true", `{"started":true}`)
 	h.agent.SetStdinForTest(agenttest.FailingStdin{})
-	err := h.agent.SendInput("Split the work.", nil)
+	err := agenttest.SendInput(h.agent, "Split the work.", nil)
 	require.Error(t, err)
 	require.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.False(t, h.agent.PublishTurnActive().Active)
@@ -448,7 +467,7 @@ func TestFleetSteerUsesThePlainSend(t *testing.T) {
 	t.Parallel()
 	h := newCopilotFleetHarness(t, "true", `{"started":true}`)
 	h.agent.active = true
-	require.NoError(t, h.agent.SteerInput("Also check the docs.", nil))
+	require.NoError(t, agenttest.SteerInput(h.agent, testCopilotSteerRequest("Also check the docs.")))
 	assert.Equal(t, []string{"session.send"}, h.methods())
 	assert.Equal(t, "immediate", h.lastParams(t)["mode"])
 }
@@ -457,12 +476,12 @@ func TestSteerEchoAtUserMessage(t *testing.T) {
 	for _, early := range []bool{false, true} {
 		t.Run(fmt.Sprint(early), func(t *testing.T) {
 			a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{earlyEcho: early})
-			require.NoError(t, a.SteerInput("change direction", nil))
+			require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("change direction")))
 			if !early {
-				assert.Empty(t, sink.SteerEchoReports())
+				assert.Empty(t, sink.SteerResolutions())
 			}
-			a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
-			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			a.HandleOutput(copilotSteerEcho(t, "", "change direction"))
+			assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 			assert.Empty(t, sink.Messages(), "the queue owns the user transcript row")
 		})
 	}
@@ -470,23 +489,23 @@ func TestSteerEchoAtUserMessage(t *testing.T) {
 
 func TestInterruptWithdrawsAPendingSteerAndReportsTheDrop(t *testing.T) {
 	a, sink, calls := newCopilotSteeringAgent(t, copilotSteerScript{removed: true})
-	require.NoError(t, a.SteerInput("change direction", nil))
+	require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("change direction")))
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Len(t, *calls, 3)
 	assert.Equal(t, "session.queue.withdrawMessage", (*calls)[1].Method)
 	assert.JSONEq(t, `{"sessionId":"session-1","messageId":"native-steer","expectedPrompt":"change direction"}`, string((*calls)[1].Params))
 	assert.Equal(t, "session.abort", (*calls)[2].Method)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 }
 
 func TestInterruptKeepsASteerThatTheRuntimeAlreadyClaimed(t *testing.T) {
 	a, sink, calls := newCopilotSteeringAgent(t, copilotSteerScript{})
-	require.NoError(t, a.SteerInput("change direction", nil))
+	require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("change direction")))
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Len(t, *calls, 3)
-	assert.Empty(t, sink.SteerEchoReports())
-	a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
+	a.HandleOutput(copilotSteerEcho(t, "", "change direction"))
+	assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 }
 
 func TestSteerDeclaresRowAtEchoAndSurvival(t *testing.T) {
@@ -502,51 +521,56 @@ func TestSteerDeclaresRowAtEchoAndSurvival(t *testing.T) {
 
 func TestSteerContextReplacementReportsUnechoedDrops(t *testing.T) {
 	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
-	require.NoError(t, a.SteerInput("change direction", nil))
+	require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("change direction")))
 	a.sessionMu.Lock()
 	a.forgetNativeSessionState("replacement")
 	a.sessionMu.Unlock()
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
-	assert.Empty(t, a.steers.Pending())
+	assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeDropped)}, sink.SteerResolutions())
+	assert.Empty(t, a.pendingNativeSteerWithdrawals())
 }
 
 func TestSteerIgnoresAMalformedOrChildEcho(t *testing.T) {
 	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
-	require.NoError(t, a.SteerInput("", nil))
-	for _, data := range []map[string]any{{}, {"content": nil}, {"content": 7}} {
+	require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("")))
+	for _, data := range []map[string]any{
+		{}, {"content": nil}, {"content": 7},
+		{"content": "", "messageId": "foreign", "interactionId": "steer-interaction"},
+		{"content": "", "messageId": "native-steer"},
+	} {
 		a.HandleOutput(nativeCopilotEvent(t, "", "user.message", data))
 	}
-	a.HandleOutput(nativeCopilotEvent(t, "child", "user.message", map[string]any{"content": ""}))
-	assert.Empty(t, sink.SteerEchoReports())
-	a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": ""}))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	a.HandleOutput(copilotSteerEcho(t, "child", ""))
+	assert.Empty(t, sink.SteerResolutions())
+	a.HandleOutput(copilotSteerEcho(t, "", ""))
+	assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 }
 
 func TestSteerFailedRequestForgetsItsEcho(t *testing.T) {
-	for _, script := range []copilotSteerScript{{sendError: true}, {sendResult: json.RawMessage(`{}`)}} {
+	for _, script := range []copilotSteerScript{{sendError: true}, {sendResult: json.RawMessage(`{}`), earlyEcho: true}} {
 		a, sink, _ := newCopilotSteeringAgent(t, script)
-		require.Error(t, a.SteerInput("change direction", nil))
-		a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
-		assert.Empty(t, sink.SteerEchoReports())
-		assert.Empty(t, a.steers.Pending())
+		require.Error(t, agenttest.SteerInput(a, testCopilotSteerRequest("change direction")))
+		a.HandleOutput(copilotSteerEcho(t, "", "change direction"))
+		assert.Empty(t, sink.SteerResolutions())
+		assert.Empty(t, a.pendingNativeSteerWithdrawals())
+		assert.Empty(t, a.deferredSteerEvents)
 	}
 }
 
 func TestInterruptAbortsEvenWhenSteerWithdrawalFails(t *testing.T) {
 	for _, script := range []copilotSteerScript{{withdrawError: true}, {withdrawResult: json.RawMessage(`{}`)}} {
 		a, sink, calls := newCopilotSteeringAgent(t, script)
-		require.NoError(t, a.SteerInput("change direction", nil))
+		require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("change direction")))
 		require.NoError(t, a.Interrupt(agent.StopContext{}))
 		assert.Equal(t, "session.abort", (*calls)[len(*calls)-1].Method)
-		assert.Empty(t, sink.SteerEchoReports())
-		a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
-		assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+		assert.Empty(t, sink.SteerResolutions())
+		a.HandleOutput(copilotSteerEcho(t, "", "change direction"))
+		assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 	}
 }
 
 func TestInterruptDoesNotDropASteerThatEchoedDuringWithdrawal(t *testing.T) {
 	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{removed: true, echoOnWithdraw: true})
-	require.NoError(t, a.SteerInput("change direction", nil))
+	require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("change direction")))
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 }

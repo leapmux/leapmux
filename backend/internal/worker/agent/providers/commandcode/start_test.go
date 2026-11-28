@@ -21,7 +21,7 @@ func TestLaunchArgsSelectTheNativeRPCAndSafeDefault(t *testing.T) {
 }
 
 func TestLaunchArgsPreserveNativeModelEffortAndResume(t *testing.T) {
-	args, err := launchArgs(agent.Options{ResumeSessionID: "native-session", Options: optionmap.Map{agent.OptionIDModel: "native/model", agent.OptionIDEffort: "high", agent.OptionIDPermissionMode: contracts.CommandCodePermissionModeBypass}}, t.TempDir())
+	args, err := launchArgs(agent.Options{Session: agent.ResumeSession("native-session"), Options: optionmap.Map{agent.OptionIDModel: "native/model", agent.OptionIDEffort: "high", agent.OptionIDPermissionMode: contracts.CommandCodePermissionModeBypass}}, t.TempDir())
 	require.NoError(t, err)
 	assert.Contains(t, args, "--resume")
 	assert.Contains(t, args, "native-session")
@@ -33,7 +33,7 @@ func TestLaunchArgsPreserveNativeModelEffortAndResume(t *testing.T) {
 func TestLaunchArgsRejectAnUnknownModeAndUnsafeResume(t *testing.T) {
 	_, err := launchArgs(agent.Options{Options: optionmap.Map{agent.OptionIDPermissionMode: "unknown"}}, t.TempDir())
 	require.Error(t, err)
-	_, err = launchArgs(agent.Options{ResumeSessionID: "../another/session"}, t.TempDir())
+	_, err = launchArgs(agent.Options{Session: agent.ResumeSession("../another/session")}, t.TempDir())
 	require.Error(t, err)
 }
 

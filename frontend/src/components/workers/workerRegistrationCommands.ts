@@ -49,16 +49,16 @@ function windowsArgument(value: string): string {
 }
 
 function powershellRegistration(hubUrl: string, registrationKey: string): string {
-  const argumentsText = `worker register --hub ${windowsArgument(hubUrl)} --registration-key ${windowsArgument(registrationKey)}`
+  const argumentsText = `daemon worker register --hub ${windowsArgument(hubUrl)} --registration-key ${windowsArgument(registrationKey)}`
   // Direct native invocation in Windows PowerShell changes embedded quotes.
   // ProcessStartInfo bypasses that conversion on both PowerShell runtimes.
   return `& { $ErrorActionPreference = 'Stop'; $info = New-Object System.Diagnostics.ProcessStartInfo; $info.FileName = (Get-Command 'leapmux' -CommandType Application -ErrorAction Stop).Source; $info.UseShellExecute = $false; $info.Arguments = ${powershellQuote(argumentsText)}; $process = [System.Diagnostics.Process]::Start($info); try { $process.WaitForExit(); $code = $process.ExitCode } finally { $process.Dispose() }; $global:LASTEXITCODE = $code; if ($code -ne 0) { throw "Worker registration failed with exit code $code" } }`
 }
 
 export interface RegistrationCommands {
-  /** `leapmux worker register --hub … --registration-key …` */
+  /** `leapmux daemon worker register --hub … --registration-key …` */
   register: string
-  /** `leapmux worker start` after registration succeeded */
+  /** `leapmux daemon worker start` after registration succeeded */
   start: string
 }
 
@@ -82,7 +82,7 @@ export function workerRegistrationCommands({ hubUrl, registrationKey, shell }: C
   return {
     register: shell === 'powershell'
       ? powershellRegistration(hubUrl, registrationKey)
-      : `leapmux worker register --hub ${posixQuote(hubUrl)} --registration-key ${posixQuote(registrationKey)}`,
-    start: 'leapmux worker start',
+      : `leapmux daemon worker register --hub ${posixQuote(hubUrl)} --registration-key ${posixQuote(registrationKey)}`,
+    start: 'leapmux daemon worker start',
   }
 }

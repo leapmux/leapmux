@@ -191,7 +191,7 @@ describe('RegisterWorkerDialog', () => {
       expect(mockCreate).toHaveBeenCalledOnce()
     })
     const block = await screen.findByTestId('registration-command')
-    expect(block.textContent).toContain('leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'')
+    expect(block.textContent).toContain('leapmux daemon worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'')
   })
 
   it('shows the hub origin in the registration command in remote mode', async () => {
@@ -214,7 +214,7 @@ describe('RegisterWorkerDialog', () => {
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
-        'leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'',
+        'leapmux daemon worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'',
       )
     })
   })
@@ -224,7 +224,7 @@ describe('RegisterWorkerDialog', () => {
     await screen.findByTestId('start-command')
     expect(screen.getByText('2. After registration succeeds, start the worker.')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('copy-start-command'))
-    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('leapmux worker start'))
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('leapmux daemon worker start'))
     expect(navigator.clipboard.writeText).toHaveBeenCalledOnce()
   })
 
@@ -239,7 +239,7 @@ describe('RegisterWorkerDialog', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'PowerShell' }))
     const command = screen.getByTestId('registration-command').textContent!
     expect(command).toContain('System.Diagnostics.ProcessStartInfo')
-    expect(command).toContain(`$info.Arguments = 'worker register --hub "unix:/tmp/a''s hub.sock" --registration-key "it''s a key"'`)
+    expect(command).toContain(`$info.Arguments = 'daemon worker register --hub "unix:/tmp/a''s hub.sock" --registration-key "it''s a key"'`)
     fireEvent.click(screen.getByTestId('copy-registration-command'))
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(command))
     fireEvent.click(screen.getByTestId('email-registration-instructions'))
@@ -394,7 +394,7 @@ describe('RegisterWorkerDialog', () => {
     await waitFor(() => {
       expect(mockEmail).toHaveBeenCalledWith({
         registrationKey: 'KEY-ABC',
-        command: 'leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'',
+        command: 'leapmux daemon worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'',
       })
     })
     expect(await screen.findByText(/Sent to me@example.com/)).toBeInTheDocument()

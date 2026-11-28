@@ -396,7 +396,10 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 				}
 				accepted := os.Getenv("LEAPMUX_TEST_COPILOT_CONTROL_REJECT") != "1"
 				value = map[string]any{"success": accepted}
-				if accepted {
+				// LEAPMUX_TEST_COPILOT_CONTROL_UNREPORTED accepts the answer and
+				// reports no completion of the request, so only the receipt tells the
+				// agent that Copilot took the answer.
+				if accepted && os.Getenv("LEAPMUX_TEST_COPILOT_CONTROL_UNREPORTED") != "1" {
 					kind := map[string]string{
 						"session.permissions.handlePendingPermissionRequest": "permission.completed",
 						"session.ui.handlePendingUserInput":                  "user_input.completed",

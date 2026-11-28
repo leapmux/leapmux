@@ -67,7 +67,7 @@ func TestMuseRejectsMissingAndReplacedSessions(t *testing.T) {
 func TestMuseBusyRefusalRepublishesTheTurn(t *testing.T) {
 	a, sink := testAgent(t)
 	a.startTurn("session", "turn")
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later", nil))
 }
 func TestMuseRisingTurnTokens(t *testing.T) {
 	a, sink := testAgent(t)
@@ -596,6 +596,18 @@ func TestMuseCompactionOutlivesTheModelTurn(t *testing.T) {
 	assert.Empty(t, sink.LeapMuxNotifications())
 	a.retireHost(agent.MessageCompletionError)
 	assert.Equal(t, map[string]interface{}{contracts.SessionInfoKeyCompaction: nil}, sink.LastSessionInfo())
+}
+
+func TestMuseHostExitWithoutNativeCompletionLeavesTheReplyUnproved(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.startTurn("session", "unfinished-turn")
+	a.retireHost(agent.MessageCompletionError)
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "session", rows[0].AgentSessionID)
+	assert.Equal(t, "unfinished-turn", rows[0].NativeTurnID)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, rows[0].InputTurnOutcome)
 }
 
 func TestMuseCompactionEndWithoutStartClearsLiveState(t *testing.T) {

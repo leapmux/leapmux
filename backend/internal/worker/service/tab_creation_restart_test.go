@@ -169,10 +169,19 @@ func TestCreationRestart_RecoversALostHubAcknowledgement(t *testing.T) {
 			oldStarts := failCreationProcessStarts(oldService)
 			id := "lost-ack-" + kind.String()
 			method, request := recoveryCreationRequest(t, kind, hub.intent(id), directory)
+			caller := channel.NewCaller(hub.owner, authscope.NonAdminGrant())
+			if open, ok := request.(*leapmuxv1.OpenAgentRequest); ok {
+				createSenderAgent(t, oldService, "Original sender")
+				caller = channel.LocalAgentCaller(hub.owner)
+				caller.SourceTabID = senderAgentID
+				open.InitialMessage = new("Review the diff")
+			}
+			payload, err := proto.Marshal(request)
+			require.NoError(t, err)
 			writer, done := newTestWriter(), make(chan struct{})
 			go func() {
 				defer close(done)
-				dispatchRecoveryRequest(t.Context(), oldService, oldDispatcher, method, request, writer)
+				oldDispatcher.DispatchWith(t.Context(), caller, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, writer)
 			}()
 			ctx := creationOutcomeContext(t)
 			select {
@@ -184,6 +193,20 @@ func TestCreationRestart_RecoversALostHubAcknowledgement(t *testing.T) {
 			}
 			_, before, err := hub.journal.LoadState(ctx, hub.owner.String())
 			require.NoError(t, err)
+			var initialID string
+			if kind == leapmuxv1.TabType_TAB_TYPE_AGENT {
+				queue, err := oldService.InputQueue.Snapshot(ctx, id)
+				require.NoError(t, err)
+				require.Len(t, queue.Items, 1, "the message must be durable before the Worker receives the publication acknowledgement")
+				assert.Equal(t, "Review the diff", queue.Items[0].TextPreview)
+				assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE, queue.Items[0].Kind)
+				require.NotNil(t, queue.Items[0].Sender)
+				assert.Equal(t, senderAgentID, queue.Items[0].Sender.TabID)
+				assert.Equal(t, "Original sender", queue.Items[0].Sender.Title)
+				initialID = queue.Items[0].ID
+				_, err = oldService.Queries.RenameAgent(ctx, db.RenameAgentParams{ID: senderAgentID, Title: "Renamed sender"})
+				require.NoError(t, err)
+			}
 			oldService.Shutdown()
 			select {
 			case <-done:
@@ -195,7 +218,7 @@ func TestCreationRestart_RecoversALostHubAcknowledgement(t *testing.T) {
 			assert.Zero(t, oldStarts.Load())
 			require.NoError(t, oldDatabase.Close())
 			freshDatabase := openRecoveryDatabase(t, path)
-			fresh, _ := newRecoveryService(t, hub.config(freshDatabase, directory))
+			fresh, freshDispatcher := newRecoveryService(t, hub.config(freshDatabase, directory))
 			defer fresh.Shutdown()
 			starts := failCreationProcessStarts(fresh)
 			require.NoError(t, fresh.ResolvePendingTabCreations(ctx))
@@ -223,6 +246,26 @@ func TestCreationRestart_RecoversALostHubAcknowledgement(t *testing.T) {
 				resource, err := fresh.Queries.GetAgentByID(ctx, id)
 				require.NoError(t, err)
 				assert.False(t, resource.ClosedAt.Valid)
+
+				retry := newTestWriter()
+				dispatchRecoveryRequest(ctx, fresh, freshDispatcher, method, request, retry)
+				require.Empty(t, retry.rejections())
+				require.Len(t, retry.responsesSnapshot(), 1)
+				for _, replacement := range []*string{nil, new("Review a different diff")} {
+					changed := proto.CloneOf(request.(*leapmuxv1.OpenAgentRequest))
+					changed.InitialMessage = replacement
+					result := newTestWriter()
+					dispatchRecoveryRequest(ctx, fresh, freshDispatcher, method, changed, result)
+					require.Len(t, result.rejections(), 1)
+					assert.EqualValues(t, codes.FailedPrecondition, result.rejections()[0].code)
+				}
+				queue, err := fresh.InputQueue.Snapshot(ctx, id)
+				require.NoError(t, err)
+				require.Len(t, queue.Items, 1)
+				assert.Equal(t, initialID, queue.Items[0].ID)
+				assert.Equal(t, "Review the diff", queue.Items[0].TextPreview)
+				require.NotNil(t, queue.Items[0].Sender)
+				assert.Equal(t, "Original sender", queue.Items[0].Sender.Title)
 			case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 				resource, err := fresh.Queries.GetTerminal(ctx, id)
 				require.NoError(t, err)
@@ -239,7 +282,7 @@ type recoveryCreationSeed struct {
 	request     proto.Message
 	publication *leapmuxv1.TabPublication
 	runtime     creationRuntime
-	write       func(context.Context, *db.Queries) error
+	write       func(context.Context, *db.Queries, *sql.Tx) error
 	state       int64
 }
 
@@ -284,9 +327,9 @@ func TestCreationRestart_RestoresTheCurrentAgentSessionAndSettings(t *testing.T)
 				defer oldService.Shutdown()
 				intent := hub.intent("current-agent")
 				_, request := recoveryCreationRequest(t, leapmuxv1.TabType_TAB_TYPE_AGENT, intent, directory)
-				runtime := &agentCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, ResumeSessionID: "stale-runtime-session", Options: OptionMap{agent.OptionIDModel: "stale-model"}, DefaultedIDs: map[string]bool{agent.OptionIDModel: true, "retired-axis": true}}
+				runtime := &agentCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, Session: agent.ResumeSession("stale-runtime-session"), Options: OptionMap{agent.OptionIDModel: "stale-model"}, DefaultedIDs: map[string]bool{agent.OptionIDModel: true, "retired-axis": true}}
 				seedRecoveryCreation(t, oldService, recoveryCreationSeed{request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, runtime: runtime, state: state,
-					write: func(ctx context.Context, q *db.Queries) error {
+					write: func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 						return q.CreateAgent(ctx, db.CreateAgentParams{ID: intent.TabId, WorkingDir: directory, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Options: marshalOptions(runtime.Options), Resumed: 1, PendingResumeSessionID: "stale-runtime-session"})
 					},
 				})
@@ -319,7 +362,7 @@ func TestCreationRestart_RestoresTheCurrentAgentSessionAndSettings(t *testing.T)
 					t.Fatal("recovery did not start the agent")
 				}
 				fresh.AgentStartup.WaitForInFlight()
-				assert.Equal(t, session.expected, opts.ResumeSessionID)
+				assert.Equal(t, session.expected, opts.Session.ResumeID())
 				assert.Equal(t, current[agent.OptionIDModel], opts.Options[agent.OptionIDModel])
 				assert.Equal(t, current[agent.OptionIDPermissionMode], opts.Options[agent.OptionIDPermissionMode])
 				assert.False(t, opts.NewSessionDefaultOptionIDs[agent.OptionIDModel], "an explicit current model must not retain the old default marker")
@@ -348,9 +391,9 @@ func TestCreationRestart_RestoresTheCurrentTerminalDimensions(t *testing.T) {
 			defer oldService.Shutdown()
 			intent := hub.intent("current-terminal")
 			_, request := recoveryCreationRequest(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, intent, directory)
-			runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, Options: terminal.Options{ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25}, Title: "Saved terminal"}
+			runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, Options: terminalCreationOptions{ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25}, Title: "Saved terminal"}
 			seedRecoveryCreation(t, oldService, recoveryCreationSeed{request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL}, runtime: runtime, state: state,
-				write: func(ctx context.Context, q *db.Queries) error {
+				write: func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 					return q.CreateTerminal(ctx, db.CreateTerminalParams{ID: intent.TabId, WorkingDir: directory, Shell: runtime.Options.Shell, Title: runtime.Title, Cols: 117, Rows: 53, Screen: []byte{}})
 				},
 			})
@@ -387,4 +430,73 @@ func TestCreationRestart_RestoresTheCurrentTerminalDimensions(t *testing.T) {
 			assert.Equal(t, creationCommitted, row.State)
 		})
 	}
+}
+
+func TestCreationRestartDoesNotReleaseAClaimedTerminalCommandAgain(t *testing.T) {
+	t.Parallel()
+	hub := newRecoveryPublicationHub(t)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "worker.db")
+	oldDatabase := openRecoveryDatabase(t, path)
+	oldService, _ := newRecoveryService(t, hub.config(oldDatabase, directory))
+	defer oldService.Shutdown()
+
+	intent := hub.intent("claimed-terminal-command")
+	_, request := recoveryCreationRequest(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, intent, directory)
+	const command = "printf once"
+	request.(*leapmuxv1.OpenTerminalRequest).InitialCommand = command
+	runtime := &terminalCreationRuntime{
+		Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}},
+		Options: terminalCreationOptions{
+			ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25,
+			InitialCommand: command,
+		},
+		Title: "Terminal with claimed command",
+	}
+	operation := seedRecoveryCreation(t, oldService, recoveryCreationSeed{
+		request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+		runtime: runtime, state: creationPublished,
+		write: func(ctx context.Context, queries *db.Queries, _ *sql.Tx) error {
+			return queries.CreateTerminal(ctx, db.CreateTerminalParams{
+				ID: intent.TabId, WorkingDir: directory, Shell: runtime.Options.Shell,
+				Title: runtime.Title, Cols: 80, Rows: 25, Screen: []byte{},
+			})
+		},
+	})
+	oldService.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "reassigned-owner"})
+	require.Error(t, operation.releaseTerminalInitialCommand(t.Context(), func() error {
+		t.Error("a retired owner cannot expose the payload")
+		return nil
+	}), "a retired owner cannot release the command")
+	oldService.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: hub.owner.String()})
+	claimed, err := oldService.Queries.ClaimTerminalInitialCommand(t.Context(), db.ClaimTerminalInitialCommandParams{
+		UserID: hub.owner.String(), WorkerID: oldService.WorkerID, TabID: intent.TabId,
+		TabType: int64(leapmuxv1.TabType_TAB_TYPE_TERMINAL), PublishedState: creationPublished,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), claimed, "the earlier launch persisted a release before the restart")
+	repeated, err := oldService.Queries.ClaimTerminalInitialCommand(t.Context(), db.ClaimTerminalInitialCommandParams{
+		UserID: hub.owner.String(), WorkerID: oldService.WorkerID, TabID: intent.TabId,
+		TabType: int64(leapmuxv1.TabType_TAB_TYPE_TERMINAL), PublishedState: creationPublished,
+	})
+	require.NoError(t, err)
+	assert.Zero(t, repeated, "one creation can claim its command only once")
+	oldService.Shutdown()
+	require.NoError(t, oldDatabase.Close())
+
+	freshDatabase := openRecoveryDatabase(t, path)
+	fresh, _ := newRecoveryService(t, hub.config(freshDatabase, directory))
+	defer fresh.Shutdown()
+	var launches atomic.Int32
+	fresh.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+		launches.Add(1)
+		return errors.New("the terminal startup was invoked")
+	}
+	ctx := creationOutcomeContext(t)
+	require.NoError(t, fresh.ResolvePendingTabCreations(ctx))
+	fresh.TerminalStartup.WaitForInFlight()
+	assert.Zero(t, launches.Load(), "recovery cannot launch a claimed command")
+	row, err := fresh.Queries.GetTerminal(ctx, intent.TabId)
+	require.NoError(t, err)
+	assert.Contains(t, row.StartupError, "cannot verify whether the initial command ran")
 }

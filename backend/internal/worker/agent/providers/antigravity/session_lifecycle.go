@@ -11,67 +11,80 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, false)
+var _ agent.ChildSteerer = (*Agent)(nil)
+
+type cascadeInputDelivery uint8
+
+const (
+	deliverPrompt cascadeInputDelivery = iota
+	deliverSteer
+)
+
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, content, attachments, deliverPrompt)
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments, false)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(&sessionID, content, attachments, deliverPrompt)
 }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, request.Content, request.Attachments, deliverSteer)
 }
 
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, delivery cascadeInputDelivery) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	root := a.root
 	a.Mu.Unlock()
 	if root == nil {
-		return fmt.Errorf("agent has no Antigravity session")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent has no Antigravity session")
 	}
-	return a.sendToState(root, content, attachments, steer, true)
+	return a.sendToState(root, content, attachments, delivery, true)
 }
 
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
-	return agent.ChildInputResult{StartsTurn: true}, a.sendChild(childKey, input.Content, input.Attachments, false)
+	receipt, err := a.sendChild(childKey, input.Content, input.Attachments, deliverPrompt)
+	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChild(childKey, content, attachments, true)
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.sendChild(childKey, request.Content, request.Attachments, deliverSteer)
 }
 
-func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
+
+func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Attachment, delivery cascadeInputDelivery) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if a.sessionSwitching {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	state := a.cascades[childKey]
-	if state != nil && state.closed && !steer {
+	if state != nil && state.closed && delivery != deliverSteer {
 		done, ctx := state.streamDone, a.streamCtx
 		a.Mu.Unlock()
 		if done != nil {
 			select {
 			case <-done:
 			case <-ctx.Done():
-				return agent.ErrChildRouteNotReady
+				return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 			}
 		}
 		a.Mu.Lock()
 		reopen, reopenErr := a.reopenChildLocked(state, done)
 		a.Mu.Unlock()
 		if reopenErr != nil {
-			return reopenErr
+			return agent.NativeInputReceipt{}, reopenErr
 		}
 		if reopen {
 			// Recounting here can classify new native peer work as history.
@@ -84,9 +97,9 @@ func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Att
 
 	state, err := a.childState(childKey)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return a.sendToState(state, content, attachments, steer, false)
+	return a.sendToState(state, content, attachments, delivery, false)
 }
 
 func (a *Agent) reopenChildLocked(state *cascadeState, completed chan struct{}) (bool, error) {
@@ -103,7 +116,7 @@ func (a *Agent) reopenChildLocked(state *cascadeState, completed chan struct{}) 
 	return reopen, nil
 }
 
-func (a *Agent) sendToState(state *cascadeState, content string, attachments []*leapmuxv1.Attachment, steer, allowSlash bool) error {
+func (a *Agent) sendToState(state *cascadeState, content string, attachments []*leapmuxv1.Attachment, delivery cascadeInputDelivery, allowSlash bool) (agent.NativeInputReceipt, error) {
 	command := ""
 	a.Mu.Lock()
 	if allowSlash {
@@ -112,84 +125,102 @@ func (a *Agent) sendToState(state *cascadeState, content string, attachments []*
 		}
 	}
 	a.Mu.Unlock()
-	return a.sendToStateCommand(state, content, attachments, steer, command)
+	return a.sendToStateCommand(state, content, attachments, delivery, command)
 }
 
-func (a *Agent) sendToStateCommand(state *cascadeState, content string, attachments []*leapmuxv1.Attachment, steer bool, command string) error {
+func (a *Agent) sendToStateCommand(state *cascadeState, content string, attachments []*leapmuxv1.Attachment, delivery cascadeInputDelivery, command string) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	if a.sessionSwitching {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	if state == nil {
 		a.Mu.Unlock()
-		return agent.ErrInputSessionChanged
+		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 	}
 	if a.cascades[state.id] != state || state.generation != a.generation || state.parent == nil && a.root != state {
 		a.Mu.Unlock()
 		if state.parent != nil {
-			return agent.ErrChildRouteNotReady
+			return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 		}
-		return agent.ErrInputSessionChanged
+		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 	}
 	if state.closed || a.streamCtx.Err() != nil {
 		child := state.parent != nil
 		a.Mu.Unlock()
 		if child {
-			return agent.ErrChildRouteNotReady
+			return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 		}
-		return fmt.Errorf("the Antigravity event stream is closed")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Antigravity event stream is closed")
 	}
-	if state.turnPhase == cascadeTurnFinalizing || !steer && (state.turnPhase != cascadeTurnIdle || state.sendInFlight) {
+	if state.turnPhase == cascadeTurnFinalizing || delivery != deliverSteer && (state.turnPhase != cascadeTurnIdle || state.sendInFlight) {
 		root := state.parent == nil
 		a.Mu.Unlock()
 		if root {
 			a.PublishTurnActive()
 		}
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
-	if steer && state.turnPhase != cascadeTurnActive {
+	if delivery == deliverSteer && state.turnPhase != cascadeTurnActive {
 		a.Mu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	items, media, err := a.buildMessageItems(content, attachments, command)
 	if err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	config, err := a.cascadeConfigLocked()
 	if err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
+	}
+	request := map[string]any{"cascadeId": state.id, "items": items, "media": media, "cascadeConfig": config, "tags": []string{antigravityQueueInputTag}}
+	receipt := agent.NativeInputReceipt{}
+	if command == "" {
+		receipt = agent.NativeInputReceipt{SessionID: state.id, InputID: id.Generate()}
+		if state.inputReplies == nil {
+			state.inputReplies = make(map[string]*inputReply)
+		}
+		state.inputReplies[receipt.InputID] = &inputReply{receipt: receipt, steered: delivery == deliverSteer}
+		request["clientMessageId"] = receipt.InputID
 	}
 	state.sendInFlight = true
 	seq := a.NextTurnSeq()
+	state.inputRequestSeq = seq
 	outgoing := a.turnStateLocked(state)
 	a.inputWG.Add(1)
 	a.Mu.Unlock()
 	defer a.inputWG.Done()
 	providerkit.PublishTurnStateTo(state.sink, outgoing, seq)
-	request := map[string]any{"cascadeId": state.id, "items": items, "media": media, "cascadeConfig": config, "tags": []string{antigravityQueueInputTag}}
 	err = a.rpc.sendUserMessage(a.Context(), request)
+	if err == nil {
+		return receipt, nil
+	}
 	a.Mu.Lock()
-	if err != nil && state.turnPhase == cascadeTurnIdle {
-		state.sendInFlight = false
-	}
-	errorState := a.turnStateLocked(state)
-	errorSeq := a.NextTurnSeq()
-	a.Mu.Unlock()
-	if err != nil {
-		providerkit.PublishTurnStateTo(state.sink, errorState, errorSeq)
-		if providerkit.IsHTTPStatus(err, http.StatusNotFound) {
-			return providerkit.ResumeFailedError(state.id, err)
+	delete(state.inputReplies, receipt.InputID)
+	current := a.cascadeCurrentLocked(state) && state.inputRequestSeq == seq
+	var errorState agent.TurnState
+	var errorSeq uint64
+	if current {
+		if state.turnPhase == cascadeTurnIdle {
+			state.sendInFlight = false
 		}
-		return err
+		errorState = a.turnStateLocked(state)
+		errorSeq = a.NextTurnSeq()
 	}
-	return nil
+	a.Mu.Unlock()
+	if current {
+		providerkit.PublishTurnStateTo(state.sink, errorState, errorSeq)
+	}
+	if providerkit.IsHTTPStatus(err, http.StatusNotFound) {
+		return agent.NativeInputReceipt{}, providerkit.ResumeFailedError(state.id, err)
+	}
+	return agent.NativeInputReceipt{}, err
 }
 
 func (a *Agent) CompactContext() error {
@@ -200,7 +231,8 @@ func (a *Agent) CompactContext() error {
 		return agent.ErrAgentBusy
 	}
 	a.Mu.Unlock()
-	return a.sendToStateCommand(root, "", nil, false, antigravityCompactCommand)
+	_, err := a.sendToStateCommand(root, "", nil, deliverPrompt, antigravityCompactCommand)
+	return err
 }
 
 func (a *Agent) ClearContext() (string, error) {
@@ -383,13 +415,19 @@ func (a *Agent) finishCascadeOutput(state *cascadeState, completion agent.Messag
 	active := a.cascadeInstalledLocked(state) && state.turnPhase == cascadeTurnActive
 	a.Mu.Unlock()
 	if active {
-		return a.endTurnWithTeardown(state, completion, true)
+		if err := a.endTurnWithTeardown(state, completion, true); err != nil {
+			a.finishInputReplies(state, false, completion)
+			return err
+		}
+		return nil
 	}
 	if !a.IsDiscardingOutput() {
 		if err := a.flushOpenSteps(state, completion, true); err != nil {
+			a.finishInputReplies(state, false, completion)
 			return err
 		}
 	}
+	a.finishInputReplies(state, false, completion)
 	providerkit.ResetSpansAndProgress(state.sink)
 	return nil
 }

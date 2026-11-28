@@ -85,6 +85,17 @@ enum IdentityProviderType {
   IDENTITY_PROVIDER_TYPE_GITHUB = 2;
 }
 
+// OAuthResponseMode records how an identity provider delivers its authorization
+// callback to the hub. Numbers oauth_providers.response_mode.
+enum OAuthResponseMode {
+  O_AUTH_RESPONSE_MODE_UNSPECIFIED = 0;
+  // Standard authorization-code callback via GET query parameters.
+  O_AUTH_RESPONSE_MODE_QUERY = 1;
+  // Cross-site POST form callback (response_mode=form_post), as required by
+  // Sign in with Apple when requesting name or email scopes.
+  O_AUTH_RESPONSE_MODE_FORM_POST = 2;
+}
+
 // WorkspaceLifecycleOp is what one row of the transactional lifecycle outbox
 // asks the per-user manager to do after the transaction commits. Numbers
 // lifecycle_outbox.op_type.

@@ -301,7 +301,7 @@ func (b *Base) childFor(rowKey string) *childConversation {
 
 // routeToChild distinguishes an unknown row from a known blocked child route.
 // A blocked tagged update must not enter the root transcript.
-func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update json.RawMessage) childRouteResult {
+func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update acpSessionUpdate) childRouteResult {
 	child := b.childFor(rowKey)
 	if child == nil {
 		if b.childIdentityRefused(rowKey) {
@@ -325,6 +325,11 @@ func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update json.R
 	if !b.childRouteCurrent(rowKey, child) {
 		return childRouteBlocked
 	}
+	if update.SessionID != "" {
+		if b.childSessionRow(update.SessionID) != rowKey {
+			return childRouteBlocked
+		}
+	}
 	if header.SessionUpdate == contracts.ACPUpdateUserMessageChunk && b.hooks.ChildUserMessages {
 		child.persistAgentMessage(header.Content)
 		return childRouteAccepted
@@ -332,7 +337,7 @@ func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update json.R
 	// A child renders conversation updates only.
 	// The session's mode and model belong to the main conversation, as do its command set and usage.
 	// Discard an update that reports those fields instead of applying it to the parent.
-	child.handleUpdate(header, update)
+	child.handleUpdate(header, update.Update, update.SessionID, rowKey, update.Meta)
 	return childRouteAccepted
 }
 
@@ -366,8 +371,12 @@ func (c *childConversation) persistAgentMessage(content json.RawMessage) {
 // A provider with a stored transcript constructs the update that its agent would send for each record and calls this method.
 // Return false for an unknown or refused route.
 func (b *Base) FeedChildUpdate(rowKey string, update json.RawMessage) bool {
+	return b.feedChildUpdate(rowKey, acpSessionUpdate{Update: update})
+}
+
+func (b *Base) feedChildUpdate(rowKey string, update acpSessionUpdate) bool {
 	var header acpUpdateHeader
-	if err := json.Unmarshal(update, &header); err != nil {
+	if err := json.Unmarshal(update.Update, &header); err != nil {
 		slog.Warn("acp child update unmarshal failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "row_key", rowKey, "error", err)
 		return false
 	}
@@ -567,21 +576,40 @@ func (b *Base) AttachChildSession(target ChildSessionTarget) bool {
 	return true
 }
 
+// BindAttachedChildSession records the native session of an already attached
+// child before its transcript receives output. Reader callbacks can use it
+// without waiting on session RPCs.
+func (b *Base) BindAttachedChildSession(target ChildSessionTarget) error {
+	if !target.valid() || b.attachedChildTarget(target.SessionID) != target {
+		return agent.ErrChildRouteNotReady
+	}
+	child := b.childFor(target.RowKey)
+	if child == nil {
+		return agent.ErrChildRouteNotReady
+	}
+	child.feedMu.Lock()
+	defer child.feedMu.Unlock()
+	if !b.childRouteCurrent(target.RowKey, child) || b.attachedChildTarget(target.SessionID) != target {
+		return agent.ErrChildRouteNotReady
+	}
+	return child.childSink.BindChildSessionID(target.SessionID)
+}
+
 // LoadChildSession loads the target's native session so its updates stream.
 // Admission, attachment and the native load precede any root replacement. An agent
 // that replays a loaded session sends its history first, after attachment,
 // so each update reaches that transcript. The answer states the child's settings.
-// The base returns its model without changing the root settings.
-func (b *Base) LoadChildSession(target ChildSessionTarget) (string, error) {
+// The base returns those settings without changing the root settings.
+func (b *Base) LoadChildSession(target ChildSessionTarget) (ChildSessionSettings, error) {
 	if !target.valid() {
-		return "", agent.ErrChildRouteNotReady
+		return ChildSessionSettings{}, agent.ErrChildRouteNotReady
 	}
 	release, admitted := b.childDispatch.acquire(b.Context())
 	if !admitted {
-		return "", agent.ErrChildRouteNotReady
+		return ChildSessionSettings{}, agent.ErrChildRouteNotReady
 	}
 	defer release()
-	var modelID string
+	var settings ChildSessionSettings
 	err := b.WithSessionID(func(rootSessionID string) error {
 		if rootSessionID == "" || rootSessionID != target.RootSessionID || !b.AttachChildSession(target) {
 			return agent.ErrChildRouteNotReady
@@ -602,10 +630,25 @@ func (b *Base) LoadChildSession(target ChildSessionTarget) (string, error) {
 		if err != nil {
 			return fmt.Errorf("read ACP subagent settings: %w", err)
 		}
-		_, modelID = acpHandshakeModelInfos(session)
+		_, settings.ModelID = acpHandshakeModelInfos(session)
+		settings.ModeID = session.CurrentModeID
+		if option, ok := acpConfigOptionByCategory(session.ConfigOptions, acpConfigOptionCategoryMode, ConfigOptionIDMode); ok && option.CurrentValue != "" {
+			settings.ModeID = option.CurrentValue
+		}
+		settings.ConfigValues = make(map[string]string, len(session.ConfigOptions))
+		for _, option := range session.ConfigOptions {
+			settings.ConfigValues[option.ID] = option.CurrentValue
+		}
 		return nil
 	})
-	return modelID, err
+	return settings, err
+}
+
+// ChildSessionSettings holds the settings confirmed when the native child loads.
+type ChildSessionSettings struct {
+	ModelID      string
+	ModeID       string
+	ConfigValues map[string]string
 }
 
 // SessionOwner returns the services of the transcript that owns sessionID:
@@ -725,15 +768,19 @@ func (b *Base) withOpenToolConversation(sessionID, toolCallID string, fn func(*c
 // childSessionRow returns the registry row key of the subagent that runs in
 // sessionID, or "" for a session that no subagent owns.
 func (b *Base) childSessionRow(sessionID string) string {
+	return b.attachedChildTarget(sessionID).RowKey
+}
+
+func (b *Base) attachedChildTarget(sessionID string) ChildSessionTarget {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	b.children.mu.Lock()
 	defer b.children.mu.Unlock()
 	route, found := b.children.sessions[sessionID]
 	if !found || route.rootSessionID != b.sessionID {
-		return ""
+		return ChildSessionTarget{}
 	}
-	return route.rowKey
+	return ChildSessionTarget{RootSessionID: route.rootSessionID, SessionID: sessionID, RowKey: route.rowKey}
 }
 
 // SessionRoot returns the current root that owns a served native session.
@@ -776,8 +823,8 @@ func (c *childConversation) finish(status bgtask.Status) {
 	defer c.feedMu.Unlock()
 	turn := c.out.drainTurn()
 	textCompletion, toolCompletion := childCloseCompletions(status)
-	c.persistAssembledText(agent.AssembledMessageKindReasoning, "", turn.thoughtText, textCompletion)
-	c.persistAssembledText(agent.AssembledMessageKindText, "", turn.assistantText, textCompletion)
+	c.persistAssembledText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, textCompletion)
+	c.persistAssembledText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, textCompletion)
 	c.persistIncompleteTools(turn.incompleteTools, toolCompletion)
 	providerkit.ResetSpansAndProgress(c.sink())
 }

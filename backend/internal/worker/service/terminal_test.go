@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -13,6 +15,22 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
+
+func TestInspectTerminalProcessesReportsAScanFailure(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, writer := setupTestService(t)
+	var scanned []string
+	svc.scanTerminalProcesses = func(_ context.Context, ids []string) ([]terminal.TerminalProcesses, error) {
+		scanned = append(scanned, ids...)
+		return nil, errors.New("process table is unavailable")
+	}
+	dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
+		&leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: []string{"", "terminal-1"}}, writer)
+	assert.Equal(t, []string{"terminal-1"}, scanned)
+	require.Len(t, writer.errors, 1)
+	assert.EqualValues(t, codes.Unavailable, writer.errors[0].code)
+	assert.Empty(t, writer.responses)
+}
 
 // TestSucceedTerminalStartup_ListTerminalsReportsTheReadyThatTheClientReceived
 // pins the order of succeedTerminalStartup: when a client receives READY,

@@ -51,7 +51,7 @@ func (droidProvider) PlanModeControl(toolName string) agent.PlanModeControlKind 
 // leaves spec mode through its own tool, so no LeapMux mode change follows.
 func (droidProvider) PlanModePermissionMode(agent.PlanModeControlKind) string { return "" }
 
-// ResolveControlResponse turns the browser's decision into Droid's own answer.
+// ResolveControlResponse turns the neutral answer into Droid's own answer.
 func (droidProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	return droidResolveControlResponse(ctx)
 }
@@ -60,6 +60,10 @@ func (droidProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 func (droidProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return droidStoredSessions(ctx, q)
 }
+
+// SupportsFork reports that Factory Droid supports native conversation-history
+// forking via the droid.fork_session stream-jsonrpc request.
+func (droidProvider) SupportsFork() bool { return true }
 
 // ChildCapabilities states the native child operations that this provider supports.
 // Messages use a separate process loaded with the child session; the root

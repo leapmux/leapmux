@@ -2,13 +2,18 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
+	"connectrpc.com/connect/v2"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // Self-target guards block destructive `leapmux control` commands from
@@ -20,75 +25,64 @@ import (
 // guards therefore key off the tab anchor and look up its current
 // workspace / tile at call time.
 //
-// Each guard pairs with a per-command `--force` flag that bypasses the
-// check, mirroring the existing `layout set --force` ergonomics.
+// Each guard pairs with the command's --allow-self flag, which states the
+// hazard it overrides. The refusal specifies the flag, as tab_busy_refused
+// specifies --allow-busy.
 
 // callingTabID returns the LEAPMUX_CONTROL_TAB_ID spawn anchor, or ""
 // when the CLI was not invoked from inside a remote tab. Trimming
 // guards against trailing newlines from shell substitutions.
 func callingTabID() string {
-	return strings.TrimSpace(os.Getenv("LEAPMUX_CONTROL_TAB_ID"))
+	return strings.TrimSpace(os.Getenv(controlenv.TabIDVariable))
 }
 
-// locateCallingTab resolves the calling tab anchor to its current
-// (workspace_id, tile_id) via LocateTab. An empty anchor or a
-// LocateTab failure (e.g. the anchor is stale because the tab was
-// closed since spawn) returns ("", "") with no error — guards must
-// not block real operations on un-resolvable anchors, only on ones
-// that currently coincide with the destructive target.
-func locateCallingTab(ctx context.Context, c *control.Client) (workspaceID, tileID string) {
+// callingWorkspace resolves the calling tab's current workspace. A missing
+// anchor or a confirmed absent tab leaves nothing for the guard to protect.
+func callingWorkspace(ctx context.Context, c control.Peer) (string, error) {
 	self := callingTabID()
 	if self == "" {
-		return "", ""
+		return "", nil
 	}
-	req := &leapmuxv1.LocateTabRequest{
-		TabType: leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED,
-		TabId:   self,
-	}
+	req := &leapmuxv1.LocateTabRequest{TabId: self}
 	var resp leapmuxv1.LocateTabResponse
 	if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceLocateTabProcedure, req, &resp); err != nil {
-		return "", ""
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return "", nil
+		}
+		return "", err
 	}
-	t := resp.GetTab()
-	return t.GetWorkspaceId(), t.GetTileId()
+	if workspace := resp.GetTab().GetWorkspaceId(); workspace != "" {
+		return workspace, nil
+	}
+	return "", cli.Newf(cli.CodeInternal, "the Hub returned no workspace for the calling tab %s", self)
 }
 
-// callingTileFromState reads the calling tab's tile id directly from
-// a CRDT state snapshot the handler has already loaded for an
-// unrelated reason (e.g. preflightTile). Returns "" when no anchor
-// is set, the tab is absent from the snapshot, or the tab record is
-// tombstoned. Same fail-open semantics as locateCallingTab.
-func callingTileFromState(state *leapmuxv1.UserMaterialized) string {
-	self := callingTabID()
-	if self == "" || state == nil {
-		return ""
-	}
-	rec := state.GetTabs()[self]
-	if rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
-		return ""
-	}
-	return rec.GetTileId().GetValue()
-}
+// allowSelfFlag overrides every self-target guard.
+const allowSelfFlag = "allow-self"
 
-// errSelfTargetRefused builds the canonical error envelope returned
-// when a guard fires. `self_target_refused` is a distinct code so
-// scripts can pattern-match and decide whether to re-run with
-// --force, instead of having to grep an `invalid_request` blob.
+// errSelfTargetRefused builds the error that a guard returns.
+// `self_target_refused` is a distinct code, so a script can decide whether
+// to run again with --allow-self.
 func errSelfTargetRefused(detail string) error {
-	return control.EmitError(
-		"self_target_refused",
-		detail+"; pass --force to override",
-	)
+	return cli.Newf(cli.CodeSelfTargetRefused, "%s", detail).
+		WithHint("pass --%s to do it anyway", allowSelfFlag)
 }
 
 // guardWorkspaceDelete blocks `workspace delete` when the calling
-// tab lives inside the target workspace and --force was not passed.
-// Returns nil to proceed, or an emitted error envelope to abort.
-func guardWorkspaceDelete(ctx context.Context, c *control.Client, targetWorkspaceID string, force bool) error {
-	if force || targetWorkspaceID == "" {
+// tab lives inside the target workspace and --allow-self was not passed.
+// Returns nil to proceed, or an error to abort.
+func guardWorkspaceDelete(ctx context.Context, c control.Peer, targetWorkspaceID string, allowSelf bool) error {
+	if allowSelf || targetWorkspaceID == "" {
 		return nil
 	}
-	selfWS, _ := locateCallingTab(ctx, c)
+	selfWS, err := callingWorkspace(ctx, c)
+	if err != nil {
+		cause := fmt.Errorf("check the calling tab before deleting workspace %s: %w", targetWorkspaceID, err)
+		return &hubHintError{
+			cause: withHubHintForPeer(c, cause),
+			hints: []string{fmt.Sprintf("pass --%s to delete the workspace even if the command cannot verify the calling tab's location", allowSelfFlag)},
+		}
+	}
 	return rejectIfSelfWorkspace(selfWS, targetWorkspaceID)
 }
 
@@ -108,10 +102,10 @@ func rejectIfSelfWorkspace(selfWS, targetWS string) error {
 }
 
 // guardTabClose blocks `tab close` when the target tab is the calling
-// tab itself and --force was not passed. Pure env-var comparison —
+// tab itself and --allow-self was not passed. Pure env-var comparison —
 // no RPC.
-func guardTabClose(targetTabID string, force bool) error {
-	if force || targetTabID == "" {
+func guardTabClose(targetTabID string, allowSelf bool) error {
+	if allowSelf || targetTabID == "" {
 		return nil
 	}
 	if callingTabID() != targetTabID {
@@ -122,41 +116,19 @@ func guardTabClose(targetTabID string, force bool) error {
 	)
 }
 
-// guardTileClose blocks `tile close` when the calling tab sits on
-// the target tile and --force was not passed. Uses CRDT state the
-// handler has already loaded.
-func guardTileClose(state *leapmuxv1.UserMaterialized, targetTileID string, force bool) error {
-	if force || targetTileID == "" {
+// guardLayoutClose protects the caller when a tile or grid close removes its
+// tab. The layout operation passes the set of tabs that it removes.
+func guardLayoutClose(target string, tabs []crdt.TabRef, allowSelf bool) error {
+	if allowSelf {
 		return nil
 	}
-	selfTile := callingTileFromState(state)
-	if selfTile == "" || selfTile != targetTileID {
+	self := callingTabID()
+	if self == "" {
 		return nil
 	}
-	return errSelfTargetRefused(
-		"refusing to close tile " + targetTileID +
-			" because the calling tab sits on it",
-	)
-}
-
-// guardTileRemoveGrid blocks `tile remove-grid` when the calling
-// tab's tile is the grid itself or any of its descendants. The
-// caller passes the already-computed descendants list (which
-// `descendantsLeavesFirst` includes the grid node in) so the guard
-// doesn't redo the walk.
-func guardTileRemoveGrid(state *leapmuxv1.UserMaterialized, doomedTileIDs []string, force bool) error {
-	if force || len(doomedTileIDs) == 0 {
-		return nil
-	}
-	selfTile := callingTileFromState(state)
-	if selfTile == "" {
-		return nil
-	}
-	for _, d := range doomedTileIDs {
-		if d == selfTile {
-			return errSelfTargetRefused(
-				"refusing to remove grid because the calling tab sits inside it (tile " + selfTile + ")",
-			)
+	for _, tab := range tabs {
+		if tab.TabID == self {
+			return errSelfTargetRefused(fmt.Sprintf("refusing to close %s because it contains the calling tab %s", target, self))
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ func savedAgentCreation(t *testing.T, svc *Service, intent creationStartupIntent
 	require.NoError(t, err)
 	op := &creationOperation{coordinator: svc.creations, caller: channel.NewCaller(userid.MustNew("user-1"), authscope.NonAdminGrant()), request: request, publication: &leapmuxv1.TabPublication{Creation: proto.CloneOf(request.GetCreation()), TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, hash: hash}
 	runtime := &agentCreationRuntime{Startup: intent}
-	require.NoError(t, op.persist(runtime, func(ctx context.Context, q *db.Queries) error {
+	require.NoError(t, op.persist(runtime, func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 		return q.CreateAgent(ctx, db.CreateAgentParams{ID: "saved", WorkingDir: intent.Plan.PlannedWorkingDir, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Title: "Saved agent", Options: "{}"})
 	}))
 	published, err := fixturePublishTab(t.Context(), op.publication)

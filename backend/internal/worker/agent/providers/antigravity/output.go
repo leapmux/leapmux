@@ -17,6 +17,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+func stepMessageKey(cascadeID string, index int) string {
+	return fmt.Sprintf("antigravity:%s:%d", cascadeID, index)
+}
+
 func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage) error {
 	if a.IsDiscardingOutput() {
 		return nil
@@ -38,6 +42,10 @@ func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, 
 	}
 	previousStatus := record.status
 	record.status = step.Status
+	record.executionID = step.Metadata.ExecutionID
+	record.plannerResponse = step.Type == contracts.AntigravityStepTypePlannerResponse
+	replyText, _ := step.PlannerResponse.visibleContent()
+	record.replyText = record.plannerResponse && replyText != ""
 	record.raw = append(json.RawMessage(nil), raw...)
 	record.modelUsage = step.Metadata.ModelUsage
 	record.toolStep = isToolStep(step)
@@ -106,7 +114,7 @@ func (a *Agent) persistLiveStep(state *cascadeState, index int, raw json.RawMess
 		return err
 	}
 	err = providerkit.OpenToolSpan(state.sink, agent.MessageContent{
-		Original: cleaned, AgentSessionID: state.id, IdempotencyKey: fmt.Sprintf("antigravity:%s:%d:live", state.id, index),
+		Original: cleaned, AgentSessionID: state.id, IdempotencyKey: stepMessageKey(state.id, index) + ":live",
 	}, spanID, contracts.AntigravityFrameStep, false)
 	if !agent.OutputRetained(err) {
 		state.sink.CloseSpan(spanID)
@@ -154,7 +162,7 @@ func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigr
 	text, thinking := step.PlannerResponse.visibleContent()
 	recovered := text != "" || thinking != "" ||
 		step.Status == contracts.AntigravityStepStatusDone && len(step.PlannerResponse.ToolCalls) > 0
-	scope := fmt.Sprintf("antigravity:%s:%d", state.id, index)
+	scope := stepMessageKey(state.id, index)
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed {
 		a.Mu.Unlock()
@@ -203,7 +211,7 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	manualCheckpoint := step.Type == contracts.AntigravityStepTypeCheckpoint && step.Metadata.ExecutionID != "" &&
 		state.manualCompactionExecutionID != nil && *state.manualCompactionExecutionID == step.Metadata.ExecutionID
 	spanID := ""
-	if record != nil && isToolStep(step) {
+	if isToolStep(step) {
 		spanID = record.spanID
 	}
 	a.Mu.Unlock()
@@ -227,6 +235,9 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 					break
 				}
 			}
+		}
+		if err := a.bindInputEcho(state, index, step); err != nil {
+			return err
 		}
 		if state.parent == nil || slices.Contains(step.UserInput.Tags, antigravityQueueInputTag) {
 			a.consumeStep(state, index)
@@ -276,7 +287,8 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	}
 	content := agent.MessageContent{
 		Original: cleaned, Completion: completion, AgentSessionID: state.id,
-		IdempotencyKey: fmt.Sprintf("antigravity:%s:%d", state.id, index),
+		IdempotencyKey: stepMessageKey(state.id, index),
+		NativeTurnID:   step.Metadata.ExecutionID,
 	}
 	contents := []agent.MessageContent{content}
 	if splitPlannerResponse {
@@ -351,7 +363,7 @@ func (a *Agent) finalizeStep(state *cascadeState, index int, step antigravitySte
 		state.sink.ReportProgress(agent.CompleteOutputProgress(spanID))
 	}
 	if step.Type == contracts.AntigravityStepTypePlannerResponse {
-		state.sink.ReportProgress(agent.CompleteModelProgress(fmt.Sprintf("antigravity:%s:%d", state.id, index)))
+		state.sink.ReportProgress(agent.CompleteModelProgress(stepMessageKey(state.id, index)))
 	}
 	if step.Type == contracts.AntigravityStepTypeInvokeSubagent {
 		a.linkSubagentResults(state, index, step)
@@ -364,14 +376,22 @@ func (a *Agent) finalizeStep(state *cascadeState, index int, step antigravitySte
 	}
 }
 
+// consumeStep records that the transcript holds the step in its final form.
+// The provider reads no later frame of a consumed step (applyUpdate), so no
+// later frame can withdraw the step's control either. consumeStep withdraws
+// it, so no request stays visible, or appears later, for a step that the
+// provider no longer follows.
 func (a *Agent) consumeStep(state *cascadeState, index int) {
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
 	if record := state.steps[index]; record != nil {
 		record.consumed = true
 		record.raw = nil
 		record.text = ""
 	}
+	control := state.controls[index]
+	delete(state.controls, index)
+	a.Mu.Unlock()
+	a.retireControl(state, control)
 }
 
 func plannerThinkingOnly(raw json.RawMessage) (json.RawMessage, error) {
@@ -404,6 +424,7 @@ func (a *Agent) persistUnknownStep(state *cascadeState, index int, raw json.RawM
 		record = &stepState{}
 		state.steps[index] = record
 	}
+	record.status = ""
 	record.raw = append(json.RawMessage(nil), raw...)
 	a.Mu.Unlock()
 	payload := append(json.RawMessage(nil), raw...)
@@ -412,7 +433,7 @@ func (a *Agent) persistUnknownStep(state *cascadeState, index int, raw json.RawM
 	}
 	if err := state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
 		Original: payload, AgentSessionID: state.id,
-		IdempotencyKey: fmt.Sprintf("antigravity:%s:%d", state.id, index),
+		IdempotencyKey: stepMessageKey(state.id, index),
 	}, agent.SpanInfo{}); !agent.OutputRetained(err) {
 		slog.Error("antigravity persist unknown step", "agent_id", a.AgentID(), "error", err)
 		return err
@@ -494,6 +515,8 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 }
 
 func (a *Agent) endTurnWithTeardown(state *cascadeState, completion agent.MessageCompletion, teardown bool) (err error) {
+	// Only the native idle frame ends a turn with a complete observation.
+	nativeIdle := !teardown && completion == agent.MessageCompletionComplete
 	a.Mu.Lock()
 	if !a.cascadeInstalledLocked(state) || state.turnPhase != cascadeTurnActive {
 		a.Mu.Unlock()
@@ -572,6 +595,7 @@ func (a *Agent) endTurnWithTeardown(state *cascadeState, completion agent.Messag
 			return err
 		}
 	}
+	a.finishInputReplies(state, nativeIdle, completion)
 	a.Mu.Lock()
 	if !a.cascadeInstalledLocked(state) {
 		a.Mu.Unlock()
@@ -623,7 +647,7 @@ func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageComp
 		if record == nil || record.consumed || len(record.raw) == 0 {
 			return
 		}
-		if !includeToolSteps && record.toolStep {
+		if !includeToolSteps && record.toolStep && record.status != contracts.AntigravityStepStatusWaiting && state.controls[index] == nil {
 			return
 		}
 		if hasBackgroundForStepLocked(state, index) {
@@ -717,7 +741,7 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 		a.fatalStreamErr = streamErr
 	}
 	active := state.turnPhase != cascadeTurnIdle
-	hasOpenState := state.rowOpen || len(state.controls) > 0 || len(state.background) > 0 || hasOpenToolStepsLocked(state)
+	hasOpenState := state.rowOpen || len(state.inputReplies) > 0 || len(state.controls) > 0 || len(state.background) > 0 || hasOpenToolStepsLocked(state)
 	seq := a.NextTurnSeq()
 	state.connectedOnce.Do(func() { close(state.connected) })
 	a.Mu.Unlock()
@@ -779,15 +803,18 @@ func hasOpenToolStepsLocked(state *cascadeState) bool {
 
 func (a *Agent) closeIdleChildOnUpdate(state *cascadeState) error {
 	a.Mu.Lock()
-	if !a.cascadeInstalledLocked(state) || state.parent == nil || !state.rowOpen || state.turnPhase != cascadeTurnIdle {
+	if !a.cascadeInstalledLocked(state) || state.parent == nil || (!state.rowOpen && len(state.inputReplies) == 0) || state.turnPhase != cascadeTurnIdle {
 		a.Mu.Unlock()
 		return nil
 	}
 	status := bgtask.StatusSucceeded
+	completion := agent.MessageCompletionComplete
 	if state.interrupted {
 		status = bgtask.StatusStopped
+		completion = agent.MessageCompletionInterrupted
 	} else if len(state.heldErrorStep) > 0 {
 		status = bgtask.StatusFailed
+		completion = agent.MessageCompletionError
 	}
 	heldErrorStep := append(json.RawMessage(nil), state.heldErrorStep...)
 	a.Mu.Unlock()
@@ -805,10 +832,12 @@ func (a *Agent) closeIdleChildOnUpdate(state *cascadeState) error {
 		return nil
 	}
 	a.closeChildRow(state, status)
+	a.finishInputReplies(state, true, completion)
 	a.Mu.Lock()
 	if a.cascadeInstalledLocked(state) {
 		state.heldErrorStep = nil
 		state.retryPending = false
+		state.interrupted = false
 	}
 	a.Mu.Unlock()
 	return nil

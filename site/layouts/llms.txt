@@ -1,42 +1,54 @@
 {{- /*
-  LeapMux override of Hextra's llms.txt (vendored from hextra@v0.12.3).
-  Re-sync if the theme module is bumped. LeapMux change: each entry uses the
-  page's hand-written `description` front matter (a complete, purpose-built
-  one-liner) instead of the auto-summary truncated to 100 chars, which cut
-  mid-sentence. Falls back to a 200-char-truncated summary for pages without one.
+  LeapMux override of Hextra's llms.txt.
+  Links every documentation page to its clean Markdown endpoint (/index.md)
+  when emitted, exposes the curated LeapMux Agent Skills (SKILL.md) and their
+  companion references, and omits the non-deterministic build timestamp so
+  builds stay reproducible.
 */ -}}
 # {{ .Site.Title }}
 
 > {{ .Site.Params.description | default "" }}
 
-{{ range where site.Sections "Params.llms" "ne" false }}
-{{- template "llms-section-tree" dict "context" . "level" 2 }}
-{{ end }}
+## How to use this index
 
+- Open only the specific Markdown pages (`/docs/.../index.md`) relevant to your task instead of loading the full manual.
+- For CLI flags and subcommands, open the specific group page under `/docs/reference/commands/` (or run `leapmux <cmd> --help` locally) instead of loading every command group.
+- Use [`/agent-guide.md`]({{ "agent-guide.md" | absURL }}) when helping a human choose a deployment mode, install LeapMux, run their first parallel agent session, or diagnose issues.
+- Use [`/llms-small.txt`]({{ "llms-small.txt" | absURL }}) for a compact index of the core documentation pages and Agent Skills.
+- Use [`/llms-full.txt`]({{ "llms-full.txt" | absURL }}) for a guide-focused full bundle of the core documentation pages in one Markdown file (excludes per-command CLI tables under `/docs/reference/commands/`).
+- Use [`/config-reference.json`]({{ "config-reference.json" | absURL }}) for machine-readable Hub and Worker configuration keys, storage backends, and all 21 Prometheus metrics (`jq`-queryable JSON).
+{{- range where site.Sections "Params.llms" "ne" false }}
+{{- template "llms-section-tree" dict "context" . "level" 2 }}
+{{- end }}
 {{- $rootPages := where (where site.RegularPages "Section" "") "Params.llms" "ne" false }}
 {{- if $rootPages }}
+
 ## Root Pages
 {{- range $rootPages }}
-- [{{ .Title }}]({{ .Permalink }}): {{ with .Description }}{{ . }}{{ else }}{{ .Summary | plainify | truncate 200 | strings.TrimSpace }}{{ end }}{{ if .Date }} - Published {{ .Date.Format "2006-01-02" }}{{ end }}
+{{ partial "llms-entry-line.html" (dict "page" .) }}
 {{- end }}
 {{- end }}
 
+{{ partial "llms-agent-skills.html" . }}
+
 ---
-Generated on {{ now.Format "2006-01-02 15:04:05 UTC" }}
 Site: {{ .Site.BaseURL }}
+{{- "\n" -}}
 
 {{- define "llms-section-tree" -}}
 {{- $context := .context -}}
 {{- $level := .level | default 2 -}}
 {{- $headerHashes := strings.Repeat $level "#" -}}
-{{- "\n" -}}
+{{- "\n" }}
 {{ $headerHashes }} {{ $context.Title }}
-
-{{- range where $context.RegularPages "Params.llms" "ne" false }}
-- [{{ .Title }}]({{ .Permalink }}): {{ with .Description }}{{ . }}{{ else }}{{ .Summary | plainify | truncate 200 | strings.TrimSpace }}{{ end }}{{ if .Date }} - Published {{ .Date.Format "2006-01-02" }}{{ end }}
+{{- $sectionBody := partialCached "clean-markdown-body.html" $context $context.RelPermalink -}}
+{{- if or (strings.Contains $sectionBody "\n## ") (hasPrefix $sectionBody "## ") }}
+{{ partial "llms-entry-line.html" (dict "page" $context "suffix" " (Overview)") }}
 {{- end }}
-
+{{- range where $context.RegularPages "Params.llms" "ne" false }}
+{{ partial "llms-entry-line.html" (dict "page" .) }}
+{{- end }}
 {{- range where $context.Sections "Params.llms" "ne" false }}
-{{ template "llms-section-tree" dict "context" . "level" (add $level 1) }}
+{{- template "llms-section-tree" dict "context" . "level" (add $level 1) }}
 {{- end }}
 {{- end -}}

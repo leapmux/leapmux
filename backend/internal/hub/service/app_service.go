@@ -176,6 +176,7 @@ func (s *AppService) ListApps(
 		// tell from an empty table.
 		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
+		IDPrefix:       req.GetIdPrefix(),
 	}
 	// An administrator edits the hub-wide catalogue AND their own private
 	// apps; everybody else sees what they registered. One statement answers

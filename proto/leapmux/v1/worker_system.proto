@@ -16,6 +16,12 @@ service WorkerSystemService {
   rpc GetWorkerSystemInfo(GetWorkerSystemInfoRequest) returns (GetWorkerSystemInfoResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
+  rpc GetWorkerSkills(GetWorkerSkillsRequest) returns (GetWorkerSkillsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+  rpc UpdateWorkerSkills(UpdateWorkerSkillsRequest) returns (UpdateWorkerSkillsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
 }
 
 message PingRequest {}
@@ -30,4 +36,72 @@ message GetWorkerSystemInfoResponse {
   string arch = 3;
   string home_dir = 4;
   BuildInfo build = 5; // the worker's build
+}
+
+message GetWorkerSkillsRequest {}
+
+message WorkerSkillTargetStatus {
+  string target = 1;
+  // On-disk state in this target directory: not_installed, up_to_date,
+  // outdated, modified, or unmanaged.
+  string state = 2;
+  string installed_version = 3;
+  string path = 4;
+}
+
+message WorkerSkillStatus {
+  string name = 1;
+  string description = 2;
+  bool enabled = 3;
+  // Aggregate on-disk state across configured targets (worst-case severity,
+  // or the primary target state when all targets agree): not_installed,
+  // up_to_date, outdated, modified, or unmanaged.
+  string state = 4;
+  string installed_version = 5;
+  string bundled_version = 6;
+  string path = 7;
+  repeated string references = 8;
+  repeated WorkerSkillTargetStatus targets = 9;
+}
+
+message GetWorkerSkillsResponse {
+  bool auto_sync = 1;
+  repeated string targets = 2;
+  string primary_skills_dir = 3;
+  repeated WorkerSkillStatus skills = 4;
+}
+
+message WorkerSkillOutcome {
+  string name = 1;
+  string target = 2;
+  string action = 3;
+  string path = 4;
+}
+
+message UpdateWorkerSkillsRequest {
+  optional bool auto_sync = 1;
+  // When true, replace the enabled skill set with enabled_skills.
+  bool update_enabled_skills = 2;
+  repeated string enabled_skills = 3;
+  // Atomic delta operations applied under the Worker's lock.
+  repeated string add_skills = 4;
+  repeated string remove_skills = 5;
+  bool add_all_skills = 6;
+  bool remove_all_skills = 7;
+  // When non-empty, replace the target list ("agents", "claude", "codex", "cursor", "gemini").
+  repeated string targets = 8;
+  repeated string add_targets = 9;
+  repeated string remove_targets = 10;
+  // When true, immediately sync all enabled skills into the configured targets.
+  bool sync_now = 11;
+  // When true, overwrite or remove locally modified or unmanaged skills.
+  bool force = 12;
+  // When true, fail with conflict instead of skipping locally modified or
+  // unmanaged skills (unless force is also true).
+  bool strict_conflicts = 13;
+}
+
+message UpdateWorkerSkillsResponse {
+  GetWorkerSkillsResponse state = 1;
+  repeated WorkerSkillOutcome outcomes = 2;
 }

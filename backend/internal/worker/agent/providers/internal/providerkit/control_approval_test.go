@@ -19,10 +19,10 @@ func TestControlApprovalHandleCannotClaimAReplacement(t *testing.T) {
 	base, sink, output := approvalProcess(t)
 	old := approvalHandle(base, "jsonrpc:1")
 	base.WithdrawControlRequest(sink, old.RequestID)
-	replacement := base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"new"}`), nil, map[string]any{"decision": "accept"})
+	replacement := base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":1,"method":"new"}`), ApproveAnswer: map[string]any{"decision": "accept"}})
 	require.NotEmpty(t, replacement.RequestID)
 	assert.NotEqual(t, old.record.instanceID, replacement.record.instanceID)
-	assert.False(t, base.ApproveOutstandingControlRequest(sink, old))
+	assert.False(t, base.ApproveOutstandingControlRequest(old))
 	assert.True(t, base.OutstandingControlForTest(replacement.RequestID))
 	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
 	assert.NotContains(t, output.String(), `"id":1`)
@@ -61,7 +61,7 @@ func TestUnpublishedApprovalIsPendingBeforeDispatch(t *testing.T) {
 	defer unlock()
 	done := make(chan bool, 1)
 	go func() {
-		done <- base.ApproveUnpublishedControlRequest(sink, []byte(`{"id":3,"method":"approve"}`), nil, map[string]any{})
+		done <- base.ApproveUnpublishedControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":3,"method":"approve"}`), ApproveAnswer: map[string]any{}})
 	}()
 	require.Eventually(t, func() bool {
 		base.outstandingMu.Lock()
@@ -73,7 +73,7 @@ func TestUnpublishedApprovalIsPendingBeforeDispatch(t *testing.T) {
 	base.outstandingMu.Lock()
 	base.outstandingControls["jsonrpc:1"].approveAnswer = nil
 	base.outstandingMu.Unlock()
-	assert.Zero(t, base.ApproveOutstandingControlRequests(sink, nil))
+	assert.Zero(t, base.ApproveOutstandingControlRequests(nil))
 	unlock()
 	require.True(t, <-done)
 	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
@@ -84,12 +84,35 @@ func TestControlApprovalUncertainWriteRetiresWithoutConfirmation(t *testing.T) {
 	t.Parallel()
 	base := &JSONRPCProcess{Process: Process{stdin: partialStdinWriter{written: 1, err: errors.New("partial write")}}}
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"approve"}`), nil, map[string]any{})
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":1,"method":"approve"}`), ApproveAnswer: map[string]any{}})
 	done := make(chan int, 1)
-	require.Equal(t, 1, base.ApproveOutstandingControlRequests(sink, func(count int) { done <- count }))
+	require.Equal(t, 1, base.ApproveOutstandingControlRequests(func(count int) { done <- count }))
 	assert.Zero(t, <-done)
 	assert.False(t, base.OutstandingControlForTest("jsonrpc:1"))
 	assert.Equal(t, []string{"jsonrpc:1"}, sink.CanceledControls())
+}
+
+func TestControlApprovalSweepRetiresEachRequestThroughItsPublisher(t *testing.T) {
+	t.Parallel()
+	base, stdin := newRegistryBase()
+	parent := &agenttest.ControlSink{}
+	child := &agenttest.ControlSink{}
+	answer := map[string]string{"outcome": "allow"}
+	base.PublishControlRequest(parent, ControlRequestPublication{Owner: ControlRequestOwner{SessionID: "parent-session"}, Content: []byte(`{"id":1,"method":"session/request_permission"}`), ApproveAnswer: answer})
+	base.PublishControlRequest(child, ControlRequestPublication{Owner: ControlRequestOwner{SessionID: "child-session"}, Content: []byte(`{"id":2,"method":"session/request_permission"}`), ApproveAnswer: answer})
+
+	done := make(chan int, 1)
+	require.Equal(t, 2, base.ApproveOutstandingControlRequests(func(count int) { done <- count }))
+	select {
+	case count := <-done:
+		assert.Equal(t, 2, count)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the standing approvals did not finish")
+	}
+	assert.Contains(t, stdin.String(), `"id":1,"result":{"outcome":"allow"}`)
+	assert.Contains(t, stdin.String(), `"id":2,"result":{"outcome":"allow"}`)
+	assert.Equal(t, []string{"jsonrpc:1"}, parent.CanceledControls())
+	assert.Equal(t, []string{"jsonrpc:2"}, child.CanceledControls())
 }
 
 func TestUnpublishedControlApprovalFailurePublishesTheRequest(t *testing.T) {
@@ -97,7 +120,7 @@ func TestUnpublishedControlApprovalFailurePublishesTheRequest(t *testing.T) {
 	base := &JSONRPCProcess{Process: Process{stdin: agenttest.FailingStdin{}}}
 	sink := &agenttest.ControlSink{}
 	raw := []byte(`{"id":1,"method":"approve"}`)
-	require.True(t, base.ApproveUnpublishedControlRequest(sink, raw, nil, map[string]any{}))
+	require.True(t, base.ApproveUnpublishedControlRequest(sink, ControlRequestPublication{Content: raw, ApproveAnswer: map[string]any{}}))
 	require.Eventually(t, func() bool { return sink.PublishedControlCount() == 1 }, 30*time.Second, time.Millisecond)
 	assert.Equal(t, raw, sink.LastPublishedControl().Payload)
 	assert.True(t, base.OutstandingControlForTest("jsonrpc:1"))
@@ -151,10 +174,10 @@ func TestControlApprovalQueueRefusalKeepsTheCard(t *testing.T) {
 		base.writeStdinDetached([]byte("queued\n"), "queued")
 	}
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"approve"}`), nil, map[string]any{})
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":1,"method":"approve"}`), ApproveAnswer: map[string]any{}})
 	done := make(chan int, 1)
 	queued := make(chan int, 1)
-	go func() { queued <- base.ApproveOutstandingControlRequests(sink, func(count int) { done <- count }) }()
+	go func() { queued <- base.ApproveOutstandingControlRequests(func(count int) { done <- count }) }()
 	select {
 	case count := <-queued:
 		require.Equal(t, 1, count)
@@ -171,33 +194,52 @@ func TestControlApprovalQueueRefusalKeepsTheCard(t *testing.T) {
 	assert.True(t, base.OutstandingControlForTest("jsonrpc:1"))
 }
 
+// A standing approval owns the answer of its request until its write
+// finishes. A reader answer to the same request in that window is a second
+// answer, so both raw input paths refuse it and write nothing.
 func TestControlApprovalCannotRaceAReaderAnswer(t *testing.T) {
 	t.Parallel()
-	writer := newGatedStdin(0, nil)
-	release := sync.OnceFunc(func() { close(writer.release) })
-	defer release()
-	ctx := testutil.DeadlineContext(t)
-	base := &JSONRPCProcess{Process: Process{stdin: writer}}
-	sink := &agenttest.ControlSink{}
-	publication := base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"approve"}`), nil, map[string]any{})
-	queued := make(chan bool, 1)
-	go func() { queued <- base.ApproveOutstandingControlRequest(sink, publication) }()
-	select {
-	case accepted := <-queued:
-		require.True(t, accepted)
-	case <-ctx.Done():
-		t.Fatal("approval admission waited for stdin")
+	for name, send := range map[string]func(*JSONRPCProcess, agent.RawInput) error{
+		"SendRawInput":                     (*JSONRPCProcess).SendRawInput,
+		"SendRawInputToOutstandingRequest": (*JSONRPCProcess).SendRawInputToOutstandingRequest,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			writer := newGatedStdin(0, nil)
+			release := sync.OnceFunc(func() { close(writer.release) })
+			defer release()
+			ctx := testutil.DeadlineContext(t)
+			base := &JSONRPCProcess{Process: Process{stdin: writer}}
+			sink := &agenttest.ControlSink{}
+			publication := base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":1,"method":"approve"}`), ApproveAnswer: map[string]any{}})
+			queued := make(chan bool, 1)
+			go func() { queued <- base.ApproveOutstandingControlRequest(publication) }()
+			select {
+			case accepted := <-queued:
+				require.True(t, accepted)
+			case <-ctx.Done():
+				t.Fatal("approval admission waited for stdin")
+			}
+			select {
+			case <-writer.entered:
+			case <-ctx.Done():
+				t.Fatal("the approval write did not start")
+			}
+			assert.Empty(t, sink.CanceledControls())
+			answered := make(chan error, 1)
+			go func() { answered <- send(base, sink.Answer(publication.RequestID, []byte(`{"id":1,"result":{}}`))) }()
+			select {
+			case err := <-answered:
+				assert.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+			case <-writer.entered:
+				t.Fatal("a second answer reached the agent while the standing approval wrote its own")
+			case <-ctx.Done():
+				t.Fatal("the reader answer waited for the standing approval")
+			}
+			release()
+			require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
+		})
 	}
-	select {
-	case <-writer.entered:
-	case <-ctx.Done():
-		t.Fatal("the approval write did not start")
-	}
-	assert.Empty(t, sink.CanceledControls())
-	err := base.SendRawInputToOutstandingRequest([]byte(`{"id":1,"result":{}}`), agent.StopContext{})
-	assert.ErrorIs(t, err, ErrControlRequestNotPending)
-	release()
-	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
 }
 
 func TestControlApprovalPreservesSortedOrderBeforeLaterFrames(t *testing.T) {
@@ -206,10 +248,10 @@ func TestControlApprovalPreservesSortedOrderBeforeLaterFrames(t *testing.T) {
 	base := &JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(output)}}
 	sink := &agenttest.ControlSink{}
 	for _, id := range []string{"3", "1", "2"} {
-		base.PublishControlRequestWithApproval(sink, []byte(`{"id":`+id+`,"method":"approve"}`), nil, map[string]any{})
+		base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":` + id + `,"method":"approve"}`), ApproveAnswer: map[string]any{}})
 	}
 	done := make(chan int, 1)
-	require.Equal(t, 3, base.ApproveOutstandingControlRequests(sink, func(count int) { done <- count }))
+	require.Equal(t, 3, base.ApproveOutstandingControlRequests(func(count int) { done <- count }))
 	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
 	assert.Equal(t, 3, <-done)
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")

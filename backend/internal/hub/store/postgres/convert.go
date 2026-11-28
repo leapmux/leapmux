@@ -76,6 +76,23 @@ func withCursor[T any](cursor string, limit int64, fill func(cursorTime pgtime.N
 	return fill(cursorTime, cursorID, int32(store.FetchLimit(limit))), nil
 }
 
+// prepareIDPrefixPage parses the opaque cursor and computes the strict lower
+// limit and fetch limit for an ID-prefix paginated listing. empty is true when
+// the cursor already passed the matching range, the prefix has no upper limit,
+// or the clamped page limit is zero.
+func prepareIDPrefixPage(filter store.IDPrefixFilter, cursor string, limit int64) (idGt string, fetchLimit int32, empty bool, err error) {
+	c, err := store.ParseCursor(cursor)
+	if err != nil {
+		return "", 0, false, err
+	}
+	idGt, cursorEmpty := filter.CursorAfter(c)
+	fl := int32(store.FetchLimit(limit))
+	if cursorEmpty || (!filter.Exact && !filter.HasUpper) || fl == 0 {
+		return "", 0, true, nil
+	}
+	return idGt, fl, false, nil
+}
+
 // queryPage forwards to store.QueryPage with this dialect's mapErr bound:
 // every listing in the package routes through it, so the shared
 // build -> query -> NewPage skeleton (and its error wrapping and probe-row
@@ -139,34 +156,6 @@ func listWorkersAdminLiveParams(cursor string, limit int64) (gendb.ListWorkersAd
 func listWorkersAdminLiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminLiveByUserParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListWorkersAdminLiveByUserParams {
 		return gendb.ListWorkersAdminLiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminActiveParams builds the typed cursor for ListWorkersAdminActive.
-func listWorkersAdminActiveParams(cursor string, limit int64) (gendb.ListWorkersAdminActiveParams, error) {
-	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListWorkersAdminActiveParams {
-		return gendb.ListWorkersAdminActiveParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminActiveByUserParams builds the typed cursor for ListWorkersAdminActiveByUser.
-func listWorkersAdminActiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminActiveByUserParams, error) {
-	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListWorkersAdminActiveByUserParams {
-		return gendb.ListWorkersAdminActiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringParams builds the typed cursor for ListWorkersAdminDeregistering.
-func listWorkersAdminDeregisteringParams(cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringParams, error) {
-	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListWorkersAdminDeregisteringParams {
-		return gendb.ListWorkersAdminDeregisteringParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringByUserParams builds the typed cursor for ListWorkersAdminDeregisteringByUser.
-func listWorkersAdminDeregisteringByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
-	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListWorkersAdminDeregisteringByUserParams {
-		return gendb.ListWorkersAdminDeregisteringByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

@@ -1,17 +1,20 @@
 package kimi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -22,12 +25,13 @@ import (
 // The server announces each through an unsequenced `interaction` frame and
 // parks the tool call until a REST answer resolves it. The worker publishes
 // the complete native frame as the control
-// request, under the server's own interaction ID, and the browser reads
-// it through the Kimi plugin. The answer comes back through
-// SendControlResponse: ResolveControlResponse (control_response.go) turns the
-// browser's decision into the server's own body, and deliverControlResponse
-// posts it. A subscription
-// re-emits the current pending live frames after its acknowledgement.
+// request, under the server's own interaction ID. ReadControlRequest reads it
+// into the prompt, and the browser's Kimi plugin reads it to display a saved
+// answer. The answer comes back through AnswerControl: AnswerControlRequest
+// builds the neutral envelope from the decision, ResolveControlResponse
+// (control_response.go) turns it into the server's own body, and
+// deliverControlResponse posts it. A subscription re-emits the current
+// pending live frames after its acknowledgement.
 //
 // The server resolves a request by itself when the turn ends (an abort, a
 // failure) and states that with an `interaction` frame whose status is `ended`. The worker then withdraws the request, so no banner waits on an
@@ -43,10 +47,15 @@ const (
 
 // kimiPendingControl is one published control request.
 type kimiPendingControl struct {
-	kind       kimiControlKind
-	sessionID  string
-	agentID    string
-	toolCallID string
+	instanceID           string
+	kind                 kimiControlKind
+	sessionID            string
+	agentID              string
+	toolCallID           string
+	toolIdentityConflict bool
+	nativeInputs         atomic.Pointer[agent.NativeControlInputs]
+	inputsMu             sync.Mutex
+	appliedInputs        *agent.NativeControlInputs
 	// answered is set once LeapMux delivered an answer, so the server's
 	// resolution that follows does not withdraw a request the user answered.
 	answered        bool
@@ -58,6 +67,11 @@ type kimiPendingControl struct {
 	automaticFailed bool
 	publicationDone chan struct{}
 	publicationOnce sync.Once
+}
+
+type kimiControlWithdrawal struct {
+	id         string
+	instanceID string
 }
 
 // kimiInteraction reads the native interaction identity and its nested request.
@@ -178,16 +192,32 @@ func (a *Agent) publishControl(interaction kimiInteraction, kind kimiControlKind
 	if a.controls == nil {
 		a.controls = make(map[string]*kimiPendingControl)
 	}
-	if _, repeat := a.controls[requestID]; repeat {
+	if existing := a.controls[requestID]; existing != nil {
+		if existing.sessionID == interaction.SessionID && existing.agentID == interaction.agent() && existing.kind == kind {
+			if existing.toolCallID == "" {
+				existing.toolCallID = interaction.ToolCallID
+			} else if interaction.ToolCallID != "" && interaction.ToolCallID != existing.toolCallID {
+				existing.toolIdentityConflict = true
+			}
+		} else {
+			existing.toolIdentityConflict = true
+		}
+		root := existing.agentID == kimiMainAgentID
 		a.Mu.Unlock()
+		if root {
+			a.refreshExactControls(a.run(kimiMainAgentID))
+		}
 		return
 	}
 	bypass := bypassable && a.settings.permissionOption() == contracts.KimiModeAuto && !a.StoppedLocked()
-	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, bypassable: bypassable,
+	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, bypassable: bypassable, instanceID: id.Generate(),
 		agentID: interaction.agent(), toolCallID: interaction.ToolCallID,
 		payload: append([]byte(nil), interaction.Raw...), ready: bypass, publicationDone: make(chan struct{})}
 	a.controls[requestID] = pending
 	a.Mu.Unlock()
+	if pending.agentID == kimiMainAgentID {
+		a.refreshExactControls(a.run(kimiMainAgentID))
+	}
 	afterText := a.flushAgentText(pending.agentID)
 	if bypass {
 		a.queuePermissionApprovals()
@@ -217,8 +247,14 @@ func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingC
 		return
 	}
 	a.Mu.Unlock()
+	publishedProof := pending.nativeInputs.Load()
+	var nativeInputIDs []string
+	if publishedProof != nil && len(publishedProof.InputIDs) != 0 {
+		nativeInputIDs = slices.Clone(publishedProof.InputIDs)
+	}
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: requestID, Payload: pending.payload, AgentSessionID: pending.sessionID,
+		InstanceID: pending.instanceID, NativeInputIDs: nativeInputIDs,
 	})
 	a.Mu.Lock()
 	pending.ready, pending.published = true, err == nil
@@ -231,9 +267,12 @@ func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingC
 	a.Mu.Unlock()
 	if err == nil {
 		if !current {
-			a.sink.CancelControlRequest(requestID)
-		} else if bypass {
-			a.queuePermissionApprovals()
+			a.sink.CancelControlRequestInstance(requestID, pending.instanceID)
+		} else {
+			a.finishPublishedControlInputs(pending, publishedProof)
+			if bypass {
+				a.queuePermissionApprovals()
+			}
 		}
 		return
 	}
@@ -312,7 +351,7 @@ func (a *Agent) finishControlReply(requestID string, pending *kimiPendingControl
 	}
 	if retire || err == nil {
 		if published && (automatic || retire) {
-			a.sink.CancelControlRequest(requestID)
+			a.sink.CancelControlRequestInstance(requestID, pending.instanceID)
 		}
 	} else if !published {
 		a.publishRegisteredControl(requestID, pending)
@@ -365,32 +404,35 @@ func (a *Agent) resolveControl(interaction kimiInteraction) {
 	if !withdraw {
 		return
 	}
-	a.sink.CancelControlRequest(requestID)
+	a.sink.CancelControlRequestInstance(requestID, pending.instanceID)
 }
 
-// withdrawAllControls withdraws every pending request, for a session the agent
-// no longer drives.
+// withdrawAllControls withdraws every pending request and workspace-trust check
+// when the agent stops driving a session or the process exits.
 func (a *Agent) withdrawAllControls() {
 	a.Mu.Lock()
-	ids := make([]string, 0, len(a.controls))
+	withdrawn := make([]kimiControlWithdrawal, 0, len(a.controls))
 	for id, pending := range a.controls {
 		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
 		if !pending.answered && pending.published {
-			ids = append(ids, id)
+			withdrawn = append(withdrawn, kimiControlWithdrawal{id: id, instanceID: pending.instanceID})
 		}
 	}
 	clear(a.controls)
 	a.Mu.Unlock()
-	for _, id := range ids {
-		a.sink.CancelControlRequest(id)
+	slices.SortFunc(withdrawn, func(left, right kimiControlWithdrawal) int {
+		return cmp.Compare(left.id, right.id)
+	})
+	for _, item := range withdrawn {
+		a.sink.CancelControlRequestInstance(item.id, item.instanceID)
 	}
 	// The workspace-trust question belongs to the session too.
 	a.workspaceTrust.Retire(a.sink)
 }
 
 // kimiControlEnvelope is the control-response envelope the service forwards:
-// the browser's own, with its inner response already turned into the server's
-// body by ResolveControlResponse.
+// the neutral envelope that AnswerControlRequest built, with its inner response
+// already turned into the server's body by ResolveControlResponse.
 type kimiControlEnvelope struct {
 	Response struct {
 		RequestID string          `json:"request_id"`
@@ -403,7 +445,8 @@ type kimiControlEnvelope struct {
 var errKimiControlGone = errors.New("the Kimi Code control request is no longer pending")
 
 // deliverControlResponse posts one resolved answer.
-func (a *Agent) deliverControlResponse(raw []byte) error {
+func (a *Agent) deliverControlResponse(input agent.RawInput) error {
+	raw := input.Data
 	var envelope kimiControlEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("decode the Kimi Code control response: %w", err)
@@ -422,6 +465,9 @@ func (a *Agent) deliverControlResponse(raw []byte) error {
 	if pending == nil || unpublished {
 		return errKimiControlGone
 	}
+	if err := agent.ControlInstanceRefusal(pending.instanceID, input.ControlInstanceID); err != nil {
+		return err
+	}
 	ctx := a.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -434,11 +480,18 @@ func (a *Agent) deliverControlResponse(raw []byte) error {
 	a.sessionMu.Lock()
 	defer a.finishSessionMutation()
 	a.Mu.Lock()
+	if current := a.controls[requestID]; current != pending {
+		a.Mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return errKimiControlGone
+	}
 	if pending.sessionID != a.sessionID {
 		a.Mu.Unlock()
 		return errors.New("the Kimi Code control request belongs to a previous session")
 	}
-	if a.controls[requestID] != pending || pending.answered || pending.answering || !pending.published {
+	if pending.answered || pending.answering || !pending.published {
 		a.Mu.Unlock()
 		return errKimiControlGone
 	}

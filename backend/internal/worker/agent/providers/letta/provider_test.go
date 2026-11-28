@@ -105,11 +105,7 @@ func TestResolveControlResponseWritesTheFlatApprovalPayload(t *testing.T) {
 			"response":   map[string]any{"behavior": "allow"},
 		},
 	})
-	resolution := lettaProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "perm-call_ask_1",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswer(lettaProvider{}, request, "perm-call_ask_1", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 
 	var flat map[string]json.RawMessage
@@ -148,11 +144,7 @@ func TestResolveControlResponseKeepsTheDenyMessage(t *testing.T) {
 			},
 		},
 	})
-	resolution := lettaProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "perm-deny-call",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswer(lettaProvider{}, request, "perm-deny-call", agent.ControlAnswer{Content: response})
 	require.False(t, resolution.Withhold)
 
 	var flat map[string]json.RawMessage
@@ -235,7 +227,7 @@ func TestBusyRefusalRepublishesTheTurn(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	a.setTurnActive(true)
-	err := a.SendInput("hello", nil)
+	err := agenttest.SendInput(a, "hello", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }
 

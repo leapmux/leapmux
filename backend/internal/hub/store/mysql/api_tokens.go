@@ -125,6 +125,20 @@ func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken
 	return &out, nil
 }
 
+func (c *mysqlConn) fromDBUserAPITokenRow(r gendb.ListAPITokensByUserRow, clientCache *sqlutil.JoinedClientCache) (store.APIToken, error) {
+	out, err := c.fromDBAPIToken(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache)
+	if err != nil {
+		return store.APIToken{}, err
+	}
+	// Only this listing joins the vouch columns; every other
+	// reader of an api_tokens row asks validation questions, and
+	// the connected-app list is the one surface that labels rows
+	// with whether somebody vouched for the app.
+	out.ClientVerifiedAt = r.ClientVerifiedAt.Ptr()
+	out.ClientRegistrationSource = r.ClientRegistrationSource
+	return out, nil
+}
+
 // ListByUser pages one user's OWN live tokens (the account settings device
 // list). Keyset on created_at, like every other listing in the hub.
 func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByUserParams) (store.Page[store.APIToken], error) {
@@ -134,25 +148,60 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.APIToken]{}, nil
 	}
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.APIToken]{}, err
+	}
 	clientCache := sqlutil.NewJoinedClientCache(s.conn.ks)
-	return store.QueryPageErr(ctx, p.Limit,
-		func() (gendb.ListAPITokensByUserParams, error) {
-			return listAPITokensByUserParams(owner, p.ClientID, p.Cursor, p.Limit)
-		},
-		s.conn.q.ListAPITokensByUser,
-		func(r gendb.ListAPITokensByUserRow) (store.APIToken, error) {
-			out, err := s.conn.fromDBAPIToken(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache)
-			if err != nil {
-				return store.APIToken{}, err
-			}
-			// Only this listing joins the vouch columns; every other
-			// reader of an api_tokens row asks validation questions, and
-			// the connected-app list is the one surface that labels rows
-			// with whether somebody vouched for the app.
-			out.ClientVerifiedAt = r.ClientVerifiedAt.Ptr()
-			out.ClientRegistrationSource = r.ClientRegistrationSource
-			return out, nil
-		}, s.conn.queryError)
+	if !hasPrefix {
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAPITokensByUserParams, error) {
+				return listAPITokensByUserParams(owner, p.ClientID, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListAPITokensByUser,
+			func(r gendb.ListAPITokensByUserRow) (store.APIToken, error) {
+				return s.conn.fromDBUserAPITokenRow(r, clientCache)
+			}, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.APIToken]{}, err
+	}
+	if filter.Exact {
+		rows, err := s.conn.q.ListAPITokensByUserAndExactID(ctx, gendb.ListAPITokensByUserAndExactIDParams{
+			UserID:   owner,
+			ClientID: p.ClientID,
+			ID:       filter.Lower,
+		})
+		if err != nil {
+			return store.Page[store.APIToken]{}, s.conn.queryError(err)
+		}
+		mapped, err := store.MapSliceErr(rows, func(r gendb.ListAPITokensByUserAndExactIDRow) (store.APIToken, error) {
+			return s.conn.fromDBUserAPITokenRow(gendb.ListAPITokensByUserRow(r), clientCache)
+		})
+		if err != nil {
+			return store.Page[store.APIToken]{}, err
+		}
+		return store.NewPage(mapped, p.Limit), nil
+	}
+	rows, err := s.conn.q.ListAPITokensByUserAndIDPrefix(ctx, gendb.ListAPITokensByUserAndIDPrefixParams{
+		UserID:   owner,
+		ClientID: p.ClientID,
+		IDLo:     filter.Lower,
+		IDHi:     filter.Upper,
+		IDGt:     idGt,
+		Limit:    fetchLimit,
+	})
+	if err != nil {
+		return store.Page[store.APIToken]{}, s.conn.queryError(err)
+	}
+	mapped, err := store.MapSliceErr(rows, func(r gendb.ListAPITokensByUserAndIDPrefixRow) (store.APIToken, error) {
+		return s.conn.fromDBUserAPITokenRow(gendb.ListAPITokensByUserRow(r), clientCache)
+	})
+	if err != nil {
+		return store.Page[store.APIToken]{}, err
+	}
+	return store.NewPage(mapped, p.Limit), nil
 }
 
 // apiTokenWithOwner assembles the JOINed listing row shared by the ListAll and
@@ -167,7 +216,57 @@ func (c *mysqlConn) apiTokenWithOwner(t gendb.ApiToken, jc joinedClient, clientC
 }
 
 func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensParams) (store.Page[store.APITokenWithOwner], error) {
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.APITokenWithOwner]{}, err
+	}
 	clientCache := sqlutil.NewJoinedClientCache(s.conn.ks)
+	if hasPrefix {
+		idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+		if err != nil || empty {
+			return store.Page[store.APITokenWithOwner]{}, err
+		}
+		var userID string
+		if p.UserID != nil {
+			uid, ok := userid.New(*p.UserID)
+			if !ok {
+				return store.Page[store.APITokenWithOwner]{}, nil
+			}
+			userID = uid.String()
+		}
+		includeRevoked := boolToInt64(p.IncludeRevoked)
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListAllAPITokensByExactIDParams, error) {
+					return gendb.ListAllAPITokensByExactIDParams{
+						ID:             filter.Lower,
+						UserID:         userID,
+						ClientID:       p.ClientID,
+						IncludeRevoked: includeRevoked,
+					}, nil
+				},
+				s.conn.q.ListAllAPITokensByExactID,
+				func(r gendb.ListAllAPITokensByExactIDRow) (store.APITokenWithOwner, error) {
+					return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
+				}, s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllAPITokensByIDPrefixParams, error) {
+				return gendb.ListAllAPITokensByIDPrefixParams{
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					UserID:         userID,
+					ClientID:       p.ClientID,
+					IncludeRevoked: includeRevoked,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListAllAPITokensByIDPrefix,
+			func(r gendb.ListAllAPITokensByIDPrefixRow) (store.APITokenWithOwner, error) {
+				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
+			}, s.conn.queryError)
+	}
 	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
 	// (include_revoked false/true), dispatched to four generated queries
 	// (mirroring workers.go ListAdmin). The revoked dimension is split rather

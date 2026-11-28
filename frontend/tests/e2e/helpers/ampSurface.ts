@@ -214,6 +214,8 @@ interface ActorMessage {
   role: 'user' | 'assistant'
   content: ActorBlock[]
   messageId: string
+  meta?: { fromExecutorClient: true, steer?: true }
+  state?: { type: 'complete', stopReason?: 'tool_use' | 'end_turn' }
 }
 
 interface ThreadSocket {
@@ -232,7 +234,7 @@ interface ActorThread {
   agentMode: string
   features: string[]
   seq: number
-  messages: ActorMessage[]
+  messages: Map<string, ActorMessage>
   tree: string
   title: string
   archived: boolean
@@ -240,7 +242,7 @@ interface ActorThread {
   sockets: Set<ThreadSocket>
   turn: RunningTurn | undefined
   /** Steering messages that arrived during the turn, for its next interruption point. */
-  steers: ActorBlock[][]
+  steers: Map<string, ActorMessage>
   /** The executor's answer to each lease that waits for one. */
   leases: Map<string, (run: unknown) => void>
   mockCredential?: MockModelCredential
@@ -267,14 +269,14 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         agentMode: agentMode || DEFAULT_AGENT_MODE,
         features: [...features],
         seq: 0,
-        messages: [],
+        messages: new Map(),
         tree: '',
         title: '',
         archived: false,
         updatedAt: Date.now(),
         sockets: new Set(),
         turn: undefined,
-        steers: [],
+        steers: new Map(),
         leases: new Map(),
       }
       threads.set(id, thread)
@@ -301,14 +303,18 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         const thread = threadFor(seeded.id)
         thread.title = seeded.title
         thread.tree = seeded.tree
-        thread.messages = seeded.messages.map(message => ({
-          role: message.role,
-          content: [
-            { type: 'text', text: message.text, blockState: 'complete' },
-          ],
-          messageId: ampMessageID(),
-        }))
-        thread.seq = thread.messages.length
+        thread.messages.clear()
+        for (const message of seeded.messages) {
+          const messageId = ampMessageID()
+          thread.messages.set(messageId, {
+            role: message.role,
+            content: [
+              { type: 'text', text: message.text, blockState: 'complete' },
+            ],
+            messageId,
+          })
+        }
+        thread.seq = thread.messages.size
         thread.archived = seeded.archived === true
         thread.updatedAt = seeded.updatedAt ?? Date.now()
         writeMockJSON(response, 201, viewOf(thread))
@@ -450,7 +456,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
                 },
               },
             },
-            messages: [],
+            messages: Array.from(thread.messages.values(), ({ messageId, ...message }) => ({ protocolMessageID: messageId, ...message })),
             hasMoreBefore: false,
           },
         }
@@ -575,25 +581,33 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         reply({ replayMessageCount: 0, storedEventCount: 0, replayThroughSeq: thread.seq })
         return
       case 'client_append_user_msg': {
+        const messageId = typeof params.messageId === 'string'
+          ? params.messageId
+          : ampMessageID()
+        reply({ ok: true })
+        if (thread.messages.has(messageId) || thread.steers.has(messageId))
+          return
         const content = Array.isArray(params.content)
           ? params.content.filter(isObject)
           : []
-        reply({ ok: true })
+        const input: ActorMessage = {
+          role: 'user',
+          content,
+          messageId,
+          meta: { fromExecutorClient: true },
+        }
         if (thread.turn) {
           // A message during a turn waits for the turn's next interruption point, as
           // Amp's own queue does. LeapMux sends one only as a steering line.
-          thread.steers.push(content)
+          thread.steers.set(messageId, {
+            ...input,
+            meta: { fromExecutorClient: true, steer: true },
+          })
           return
         }
         if (!thread.title)
           thread.title = firstText(content).slice(0, 80)
-        addMessage(thread, {
-          role: 'user',
-          content,
-          messageId: typeof params.messageId === 'string'
-            ? params.messageId
-            : ampMessageID(),
-        })
+        addMessage(thread, input)
         void runTurn(thread)
         return
       }
@@ -625,10 +639,11 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       member.connection.send(frame)
   }
 
-  function addMessage(thread: ActorThread, message: ActorMessage & { usage?: Record<string, unknown>, state?: Record<string, unknown> }): void {
+  function addMessage(thread: ActorThread, message: ActorMessage & { usage?: Record<string, unknown> }): void {
     thread.seq += 1
     thread.updatedAt = Date.now()
-    thread.messages.push({ role: message.role, content: message.content, messageId: message.messageId })
+    const { usage: _, ...stored } = message
+    thread.messages.set(message.messageId, stored)
     notify(thread, 'message_added', {
       message: {
         threadId: thread.id,
@@ -647,7 +662,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     turn.cancelled = true
     turn.abort.abort()
     thread.turn = undefined
-    thread.steers = []
+    thread.steers.clear()
     thread.leases.clear()
     notify(thread, 'agent_state', { state: 'idle', agentMode: thread.agentMode })
   }
@@ -665,7 +680,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       error: { message, code },
     })
     thread.turn = undefined
-    thread.steers = []
+    thread.steers.clear()
     notify(thread, 'agent_state', { state: 'idle', agentMode: thread.agentMode })
   }
 
@@ -748,6 +763,11 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         })
       }
       const messageId = ampMessageID()
+      const stopReason = calls.length > 0
+        ? 'tool_use'
+        : (thread.steers.size === 0
+            ? 'end_turn'
+            : undefined)
       notify(thread, 'inference_tools', { messageId, agentMode: thread.agentMode, tools: [] })
       notify(thread, 'agent_state', { state: 'streaming', messageId, agentMode: thread.agentMode })
       addMessage(thread, {
@@ -755,12 +775,17 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         content,
         messageId,
         usage: usage(step, thread.features),
-        state: { type: 'complete' },
+        state: {
+          type: 'complete',
+          ...(stopReason
+            ? { stopReason }
+            : {}),
+        },
       })
 
       if (calls.length === 0) {
         // A steering line that arrived after the last tool continues the turn.
-        if (thread.steers.length > 0 && flushSteers(thread))
+        if (flushSteers(thread))
           continue
         thread.turn = undefined
         notify(thread, 'agent_state', { state: 'idle', messageId, agentMode: thread.agentMode })
@@ -782,16 +807,12 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
 
   /** Put every waiting steering line into the thread. Reports whether it put any. */
   function flushSteers(thread: ActorThread): boolean {
-    const steers = thread.steers
-    thread.steers = []
-    for (const content of steers) {
-      addMessage(thread, {
-        role: 'user',
-        content,
-        messageId: ampMessageID(),
-      })
-    }
-    return steers.length > 0
+    if (thread.steers.size === 0)
+      return false
+    for (const input of thread.steers.values())
+      addMessage(thread, input)
+    thread.steers.clear()
+    return true
   }
 
   /**
@@ -957,8 +978,8 @@ function subagentPrompt(name: string, args: Record<string, unknown>): string {
  * this is the request the loop would send. A tool result carries its run record as
  * text, which is what a matcher on the result reads.
  */
-export function ampInferenceOf(messages: readonly { role: string, content: readonly Record<string, unknown>[] }[]): AmpInference {
-  const converted = messages.map(message => ({
+export function ampInferenceOf(messages: Iterable<{ role: string, content: readonly Record<string, unknown>[] }>): AmpInference {
+  const converted = Array.from(messages, message => ({
     role: message.role,
     content: message.content.map((block) => {
       if (block.type === 'tool_result') {
@@ -990,9 +1011,9 @@ export function ampInferenceOf(messages: readonly { role: string, content: reado
   }
 }
 
-function inferenceOf(thread: { messages: readonly ActorMessage[], mockCredential?: MockModelCredential }): AmpInference {
+function inferenceOf(thread: ActorThread): AmpInference {
   return {
-    ...ampInferenceOf(thread.messages),
+    ...ampInferenceOf(thread.messages.values()),
     ...(thread.mockCredential
       ? { mockCredential: thread.mockCredential }
       : {}),
@@ -1012,7 +1033,7 @@ function firstText(content: readonly Record<string, unknown>[]): string {
 }
 
 function messageCount(thread: ActorThread): number {
-  return thread.messages.length
+  return thread.messages.size
 }
 
 function viewOf(thread: ActorThread): AmpThreadView {

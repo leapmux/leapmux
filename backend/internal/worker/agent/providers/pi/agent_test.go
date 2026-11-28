@@ -3,7 +3,9 @@ package pi
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -347,7 +349,7 @@ func TestPi_SendInput_FreshTurnSendsFollowUp(t *testing.T) {
 		return nil, true, ""
 	})
 
-	require.NoError(t, rig.agent.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "hello", nil))
 
 	select {
 	case payload := <-gotPayload:
@@ -366,7 +368,7 @@ func TestPiPromptRefusalRepublishesTheTurn(t *testing.T) {
 		// Native preflight refusal from .tmp/verify-c29/pi/run2/frames.jsonl.
 		return nil, false, "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
 	})
-	require.NoError(t, rig.agent.SendInput("next prompt", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "next prompt", nil))
 	require.Eventually(t, func() bool {
 		active, published := sink.LastTurnActive()
 		return published && !active
@@ -381,7 +383,7 @@ func TestPiHandledPromptRepublishesTheTurn(t *testing.T) {
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		return json.RawMessage(`{"disposition":"handled"}`), true, ""
 	})
-	require.NoError(t, rig.agent.SendInput("handled prompt", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "handled prompt", nil))
 	require.Eventually(t, func() bool {
 		active, published := sink.LastTurnActive()
 		return published && !active
@@ -406,7 +408,7 @@ func TestPiManualCompactUsesNativeRPCCommand(t *testing.T) {
 				got <- req
 				return nil, true, ""
 			})
-			require.NoError(t, rig.agent.SendInput(tc.input, nil))
+			require.NoError(t, agenttest.SendInput(rig.agent, tc.input, nil))
 			select {
 			case request := <-got:
 				assert.Equal(t, "compact", request.Type)
@@ -426,7 +428,7 @@ func TestPiManualCompactRefusesAttachments(t *testing.T) {
 	t.Parallel()
 	rig := newPiTestRig(t, agenttest.Nop())
 	attachment := &leapmuxv1.Attachment{Filename: "note.txt", MimeType: "text/plain", Data: []byte("note")}
-	assert.ErrorContains(t, rig.agent.SendInput("/compact", []*leapmuxv1.Attachment{attachment}), "attachments")
+	assert.ErrorContains(t, agenttest.SendInput(rig.agent, "/compact", []*leapmuxv1.Attachment{attachment}), "attachments")
 	assert.Empty(t, rig.requests())
 }
 
@@ -455,9 +457,9 @@ func TestPiManualCompactLeavesSimilarPromptsAndSteeringAlone(t *testing.T) {
 			})
 			var err error
 			if tc.steer {
-				err = rig.agent.SteerInput(tc.input, nil)
+				err = agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: tc.input})
 			} else {
-				err = rig.agent.SendInput(tc.input, nil)
+				err = agenttest.SendInput(rig.agent, tc.input, nil)
 			}
 			require.NoError(t, err)
 			select {
@@ -480,7 +482,7 @@ func TestPiManualCompactReturnsTheNativeError(t *testing.T) {
 		}
 		return nil, true, ""
 	})
-	assert.ErrorContains(t, rig.agent.SendInput("/compact", nil), "the session has no conversation to compact")
+	assert.ErrorContains(t, agenttest.SendInput(rig.agent, "/compact", nil), "the session has no conversation to compact")
 }
 
 func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
@@ -499,7 +501,7 @@ func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
 		return nil, true, ""
 	})
 
-	require.NoError(t, rig.agent.SteerInput("steer this", nil))
+	require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "steer this"}))
 
 	select {
 	case payload := <-gotPayload:
@@ -515,7 +517,7 @@ func TestPi_SendInput_StoppedAgentReturnsError(t *testing.T) {
 	rig := newPiTestRig(t, agenttest.Nop())
 	rig.agent.SetStoppedForTest(true)
 
-	err := rig.agent.SendInput("hello", nil)
+	err := agenttest.SendInput(rig.agent, "hello", nil)
 	require.Error(t, err)
 }
 
@@ -536,7 +538,7 @@ func TestPi_SendInput_WithImageAttachment_BuildsImagesArray(t *testing.T) {
 		MimeType: "image/png",
 		Data:     []byte("\x89PNGfake"),
 	}
-	require.NoError(t, rig.agent.SendInput("describe", []*leapmuxv1.Attachment{att}))
+	require.NoError(t, agenttest.SendInput(rig.agent, "describe", []*leapmuxv1.Attachment{att}))
 
 	select {
 	case payload := <-gotPayload:
@@ -1048,7 +1050,7 @@ func TestPiExtensionCommandPublishesIdleBeforeSendReturns(t *testing.T) {
 		return nil, true, ""
 	})
 	rig.agent.refreshPiCommands(time.Second)
-	require.NoError(t, rig.agent.SendInput("/plan start", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "/plan start", nil))
 	active, observed := sink.LastTurnActive()
 	assert.True(t, observed, "the queue needs a completion signal for an extension command")
 	assert.False(t, active)
@@ -1458,4 +1460,265 @@ func TestPiClearContextRereadsTheExtensionCatalog(t *testing.T) {
 		return len(rig.agent.SupportedGoalActions()) == 1
 	}, time.Second, time.Millisecond)
 	assert.Equal(t, []agent.GoalAction{agent.GoalActionPause}, rig.agent.SupportedGoalActions())
+}
+
+func TestPiPrepareInputEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("SteerInput when idle returns ErrNoActiveTurn", func(t *testing.T) {
+		t.Parallel()
+		rig := newPiTestRig(t, agenttest.Nop())
+		_, err := rig.agent.SteerInput(agent.SteerRequest{Content: "steer while idle", InputID: "in-1", AttemptID: "att-1"})
+		assert.ErrorIs(t, err, agent.ErrNoActiveTurn)
+		assert.Empty(t, rig.requests())
+	})
+
+	t.Run("SendInput when idle but replyPending is set returns ErrAgentBusy", func(t *testing.T) {
+		t.Parallel()
+		rig := newPiTestRig(t, agenttest.Nop())
+		rig.agent.replyPending = agent.NativeInputReceipt{SessionID: rig.agent.sessionFile, InputID: "pending-1", TurnID: "pending-1"}
+		_, err := rig.agent.SendInput("blocked by pending", nil)
+		assert.ErrorIs(t, err, agent.ErrAgentBusy)
+		assert.Empty(t, rig.requests())
+	})
+
+	t.Run("SendInput when idle but replyRun is set returns ErrAgentBusy", func(t *testing.T) {
+		t.Parallel()
+		rig := newPiTestRig(t, agenttest.Nop())
+		rig.agent.replyRun = newPiReplyRun(agent.NativeInputReceipt{SessionID: rig.agent.sessionFile, InputID: "run-1", TurnID: "run-1"}, true)
+		_, err := rig.agent.SendInput("blocked by replyRun", nil)
+		assert.ErrorIs(t, err, agent.ErrAgentBusy)
+		assert.Empty(t, rig.requests())
+	})
+
+	t.Run("SendInput with empty sessionID uses detached command handling", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("error calls handlePiPromptFailure", func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			rig := newPiTestRig(t, agent.NewProviderServices(sink))
+			rig.agent.sessionFile = ""
+			rig.agent.sessionID = ""
+			rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) {
+				return nil, false, "detached prompt refused"
+			})
+			receipt, err := rig.agent.SendInput("hello", nil)
+			require.NoError(t, err)
+			assert.Empty(t, receipt)
+			require.Eventually(t, func() bool {
+				active, published := sink.LastTurnActive()
+				return published && !active && len(sink.LeapMuxNotifications()) == 1
+			}, 30*time.Second, time.Millisecond)
+			assert.Contains(t, sink.LeapMuxNotifications()[0]["error"], "detached prompt refused")
+		})
+
+		t.Run("handled publishes idle turn without error", func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			rig := newPiTestRig(t, agent.NewProviderServices(sink))
+			rig.agent.sessionFile = ""
+			rig.agent.sessionID = ""
+			rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) {
+				return json.RawMessage(`{"disposition":"handled"}`), true, ""
+			})
+			receipt, err := rig.agent.SendInput("handled", nil)
+			require.NoError(t, err)
+			assert.Empty(t, receipt)
+			require.Eventually(t, func() bool {
+				active, published := sink.LastTurnActive()
+				return published && !active
+			}, 30*time.Second, time.Millisecond)
+			assert.Empty(t, sink.LeapMuxNotifications())
+		})
+
+		for _, disposition := range []string{"started", "queued"} {
+			t.Run(disposition+" publishes neither turn active nor error", func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				rig := newPiTestRig(t, agent.NewProviderServices(sink))
+				rig.agent.sessionFile = ""
+				rig.agent.sessionID = ""
+				rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+					if req.Type == CommandPrompt {
+						return json.RawMessage(`{"disposition":"` + disposition + `"}`), true, ""
+					}
+					return json.RawMessage(`{}`), true, ""
+				})
+				receipt, err := rig.agent.SendInput("detached "+disposition, nil)
+				require.NoError(t, err)
+				assert.Empty(t, receipt)
+				// A synchronous sentinel over the same pipe guarantees the prompt response was delivered.
+				_, err = rig.agent.sendPiCommand(CommandGetState, nil, time.Second)
+				require.NoError(t, err)
+				assert.Empty(t, sink.TurnActives())
+				assert.Empty(t, sink.LeapMuxNotifications())
+			})
+		}
+	})
+
+	t.Run("identifiedSteer falls back to legacy steer when preconditions are missing", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name        string
+			bridgeReady bool
+			sessionFile string
+			req         agent.SteerRequest
+		}{
+			{
+				name: "bridge not ready", bridgeReady: false, sessionFile: "sess",
+				req: agent.SteerRequest{Content: "guide", InputID: "in-1", AttemptID: "att-1"},
+			},
+			{
+				name: "empty sessionID", bridgeReady: true, sessionFile: "",
+				req: agent.SteerRequest{Content: "guide", InputID: "in-1", AttemptID: "att-1"},
+			},
+			{
+				name: "empty InputID", bridgeReady: true, sessionFile: "sess",
+				req: agent.SteerRequest{Content: "guide", InputID: "", AttemptID: "att-1"},
+			},
+			{
+				name: "empty AttemptID", bridgeReady: true, sessionFile: "sess",
+				req: agent.SteerRequest{Content: "guide", InputID: "in-1", AttemptID: ""},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				rig := newPiTestRig(t, agent.NewProviderServices(sink))
+				rig.agent.currentTurnActive = true
+				rig.agent.sessionFile = tc.sessionFile
+				rig.agent.sessionID = ""
+				rig.agent.steerBridgeReady = tc.bridgeReady
+				rig.agent.steerBridge = &piSteerBridge{Prefix: "leapmux-steer:nonce:", IDLength: 48}
+				rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) {
+					return json.RawMessage(`{"disposition":"queued"}`), true, ""
+				})
+				_, err := rig.agent.SteerInput(tc.req)
+				require.NoError(t, err)
+
+				reqs := rig.requests()
+				require.Len(t, reqs, 1)
+				assert.Equal(t, "guide", reqs[0].Payload["message"], "legacy fallback must send unprefixed text")
+				assert.Equal(t, StreamingBehaviorSteer, reqs[0].Payload["streamingBehavior"])
+
+				rig.agent.Mu.Lock()
+				assert.Empty(t, rig.agent.identifiedSteers)
+				rig.agent.Mu.Unlock()
+
+				rig.agent.HandleOutput([]byte(`{"type":"message_end","message":{"role":"user","content":"guide"}}`))
+				assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			})
+		}
+	})
+}
+
+func TestPiPromptPayloadAttachments(t *testing.T) {
+	t.Parallel()
+
+	textAtt := &leapmuxv1.Attachment{Filename: "note.txt", MimeType: "text/plain", Data: []byte("hello text")}
+
+	t.Run("text attachment with non-empty content appends separator", func(t *testing.T) {
+		t.Parallel()
+		payload, text := piPromptPayload("Read this:", []*leapmuxv1.Attachment{textAtt}, false)
+		assert.True(t, strings.HasPrefix(text, "Read this:\n\n"))
+		assert.Contains(t, text, "hello text")
+		assert.Equal(t, text, payload["message"])
+		assert.NotContains(t, payload, "images")
+		assert.Equal(t, StreamingBehaviorFollowUp, payload["streamingBehavior"])
+	})
+
+	t.Run("text attachment with empty content has no leading separator", func(t *testing.T) {
+		t.Parallel()
+		payload, text := piPromptPayload("", []*leapmuxv1.Attachment{textAtt}, true)
+		assert.False(t, strings.HasPrefix(text, "\n"))
+		assert.Contains(t, text, "hello text")
+		assert.Equal(t, text, payload["message"])
+		assert.NotContains(t, payload, "images")
+		assert.Equal(t, StreamingBehaviorSteer, payload["streamingBehavior"])
+	})
+
+	t.Run("pdf binary and audio attachments are omitted", func(t *testing.T) {
+		t.Parallel()
+		unsupported := []*leapmuxv1.Attachment{
+			{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")},
+			{Filename: "blob.bin", MimeType: "application/octet-stream", Data: []byte{0x00, 0xff}},
+			{Filename: "clip.mp3", MimeType: "audio/mpeg", Data: []byte("ID3")},
+		}
+		payload, text := piPromptPayload("keep only text", unsupported, false)
+		assert.Equal(t, "keep only text", text)
+		assert.Equal(t, "keep only text", payload["message"])
+		assert.NotContains(t, payload, "images")
+	})
+
+	t.Run("image-only attachment with empty content sends empty message and images array", func(t *testing.T) {
+		t.Parallel()
+		imgBytes := []byte("\x89PNGimage")
+		imgAtt := &leapmuxv1.Attachment{Filename: "shot.png", MimeType: "image/png", Data: imgBytes}
+		payload, text := piPromptPayload("", []*leapmuxv1.Attachment{imgAtt}, false)
+		assert.Empty(t, text)
+		assert.Equal(t, "", payload["message"])
+		images, ok := payload["images"].([]map[string]any)
+		require.True(t, ok)
+		require.Len(t, images, 1)
+		assert.Equal(t, map[string]any{
+			"type":     "image",
+			"data":     base64.StdEncoding.EncodeToString(imgBytes),
+			"mimeType": "image/png",
+		}, images[0])
+	})
+}
+
+func TestPiCompactAndExtensionCommandLifecycle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preparePiCompact write error does not publish turn active", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		writeErr := errors.New("stdin broken")
+		setPiInterruptWriter(a, func([]byte) (int, error) { return 0, writeErr })
+		_, err := a.SendInput("/compact", nil)
+		require.ErrorIs(t, err, writeErr)
+		assert.Empty(t, sink.TurnActives())
+	})
+
+	t.Run("preparePiCompact success publishes idle turn", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		rig := newPiTestRig(t, agent.NewProviderServices(sink))
+		rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+			assert.Equal(t, CommandCompact, req.Type)
+			return json.RawMessage(`{}`), true, ""
+		})
+		_, err := rig.agent.SendInput("/compact", nil)
+		require.NoError(t, err)
+		assert.Equal(t, []bool{false}, sink.TurnActives())
+	})
+
+	t.Run("preparePiExtensionCommand write error does not publish turn active", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.extensionCommands = map[string]bool{"local": true}
+		writeErr := errors.New("stdin broken")
+		setPiInterruptWriter(a, func([]byte) (int, error) { return 0, writeErr })
+		_, err := a.SendInput("/local", nil)
+		require.ErrorIs(t, err, writeErr)
+		assert.Empty(t, sink.TurnActives())
+	})
+
+	t.Run("preparePiExtensionCommand wait error publishes idle turn and returns error", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		rig := newPiTestRig(t, agent.NewProviderServices(sink))
+		rig.agent.extensionCommands = map[string]bool{"local": true}
+		rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+			assert.Equal(t, CommandPrompt, req.Type)
+			return nil, false, "extension failed"
+		})
+		_, err := rig.agent.SendInput("/local", nil)
+		require.ErrorContains(t, err, "extension failed")
+		assert.Equal(t, []bool{false}, sink.TurnActives())
+	})
 }

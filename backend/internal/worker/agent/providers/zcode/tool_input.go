@@ -19,9 +19,10 @@ import (
 // refused the write -- and either way the caller must write the input itself or
 // lose it. With an error it means the read could not say.
 //
-// The caller decides what an unconfirmed read is worth. handleUserInputRequest
-// treats a FAILED read as "the transcript has it", because a second plan row over
-// one that is already there draws the plan twice.
+// The caller decides what an unconfirmed read is worth.
+// handlePreparedUserInputRequest treats a FAILED read as "the transcript has
+// it", because a second plan row over one that is already there draws the plan
+// twice.
 func (a *Agent) supplementZCodeControlInput(toolCallID, toolName string, input json.RawMessage) (carriesInput bool, err error) {
 	return a.supplementZCodeControlInputForSpan(a.zcodeSpanForNativeCall(toolCallID), toolName, input)
 }
@@ -133,20 +134,10 @@ func zcodeToolInputSupplement(payload zcodeToolUpdated, inputs ...json.RawMessag
 	})
 }
 
-// ResolveProviderData supplies validated stream arguments to semantic extractors.
-func (zcodeProvider) ResolveProviderData(content agent.MessageContent) []byte {
-	if len(content.Supplemental) == 0 {
-		return content.Original
-	}
-	original, ok := parseZCodeEvent(content.Original)
-	if !ok {
-		return content.Original
-	}
+// zcodeResolveToolInput merges validated stream arguments into a tool.updated frame.
+func zcodeResolveToolInput(original zcodeEventEnvelope, content agent.MessageContent) []byte {
 	supplement, ok := parseZCodeEvent(content.Supplemental)
 	if !ok || supplement.Type != original.Type {
-		return content.Original
-	}
-	if original.Type != contracts.ZCodeEventToolUpdated {
 		return content.Original
 	}
 	var request, extra zcodeToolUpdated

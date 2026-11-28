@@ -81,6 +81,33 @@ func withCursor[T any](cursor string, limit int64, fill func(cursorTime sqltime.
 	return fill(cursorTime, cursorID, int32(store.FetchLimit(limit))), nil
 }
 
+// boolToInt64 encodes a boolean filter flag for MySQL queries that bind the
+// flag through CAST(sqlc.arg(...) AS SIGNED) so sqlc generates a strongly
+// typed int64 parameter instead of interface{}.
+func boolToInt64(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// prepareIDPrefixPage parses cursor and computes the strict lower-bound ID
+// (`id > idGt`) and clamped int32 fetch limit for an ID-prefix paginated query.
+// It returns empty=true when no row can match (cursor passed the range,
+// non-exact prefix has no upper bound, or fetch limit is zero).
+func prepareIDPrefixPage(filter store.IDPrefixFilter, cursor string, limit int64) (idGt string, fetchLimit int32, empty bool, err error) {
+	c, err := store.ParseCursor(cursor)
+	if err != nil {
+		return "", 0, false, err
+	}
+	idGt, empty = filter.CursorAfter(c)
+	fl := store.FetchLimit(limit)
+	if empty || (!filter.Exact && !filter.HasUpper) || fl == 0 {
+		return "", 0, true, nil
+	}
+	return idGt, int32(fl), false, nil
+}
+
 func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListAllUsersParams {
 		return gendb.ListAllUsersParams{CursorTime: ct, CursorID: cid, Limit: fl}
@@ -118,34 +145,6 @@ func listWorkersAdminLiveParams(cursor string, limit int64) (gendb.ListWorkersAd
 func listWorkersAdminLiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminLiveByUserParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListWorkersAdminLiveByUserParams {
 		return gendb.ListWorkersAdminLiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminActiveParams builds the typed cursor for ListWorkersAdminActive.
-func listWorkersAdminActiveParams(cursor string, limit int64) (gendb.ListWorkersAdminActiveParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListWorkersAdminActiveParams {
-		return gendb.ListWorkersAdminActiveParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminActiveByUserParams builds the typed cursor for ListWorkersAdminActiveByUser.
-func listWorkersAdminActiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminActiveByUserParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListWorkersAdminActiveByUserParams {
-		return gendb.ListWorkersAdminActiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringParams builds the typed cursor for ListWorkersAdminDeregistering.
-func listWorkersAdminDeregisteringParams(cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListWorkersAdminDeregisteringParams {
-		return gendb.ListWorkersAdminDeregisteringParams{CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-// listWorkersAdminDeregisteringByUserParams builds the typed cursor for ListWorkersAdminDeregisteringByUser.
-func listWorkersAdminDeregisteringByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListWorkersAdminDeregisteringByUserParams {
-		return gendb.ListWorkersAdminDeregisteringByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

@@ -58,6 +58,20 @@ func IsWorkspaceTrustRequestID(requestID string) bool {
 	return strings.HasPrefix(requestID, workspaceTrustRequestPrefix)
 }
 
+// WorkspaceTrustRequestKey is the key that Ask publishes a stored
+// workspace-trust question under (agent.Provider.ControlRequestKey): the
+// request ID of the session that the question belongs to. The question's
+// payload states no key of its own, so the session that the Worker stores with
+// the question decides the key. ok is false for a payload that is not a
+// workspace-trust question, and for a question of no session, which Ask never
+// publishes.
+func WorkspaceTrustRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	if !IsWorkspaceTrustQuestion(payload) || agentSessionID == "" {
+		return "", false
+	}
+	return WorkspaceTrustRequestID(agentSessionID), true
+}
+
 // ErrWorkspaceTrustClosed refuses an answer to a question that is no longer
 // open: its session went away, or another answer retired it.
 var ErrWorkspaceTrustClosed = errors.New("the workspace-trust question is no longer open")
@@ -108,7 +122,16 @@ type workspaceTrustRetirement struct {
 // or unreadable check asks nothing, because the agent then keeps the controlled
 // configuration unloaded, which is the safe side. configuration lists what the
 // trust controls, in words that the browser shows.
+//
+// A question of no session is never asked. Its key derives from its session
+// (WorkspaceTrustRequestKey), and the Worker stores a request of no session
+// with the session that the sink holds, so the stored question would give
+// another key than its own, and the Worker would refuse every answer to it.
 func (w *WorkspaceTrust) Ask(sink agent.ProviderServices, host WorkspaceTrustHost, sessionID, path string, configuration []string) {
+	if sessionID == "" {
+		slog.Warn("Ask no workspace-trust question without a session", "path", path)
+		return
+	}
 	requestID := WorkspaceTrustRequestID(sessionID)
 	generation, mayAsk := w.generationForAsk(requestID)
 	if !mayAsk {
@@ -240,18 +263,18 @@ func (w *WorkspaceTrust) releaseRequestStateLocked(requestID string, state *work
 	}
 }
 
-// Answer carries out one answer that the worker forwards. raw is the shared
+// Answer carries out one answer that the worker forwards. input.Data is the shared
 // control response envelope, {response: {request_id, response: {decision}}}.
 // handled is false for an answer to another request, which the provider then
 // answers itself. An answer that fails keeps the question open.
-func (w *WorkspaceTrust) Answer(sink agent.ProviderServices, host WorkspaceTrustHost, raw []byte) (handled bool, err error) {
+func (w *WorkspaceTrust) Answer(sink agent.ProviderServices, host WorkspaceTrustHost, input agent.RawInput) (handled bool, err error) {
 	var envelope struct {
 		Response struct {
 			RequestID string          `json:"request_id"`
 			Response  json.RawMessage `json:"response"`
 		} `json:"response"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || !IsWorkspaceTrustRequestID(envelope.Response.RequestID) {
+	if json.Unmarshal(input.Data, &envelope) != nil || !IsWorkspaceTrustRequestID(envelope.Response.RequestID) {
 		return false, nil
 	}
 	requestID := envelope.Response.RequestID
@@ -260,6 +283,10 @@ func (w *WorkspaceTrust) Answer(sink agent.ProviderServices, host WorkspaceTrust
 	if question == nil || question.responding {
 		w.mu.Unlock()
 		return true, ErrWorkspaceTrustClosed
+	}
+	if err := agent.ControlInstanceRefusal(question.instanceID, input.ControlInstanceID); err != nil {
+		w.mu.Unlock()
+		return true, err
 	}
 	question.responding = true
 	w.mu.Unlock()
@@ -323,40 +350,25 @@ func (w *WorkspaceTrust) Retire(sink agent.ProviderServices) {
 	}
 }
 
-// ResolveWorkspaceTrustResponse turns the browser's neutral decision on a
-// workspace-trust question into the saved answer, {decision}. It reports false
+// ResolveWorkspaceTrustResponse turns the neutral allow or deny on a
+// workspace-trust question (AnswerWorkspaceTrust) into the saved answer,
+// {decision}. It reports false
 // for a stored request that is not a workspace-trust question, which the
 // provider then resolves itself.
 func ResolveWorkspaceTrustResponse(ctx agent.ControlResponseContext) (agent.ControlResponseResolution, bool) {
-	if StringField(ctx.RequestPayload, contracts.WorkspaceTrustFieldType) != contracts.WorkspaceTrustControlTypeQuestion {
+	if !IsWorkspaceTrustQuestion(ctx.RequestPayload) {
 		return agent.ControlResponseResolution{}, false
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
-	requestID, behavior, _, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	_, behavior, _, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		result.Refuse(agent.RefusalNoDecision)
 		return result, true
 	}
-	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		result.Refuse(agent.RefusalOtherRequest)
-		return result, true
-	}
 	decision := contracts.WorkspaceTrustDecisionReject
-	if behavior == agent.ControlBehaviorAllow {
+	if behavior == contracts.ControlAnswerBehaviorAllow {
 		decision = contracts.WorkspaceTrustDecisionTrust
 	}
-	content, err := json.Marshal(map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": ctx.RequestID,
-			"response":   map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
-		},
-	})
-	if err != nil {
-		result.Refuse(agent.RefusalUnencodableReply)
-		return result, true
-	}
-	result.Content = content
+	result.Content = agent.ControlResponseEnvelope(ctx.RequestID, map[string]string{contracts.WorkspaceTrustFieldDecision: decision})
 	return result, true
 }

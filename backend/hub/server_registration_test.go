@@ -273,31 +273,22 @@ func TestRetireLocalWorkerDeletesOnlyAnAutoRegisteredWorker(t *testing.T) {
 		ctx := context.Background()
 		owner := storetest.SeedUser(t, st, "retire-apply-fault-owner")
 		owners, record := newRecord()
-		boom := errors.New("database is locked")
-		// SendDeregister reads the row through the notifier's own store, so a
-		// wrapper that fails that read makes Apply return before it reaches the
-		// workers-changed hook. A notifier wired to the plain store by mistake
-		// would fill the record instead.
-		faulting := retireFaultStore{Store: st, failGetByIDIncludeDeleted: boom}
 		server := &Server{hasher: hubtestutil.TestSecretHasher(),
 			store: st,
 			workerEffects: service.NewWorkerDeregisterEffects(nil, notifier.New(
-				faulting,
 				workermgr.New(workermgr.DenyAllReach()),
 				workermgr.NewPendingRequests(func() time.Duration { return 30 * time.Second }),
 				func() time.Duration { return 30 * time.Second },
-				nil,
 			), record),
 		}
 
 		credentials, err := server.RegisterWorker(ctx, owner.ID, workerkeystest.Keys(0x31))
 		require.NoError(t, err)
 
-		require.NoError(t, server.RetireLocalWorker(ctx, credentials.WorkerID),
-			"the row is already deleted; a failed effect must not fail the launch")
+		require.NoError(t, server.RetireLocalWorker(ctx, credentials.WorkerID))
 		_, readErr := st.Workers().GetByID(ctx, credentials.WorkerID)
 		assert.ErrorIs(t, readErr, store.ErrNotFound)
-		assert.Empty(t, *owners, "the failure path must have been taken")
+		assert.Equal(t, []string{owner.ID}, *owners)
 	})
 }
 
@@ -383,10 +374,10 @@ func TestReissueLocalWorkerTokenRefusesAStandaloneWorker(t *testing.T) {
 }
 
 func TestReissueLocalWorkerTokenPreservesInactiveDigests(t *testing.T) {
-	for _, deleted := range []bool{false, true} {
-		t.Run(map[bool]string{false: "deregistering", true: "deleted"}[deleted], func(t *testing.T) {
+	for _, method := range []string{"deregistered", "marked deleted"} {
+		t.Run(method, func(t *testing.T) {
 			server, credentials := registeredLocalWorkerForTest(t)
-			if deleted {
+			if method == "marked deleted" {
 				require.NoError(t, server.store.Workers().MarkDeleted(t.Context(), credentials.WorkerID))
 			} else {
 				rows, err := server.store.Workers().ForceDeregister(t.Context(), credentials.WorkerID)

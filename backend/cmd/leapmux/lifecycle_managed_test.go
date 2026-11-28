@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -119,18 +120,21 @@ func TestManagedRunUsesSavedRootAndReportsService(t *testing.T) {
 }
 
 func TestManagedRunRejectsSelectorOverridesBeforeRuntime(t *testing.T) {
+	// A refusal of the command line is a usage error. A specification that
+	// disagrees with the command line fails as the launch does.
 	for _, test := range []struct {
 		name    string
 		args    func(string) []string
 		message string
+		code    int
 	}{
-		{"empty specification", func(string) []string { return []string{"--service-spec="} }, "exactly one nonempty service specification"},
-		{"repeated specification", func(path string) []string { return []string{"--service-spec", path, "--service-spec", path} }, "exactly one nonempty service specification"},
-		{"listen override", func(path string) []string { return []string{"--service-spec", path, "--listen", "127.0.0.1:0"} }, "cannot override --listen"},
-		{"config override", func(path string) []string { return []string{"--service-spec", path, "--config", "unread-config.yaml"} }, "cannot override --config"},
-		{"wrong root", func(path string) []string { return []string{"--service-spec", path, "--data-dir", filepath.Dir(path)} }, "data directory differs"},
-		{"empty root", func(path string) []string { return []string{"--service-spec", path, "--data-dir="} }, "data directory differs"},
-		{"relative specification", func(string) []string { return []string{"--service-spec", "service.yaml"} }, "absolute service specification path"},
+		{"empty specification", func(string) []string { return []string{"--service-spec="} }, "exactly one nonempty service specification", cli.ExitUsage},
+		{"repeated specification", func(path string) []string { return []string{"--service-spec", path, "--service-spec", path} }, "exactly one nonempty service specification", cli.ExitUsage},
+		{"listen override", func(path string) []string { return []string{"--service-spec", path, "--listen", "127.0.0.1:0"} }, "cannot override --listen", cli.ExitUsage},
+		{"config override", func(path string) []string { return []string{"--service-spec", path, "--config", "unread-config.yaml"} }, "cannot override --config", cli.ExitUsage},
+		{"wrong root", func(path string) []string { return []string{"--service-spec", path, "--data-dir", filepath.Dir(path)} }, "data directory differs", cli.ExitFailure},
+		{"empty root", func(path string) []string { return []string{"--service-spec", path, "--data-dir="} }, "data directory differs", cli.ExitFailure},
+		{"relative specification", func(string) []string { return []string{"--service-spec", "service.yaml"} }, "absolute service specification path", cli.ExitFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			spec := managedTestSpec(t)
@@ -138,7 +142,7 @@ func TestManagedRunRejectsSelectorOverridesBeforeRuntime(t *testing.T) {
 			before, err := os.ReadFile(path)
 			require.NoError(t, err)
 			result := invokeLifecycleCLI(t, t.TempDir(), append([]string{"hub", "run"}, test.args(path)...)...)
-			require.Equal(t, 1, result.exitCode)
+			require.Equal(t, test.code, result.exitCode, result.stderr)
 			require.Contains(t, result.stderr, test.message)
 			require.NoFileExists(t, lifecycle.PathsOf(spec.DataDirectory).RuntimeRecord)
 			after, err := os.ReadFile(path)

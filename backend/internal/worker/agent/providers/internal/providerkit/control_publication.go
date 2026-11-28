@@ -3,7 +3,10 @@ package providerkit
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -11,11 +14,6 @@ import (
 )
 
 const ControlPublicationFailure = "LeapMux could not store this control request."
-
-// ErrControlRequestNotPending reports a control response whose request the provider no
-// longer waits on. A reader answer, a withdrawal, or a standing approval already retired
-// the request, so a second answer would reach a request that is closed.
-var ErrControlRequestNotPending = errors.New("the control request is no longer pending")
 
 // outstandingControlRequest records one control request the provider still waits on.
 //
@@ -30,6 +28,7 @@ var ErrControlRequestNotPending = errors.New("the control request is no longer p
 // session holds its bypass preset. A nil approveAnswer means that no standing approval
 // can answer the request, as for a question that only the reader can answer.
 type outstandingControlRequest struct {
+	sink             agent.ControlServices
 	instanceID       string
 	wireID           json.RawMessage
 	cancelAnswer     any
@@ -40,6 +39,8 @@ type outstandingControlRequest struct {
 	publicationErr   error
 	payload          []byte
 	sessionID        string
+	nativeTurnID     string
+	nativeInputIDs   []string
 	publishOnFailure bool
 }
 
@@ -49,32 +50,23 @@ type PublishedControlRequest struct {
 	record    *outstandingControlRequest
 }
 
-// PublishControlRequest registers one control request and publishes it to the reader,
-// as PublishControlRequestInSession does, for a request that belongs to the provider
-// session that the sink holds now.
-func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, content []byte, cancelAnswer any) {
-	b.PublishControlRequestInSession(sink, "", content, cancelAnswer)
+type ControlRequestOwner struct {
+	SessionID string
+	TurnID    string
+	InputIDs  []string
 }
 
-// PublishControlRequestWithApproval registers one control request with the answer that a
-// standing approval sends for it, and publishes it to the reader, as
-// PublishControlRequestInSession does. It returns the publication handle, or an empty handle on failure.
-//
-// The caller reads its standing approval again AFTER this call returns, and approves the
-// request through ApproveOutstandingControlRequest when the approval now applies. A
-// settings change that ran between the caller's first check and this registration then
-// still reaches the request.
-func (b *JSONRPCProcess) PublishControlRequestWithApproval(sink agent.ControlServices, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
-	return b.PublishSessionControlRequestWithApproval(sink, "", content, cancelAnswer, approveAnswer)
+// ControlRequestPublication holds the payload, session ownership, and optional
+// automatic responses for one inbound JSON-RPC control request.
+type ControlRequestPublication struct {
+	Owner         ControlRequestOwner
+	Content       []byte
+	CancelAnswer  any
+	ApproveAnswer any
 }
 
-// PublishSessionControlRequestWithApproval keeps the session identity with the approval record.
-func (b *JSONRPCProcess) PublishSessionControlRequestWithApproval(sink agent.ControlServices, sessionID string, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
-	return b.publishControlRequest(sink, sessionID, content, cancelAnswer, approveAnswer)
-}
-
-// PublishControlRequestInSession registers one control request and publishes it to the
-// reader.
+// PublishControlRequest registers one inbound JSON-RPC control request and
+// publishes it to the reader.
 //
 // This is the single registrar for an inbound JSON-RPC control REQUEST: one the
 // provider raised with a JSON-RPC id, which LeapMux answers with a JSON-RPC response.
@@ -82,11 +74,18 @@ func (b *JSONRPCProcess) PublishSessionControlRequestWithApproval(sink agent.Con
 // the browser-side card are created together and WithdrawControlRequest can retire
 // both. A storage failure sends a JSON-RPC error unless a concurrent approval owns the response.
 //
-// agentSessionID is the provider session that the request belongs to. The sink stores
-// it with the request, and the worker accepts an answer only while the agent is in
-// that session. An empty agentSessionID makes the sink store the session that it holds
-// now. A caller states the session when the request can arrive before the sink learns
-// it, as a request that an agent raises while it opens its session does.
+// request.Owner.SessionID is the provider session that the request belongs to.
+// The sink stores it with the request, and the worker accepts an answer only
+// while the agent is in that session. An empty SessionID makes the sink store
+// the session that it holds now. A caller states the session when the request
+// can arrive before the sink learns it, as a request that an agent raises while
+// it opens its session does.
+//
+// When request.ApproveAnswer is non-nil, the caller reads its standing approval
+// again AFTER this call returns, and approves the request through
+// ApproveOutstandingControlRequest when the approval now applies. A settings
+// change that ran between the caller's first check and this registration then
+// still reaches the request.
 //
 // A provider whose control requests are NOT JSON-RPC requests keeps its own registry
 // and its own withdrawal path, because there is no id here to key them by and no
@@ -94,25 +93,25 @@ func (b *JSONRPCProcess) PublishSessionControlRequestWithApproval(sink agent.Con
 // envelope, Pi an extension_ui_response, ZCode re-announces with a fresh wire id per
 // announcement, Copilot raises native events keyed by session and request id, and the
 // Codex plan prompt is LeapMux's own and carries no id at all.
-func (b *JSONRPCProcess) PublishControlRequestInSession(sink agent.ControlServices, agentSessionID string, content []byte, cancelAnswer any) {
-	b.publishControlRequest(sink, agentSessionID, content, cancelAnswer, nil)
-}
-
-// publishControlRequest is the one registrar behind the exported publishers. It returns
-// the exact publication handle, or an empty handle when it registered nothing.
-func (b *JSONRPCProcess) publishControlRequest(sink agent.ControlServices, agentSessionID string, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
-	wireID, _, found := agent.ExtractJSONRPCID(content)
-	identity, valid := agent.NewControlRequestIdentity(wireID)
-	if !found || !valid {
+//
+// It returns the exact publication handle, or an empty handle when it registered nothing.
+func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, request ControlRequestPublication) PublishedControlRequest {
+	// The key that the Worker checks a stored request against reads the id with
+	// the same function (agent.JSONRPCControlRequestIdentity).
+	identity, valid := agent.JSONRPCControlRequestIdentity(request.Content)
+	if !valid {
 		slog.Warn("cannot publish control request without a valid JSON-RPC ID", "agent_id", b.agentID)
 		return PublishedControlRequest{}
 	}
-	record := b.registerControl(identity, &outstandingControlRequest{payload: content, sessionID: agentSessionID, cancelAnswer: cancelAnswer, approveAnswer: approveAnswer})
+	record := b.registerControl(identity, &outstandingControlRequest{
+		sink: sink, payload: request.Content, sessionID: request.Owner.SessionID, nativeTurnID: request.Owner.TurnID,
+		nativeInputIDs: request.Owner.InputIDs, cancelAnswer: request.CancelAnswer, approveAnswer: request.ApproveAnswer,
+	})
 	if record == nil {
 		slog.Warn("duplicate live control request ID", "agent_id", b.agentID, "request_id", identity.Key)
 		return PublishedControlRequest{}
 	}
-	if !b.publishRegisteredControl(sink, identity.Key, record) {
+	if !b.publishRegisteredControl(identity.Key, record) {
 		return PublishedControlRequest{}
 	}
 	return PublishedControlRequest{RequestID: identity.Key, record: record}
@@ -131,13 +130,17 @@ func (b *JSONRPCProcess) registerControl(identity agent.ControlRequestIdentity, 
 	record.instanceID = id.Generate()
 	record.wireID = append(json.RawMessage(nil), identity.Native...)
 	record.payload = append([]byte(nil), record.payload...)
+	record.nativeInputIDs = slices.Clone(record.nativeInputIDs)
 	b.outstandingControls[identity.Key] = record
 	return record
 }
 
 // publishRegisteredControl keeps publication and delivery ownership on the same record.
-func (b *JSONRPCProcess) publishRegisteredControl(sink agent.ControlServices, requestID string, record *outstandingControlRequest) bool {
-	err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.sessionID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
+func (b *JSONRPCProcess) publishRegisteredControl(requestID string, record *outstandingControlRequest) bool {
+	err := record.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: record.sessionID, NativeTurnID: record.nativeTurnID, NativeInputIDs: record.nativeInputIDs,
+		RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload,
+	})
 	b.outstandingMu.Lock()
 	// Only an unpublished request needs its original bytes for recovery.
 	record.payload = nil
@@ -157,9 +160,13 @@ func (b *JSONRPCProcess) publishRegisteredControl(sink agent.ControlServices, re
 		return false
 	}
 	if retired {
-		sink.CancelControlRequestInstance(requestID, record.instanceID)
+		record.cancelPublication(requestID)
 	}
 	return true
+}
+
+func (record *outstandingControlRequest) cancelPublication(requestID string) {
+	record.sink.CancelControlRequestInstance(requestID, record.instanceID)
 }
 
 // WithdrawControlRequest retires one control request on both sides, in order.
@@ -171,7 +178,7 @@ func (b *JSONRPCProcess) publishRegisteredControl(sink agent.ControlServices, re
 // its own request and therefore waits for no answer. WithdrawAllControlRequests is
 // the path that answers, and it exists for the opposite case: LeapMux retires a
 // request the provider still blocks on.
-func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requestID string) {
+func (b *JSONRPCProcess) WithdrawControlRequest(fallbackSink agent.ControlServices, requestID string) {
 	b.outstandingMu.Lock()
 	record := b.outstandingControls[requestID]
 	if record != nil {
@@ -181,10 +188,10 @@ func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requ
 	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
 	if record != nil {
-		sink.CancelControlRequestInstance(requestID, record.instanceID)
+		record.cancelPublication(requestID)
 	} else {
 		// An explicit native withdrawal also removes a stored request that this registry does not hold.
-		sink.CancelControlRequest(requestID)
+		fallbackSink.CancelControlRequest(requestID)
 	}
 }
 
@@ -197,17 +204,17 @@ func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requ
 // tell that event from the echo of an answer the reader already sent. That answer
 // removed the record in SendRawInput, so a withdrawal keyed on the record alone
 // never cancels a card the reader just decided.
-func (b *JSONRPCProcess) WithdrawOutstandingControlRequest(sink agent.ControlServices, requestID string) bool {
-	return b.withdrawControlPublication(sink, requestID, nil)
+func (b *JSONRPCProcess) WithdrawOutstandingControlRequest(requestID string) bool {
+	return b.withdrawControlPublication(requestID, nil)
 }
 
 // WithdrawPublishedControlRequest retires only the exact publication that the caller captured.
 // A later request can reuse the same wire ID, so its publication must remain open.
-func (b *JSONRPCProcess) WithdrawPublishedControlRequest(sink agent.ControlServices, publication PublishedControlRequest) bool {
+func (b *JSONRPCProcess) WithdrawPublishedControlRequest(publication PublishedControlRequest) bool {
 	if publication.record == nil {
 		return false
 	}
-	return b.withdrawControlPublication(sink, publication.RequestID, publication.record)
+	return b.withdrawControlPublication(publication.RequestID, publication.record)
 }
 
 // ControlPublicationIsCurrent reports whether this publication still owns its request ID.
@@ -217,7 +224,7 @@ func (b *JSONRPCProcess) ControlPublicationIsCurrent(publication PublishedContro
 	return publication.record != nil && b.outstandingControls[publication.RequestID] == publication.record
 }
 
-func (b *JSONRPCProcess) withdrawControlPublication(sink agent.ControlServices, requestID string, expected *outstandingControlRequest) bool {
+func (b *JSONRPCProcess) withdrawControlPublication(requestID string, expected *outstandingControlRequest) bool {
 	b.outstandingMu.Lock()
 	record, open := b.outstandingControls[requestID]
 	if !open || expected != nil && record != expected {
@@ -228,7 +235,7 @@ func (b *JSONRPCProcess) withdrawControlPublication(sink agent.ControlServices, 
 	delete(b.outstandingControls, requestID)
 	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
-	sink.CancelControlRequestInstance(requestID, record.instanceID)
+	record.cancelPublication(requestID)
 	return true
 }
 
@@ -238,7 +245,7 @@ func (b *JSONRPCProcess) withdrawControlPublication(sink agent.ControlServices, 
 // withdrawn in silence leaves the turn running with nothing left that could end it.
 // A census of Goose recorded one such request, after which the agent ran for the
 // rest of the session and the thinking indicator never stopped.
-func (b *JSONRPCProcess) WithdrawAllControlRequests(sink agent.ControlServices) {
+func (b *JSONRPCProcess) WithdrawAllControlRequests() {
 	b.outstandingMu.Lock()
 	outstanding := b.outstandingControls
 	for _, record := range outstanding {
@@ -247,9 +254,10 @@ func (b *JSONRPCProcess) WithdrawAllControlRequests(sink agent.ControlServices) 
 	b.outstandingControls = nil
 	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
-	for requestID, record := range outstanding {
+	for _, requestID := range slices.Sorted(maps.Keys(outstanding)) {
+		record := outstanding[requestID]
 		b.answerWithdrawnControl(requestID, record)
-		sink.CancelControlRequestInstance(requestID, record.instanceID)
+		record.cancelPublication(requestID)
 	}
 }
 
@@ -260,7 +268,7 @@ func (b *JSONRPCProcess) WithdrawAllControlRequests(sink agent.ControlServices) 
 // answer blocks the runtime, so it must be released before anything else is tried; a
 // request that carries none releases nothing, so retiring it early buys nothing and
 // costs the reader their only control if that next step then fails.
-func (b *JSONRPCProcess) AnswerOutstandingControlRequests(sink agent.ControlServices) {
+func (b *JSONRPCProcess) AnswerOutstandingControlRequests() {
 	b.outstandingMu.Lock()
 	answerable := make(map[string]*outstandingControlRequest)
 	for requestID, record := range b.outstandingControls {
@@ -275,9 +283,10 @@ func (b *JSONRPCProcess) AnswerOutstandingControlRequests(sink agent.ControlServ
 		b.withdrawGeneration++
 	}
 	b.outstandingMu.Unlock()
-	for requestID, record := range answerable {
+	for _, requestID := range slices.Sorted(maps.Keys(answerable)) {
+		record := answerable[requestID]
 		b.answerWithdrawnControl(requestID, record)
-		sink.CancelControlRequestInstance(requestID, record.instanceID)
+		record.cancelPublication(requestID)
 	}
 }
 
@@ -294,41 +303,65 @@ func (b *JSONRPCProcess) answerWithdrawnControl(requestID string, record *outsta
 
 // SendRawInputToOutstandingRequest is SendRawInput for a provider whose EVERY JSON-RPC
 // control request registers through the publishers above. It refuses a JSON-RPC
-// response whose request the registry no longer holds, with ErrControlRequestNotPending,
+// response whose request the registry no longer holds, with agent.ErrControlRequestNotPending,
 // and writes nothing. Every other frame passes to SendRawInput unchanged.
 //
 // SendRawInput writes such a response anyway, so a reader answer that arrives after a
 // withdrawal or a standing approval reached the provider as a second answer to a closed
 // request. A provider that publishes through a registry of its own (CodeWhale, Copilot,
 // ZCode, Pi) cannot use this method, because its open requests are not in this registry.
-func (b *JSONRPCProcess) SendRawInputToOutstandingRequest(data []byte, stop agent.StopContext) error {
-	// A response carries an id and no method. A request, a notification, and a frame
-	// that is not JSON at all go to SendRawInput, which decides about them as before.
-	var frame struct {
-		ID     json.RawMessage `json:"id"`
-		Method *string         `json:"method"`
+func (b *JSONRPCProcess) SendRawInputToOutstandingRequest(input agent.RawInput) error {
+	// A request, a notification, and a frame that is not JSON at all go to
+	// SendRawInput, which decides about them as before.
+	return b.sendRawInput(input, isJSONRPCResponse(input.Data))
+}
+
+func (b *JSONRPCProcess) sendRawInput(input agent.RawInput, requireOpen bool) error {
+	restore, open, err := b.takeOutstandingControl(input)
+	if err != nil {
+		return err
 	}
-	if json.Unmarshal(data, &frame) != nil || frame.Method != nil || !RawPresent(frame.ID) {
-		return b.SendRawInput(data, stop)
+	if requireOpen && !open {
+		return agent.ErrControlRequestNotPending
 	}
-	restore, open := b.takeOutstandingControl(data)
-	if !open {
-		return ErrControlRequestNotPending
-	}
-	err := b.writeRawFrame(data)
+	err = b.writeRawFrame(input.Data)
 	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
 		restore()
 	}
 	return err
 }
 
+// isJSONRPCResponse reports whether data is a JSON-RPC response: a frame with an id
+// and no method. A request and a notification state a method.
+func isJSONRPCResponse(data []byte) bool {
+	var frame struct {
+		ID     json.RawMessage `json:"id"`
+		Method *string         `json:"method"`
+	}
+	return json.Unmarshal(data, &frame) == nil && frame.Method == nil && RawPresent(frame.ID)
+}
+
+// errStandingApprovalAnswers refuses a reader answer to a request whose standing
+// approval is in flight: the approval answers the request, and a second answer would
+// reach a request that is closed.
+var errStandingApprovalAnswers = fmt.Errorf("%w: a standing approval answers it", agent.ErrControlRequestNotPending)
+
 // takeOutstandingControl removes the record that one outgoing frame answers, and
 // returns the function that puts it back. open reports whether the frame answered a
-// request that the registry held.
+// request that the registry held. It returns errStandingApprovalAnswers, and removes
+// nothing, for a request whose standing approval is in flight.
+//
+// A provider can raise a new request with the wire ID of one that it withdrew
+// (registerControl), and the frame carries no more than that ID. So a frame for a
+// held ID answers that record only when it states the record's own instance
+// (agent.RawInput.ControlInstanceID). It returns agent.ControlInstanceRefusal, and
+// removes nothing, for any other instance, and for a frame that states none.
 //
 // Every control response reaches the provider through SendRawInput, so reading the id
 // there is what keeps the registry to the requests that are still open. A frame that
-// answers nothing (a notification, a prompt) carries no id and changes nothing.
+// answers nothing changes nothing: a notification and a prompt carry no id, and a
+// request that LeapMux sends carries an id of LeapMux's own, which can equal the id of
+// a request that the provider raised.
 //
 // It runs BEFORE the write, because a withdrawal can run during the write -- a
 // provider that reports an interaction resolved, whoever resolved it -- and a record
@@ -338,21 +371,28 @@ func (b *JSONRPCProcess) SendRawInputToOutstandingRequest(data []byte, stop agen
 // later withdrawal still reaches the request. It does nothing when any withdrawal
 // ran in between: a withdrawal of every request (Stop) must not see a request that it
 // retired come back.
-func (b *JSONRPCProcess) takeOutstandingControl(raw []byte) (restore func(), open bool) {
+func (b *JSONRPCProcess) takeOutstandingControl(input agent.RawInput) (restore func(), open bool, err error) {
 	nothing := func() {}
-	wireID, _, found := agent.ExtractJSONRPCID(raw)
-	if !found {
-		return nothing, false
+	if !isJSONRPCResponse(input.Data) {
+		return nothing, false, nil
 	}
-	identity, valid := agent.NewControlRequestIdentity(wireID)
+	identity, valid := agent.JSONRPCControlRequestIdentity(input.Data)
 	if !valid {
-		return nothing, false
+		return nothing, false, nil
 	}
 	b.outstandingMu.Lock()
 	record, open := b.outstandingControls[identity.Key]
-	if !open || record.pending {
+	if !open {
 		b.outstandingMu.Unlock()
-		return nothing, false
+		return nothing, false, nil
+	}
+	if err := agent.ControlInstanceRefusal(record.instanceID, input.ControlInstanceID); err != nil {
+		b.outstandingMu.Unlock()
+		return nothing, false, err
+	}
+	if record.pending {
+		b.outstandingMu.Unlock()
+		return nothing, false, errStandingApprovalAnswers
 	}
 	delete(b.outstandingControls, identity.Key)
 	generation := b.withdrawGeneration
@@ -367,7 +407,7 @@ func (b *JSONRPCProcess) takeOutstandingControl(raw []byte) (restore func(), ope
 			b.outstandingControls = make(map[string]*outstandingControlRequest)
 		}
 		b.outstandingControls[identity.Key] = record
-	}, true
+	}, true, nil
 }
 
 // MCPElicitationCancelAnswer is the action the Model Context Protocol defines for an

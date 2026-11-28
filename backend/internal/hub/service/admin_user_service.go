@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -257,12 +256,19 @@ func adminSessionToProto(s store.ActiveSession) *leapmuxv1.AdminSession {
 }
 
 func (s *AdminUserService) ListUsers(ctx context.Context, req *leapmuxv1.ListUsersRequest) (*leapmuxv1.ListUsersResponse, error) {
+	query := strings.TrimSpace(req.GetQuery())
+	idPrefix := strings.TrimSpace(req.GetIdPrefix())
+	if query != "" && idPrefix != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "query and id_prefix cannot be combined")
+	}
 	params := store.ListAllUsersParams{
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}
 	var page store.Page[store.UserListItem]
 	var err error
-	if q := req.GetQuery(); q != "" {
+	if idPrefix == "" && req.GetQuery() != "" {
+		q := req.GetQuery()
 		page, err = s.store.Users().Search(ctx, store.SearchUsersParams{
 			Query:      &q,
 			PageParams: params.PageParams,
@@ -289,12 +295,12 @@ func (s *AdminUserService) GetUser(ctx context.Context, req *leapmuxv1.GetUserRe
 }
 
 // Creating an account is creating durable new authority: this verb takes a
-// password the caller chooses and an is_admin flag, so a stolen credential
-// that reaches it does not need to defeat any ceiling -- it makes a fresh
-// administrator and signs in as them. See
-// requireElevatedSessionForDurableAuthority.
+// password the caller chooses and an is_admin flag. It requires an elevated
+// administrator credential (browser session or CLI credential with admin:users
+// scope that completed browser step-up elevation) and commits under
+// commitUnderElevation.
 func (s *AdminUserService) CreateUser(ctx context.Context, req *leapmuxv1.CreateUserRequest) (*leapmuxv1.CreateUserResponse, error) {
-	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	actor, err := requireElevatedSessionOrControlCLI(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -438,22 +444,9 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 	return value, msg.EmailVerified != nil || value != user.EmailVerified
 }
 
-// An account's email address is a RECOVERY IDENTITY, so writing one is
-// creating durable new authority.
-//
-// {email: attacker@example.com, email_verified: true} in one call moves where
-// the public RequestAccountRecovery mails a recovery link, and that verb refuses
-// only an UNVERIFIED address -- so this pair hands over any account, exactly
-// as ResetPassword does, and leaves the victim's password working until the
-// attacker chooses to reset it. Restricting ResetPassword and not this
-// gained nothing: an un-elevated administrator cookie reached the same
-// outcome by the longer route.
-//
-// TWO checks, because the verb writes two classes. The email fields take the
-// strict session rule its sibling ResetPassword takes; a display-name edit or
-// a cleared pending address only needs the acting credential's own proven
-// factor, and refusing a bearer for those would break
-// `leapmux control admin user update --display-name` for no gain.
+// UpdateUser edits profile, email, and verification fields on an account under
+// an elevated administrator credential (browser session or elevated CLI
+// credential with admin:users scope).
 func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.UpdateUserRequest) (*leapmuxv1.UpdateUserResponse, error) {
 	msg := req
 	updateDisplayName := msg.DisplayName != nil
@@ -465,15 +458,12 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 	}
 	var actor *auth.UserInfo
 	var err error
-	if auth.UpdateUserRequiresSession(msg) {
-		actor, err = requireElevatedSessionForDurableAuthority(ctx, s.now())
+	if updateEmail || updateEmailVerified {
+		actor, err = requireElevatedSessionOrControlCLI(ctx, s.now())
 	} else {
 		actor, err = requireElevatedActor(ctx, s.now())
 	}
 	if err != nil {
-		if errors.Is(err, auth.ErrElevationRequired) {
-			serverCallInfo(ctx).ResponseHeader().Set(ElevationRequiredHeader, "1")
-		}
 		return nil, err
 	}
 	user, err := resolveAdminUser(ctx, s.store, msg.GetUser())
@@ -588,11 +578,11 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 // identity, and destruction is one: this verb soft-deletes the account, every
 // workspace it owns and every worker it registered, revokes every credential
 // it holds, and clears its passkeys -- with force, on another administrator.
-// requireElevatedActor rather than the stricter session rule, because
-// deletion creates no NEW way into an account and `leapmux control admin user
-// delete` is a documented headless verb; the admin scope that admits a
-// credential here was itself granted at a browser consent that demanded a
-// proven factor.
+// requireElevatedActor admits either an elevated browser session or an
+// elevated API token, because `leapmux control admin user delete` is a
+// documented CLI verb and deletion creates no new way into an account. Both
+// credential types require a live step-up elevation window proven by an
+// interactive factor.
 func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.DeleteUserRequest) (*leapmuxv1.DeleteUserResponse, error) {
 	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
@@ -665,15 +655,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 	// would leave a worker told it was deleted when it was not.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
 	for _, workerID := range workerIDs {
-		if err := s.workerEffects.Apply(ctx, workerID, user.ID); err != nil {
-			// The user IS deleted and its workers ARE soft-deleted. A worker
-			// that missed its stop instruction is refused at its next
-			// connect, because its row is deleted, so this is worth a log,
-			// not a failed response that invites a retry of an
-			// already-committed deletion.
-			slog.Warn("user deleted but one worker was not told to stop",
-				"user_id", user.ID, "worker_id", workerID, "error", err)
-		}
+		s.workerEffects.Apply(ctx, workerID, user.ID)
 	}
 	return &leapmuxv1.DeleteUserResponse{}, nil
 }
@@ -706,8 +688,6 @@ func liveWorkerIDs(ctx context.Context, st store.Store, owner userid.UserID) ([]
 	cursor := ""
 	ownerID := owner.String()
 	for {
-		// The ordinary owner listing excludes deregistering workers. Deletion
-		// must tell those workers too when an earlier stop instruction failed.
 		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
 			UserID:     &ownerID,
 			PageParams: normalizePageParams(cursor, contracts.MaxPageLimit),
@@ -725,10 +705,11 @@ func liveWorkerIDs(ctx context.Context, st store.Store, owner userid.UserID) ([]
 	}
 }
 
-// Granting administration is creating durable new authority. See
-// requireElevatedSessionForDurableAuthority.
+// Granting or revoking administration requires an elevated administrator
+// credential (browser session or elevated CLI credential with admin:users
+// scope) and commits under commitUnderElevation.
 func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetUserAdminRequest) (*leapmuxv1.SetUserAdminResponse, error) {
-	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	actor, err := requireElevatedSessionOrControlCLI(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -794,11 +775,11 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetU
 // Unlike self-demotion on SetUserAdmin it is not irreversible -- the caller
 // chose the new password and can log in again with it -- so it takes no
 // force flag.
-// Setting an account's password without the old one is creating durable new
-// authority: it is account takeover by design, which is why it is an admin
-// verb at all. See requireElevatedSessionForDurableAuthority.
+// Setting an account's password without the old one requires an elevated
+// administrator credential (browser session or elevated CLI credential with
+// admin:users scope) and commits under commitUnderElevation.
 func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.ResetPasswordRequest) (*leapmuxv1.ResetPasswordResponse, error) {
-	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	actor, err := requireElevatedSessionOrControlCLI(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -875,6 +856,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.
 	}
 	page, err := s.store.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     uid,
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}, s.now().UTC())
 	if err != nil {
@@ -898,6 +880,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.
 
 func (s *AdminUserService) ListSessions(ctx context.Context, req *leapmuxv1.ListSessionsRequest) (*leapmuxv1.ListSessionsResponse, error) {
 	page, err := s.store.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}, s.now().UTC())
 	if err != nil {
@@ -965,6 +948,7 @@ func (s *AdminUserService) ListAPITokens(ctx context.Context, req *leapmuxv1.Lis
 	page, err := s.store.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
 		UserID:         userFilter,
 		ClientID:       req.GetClientId(),
+		IDPrefix:       req.GetIdPrefix(),
 		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
 	})
@@ -1180,6 +1164,7 @@ func (s *AdminUserService) ListDelegationTokens(ctx context.Context, req *leapmu
 	}
 	page, err := s.store.DelegationTokens().ListAll(ctx, store.ListAllDelegationTokensParams{
 		UserID:         userFilter,
+		IDPrefix:       req.GetIdPrefix(),
 		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
 	})

@@ -13,6 +13,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
+import { TERMINAL_SCROLLBACK_LINES } from '~/generated/contracts/terminal'
 import { DEFAULT_THEME_ID, MATCH_UI, paletteColorToHex, resolveThemeSelection, resolveVariant, themeById } from '~/styles/themes'
 import { scrollbarWidthPx } from '~/styles/tokens'
 import { loadBrowserPrefs } from './browserPreferences'
@@ -448,6 +449,9 @@ export function createTerminalInstance(
   let confirmLink = refuseLinkWithoutPrompt
   const terminal = new Terminal({
     cursorBlink: true,
+    // The CLI's rendered `terminal read` keeps the same scrollback, so it
+    // prints the lines that this terminal can scroll back to.
+    scrollback: TERMINAL_SCROLLBACK_LINES,
     // Let terminal applications negotiate the CSI-u keyboard protocol. xterm
     // keeps legacy input until an application opts in, then reports modifiers,
     // event types, alternate keys, and associated text as requested.

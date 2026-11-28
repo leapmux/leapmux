@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -17,12 +18,18 @@ import (
 type blockingControlRecord struct {
 	AgentID        string
 	AgentSessionID string
+	NativeTurnID   string
+	NativeInputIDs []string
 	RequestID      string
 	Payload        []byte
 	SourceSeq      int64
 	ClaimToken     string
 	CreatedAt      time.Time
 	publisher      any
+}
+
+func (r blockingControlRecord) matchesSnapshot(claimToken, sessionID string, payload []byte) bool {
+	return r.ClaimToken == claimToken && r.AgentSessionID == sessionID && bytes.Equal(r.Payload, payload)
 }
 
 func (r blockingControlRecord) toStored() storedControlRequest {
@@ -51,6 +58,18 @@ func storedControlFromDB(row db.ControlRequest) storedControlRequest {
 	}
 }
 
+func storedControlFromAnswer(answer db.ControlResponseAnswer) storedControlRequest {
+	return storedControlRequest{
+		AgentID:        answer.AgentID,
+		AgentSessionID: answer.AgentSessionID,
+		RequestID:      answer.RequestID,
+		Payload:        answer.RequestPayload,
+		SourceSeq:      answer.SourceSeq,
+		ClaimToken:     answer.ClaimToken,
+		NonBlocking:    answer.NonBlocking,
+	}
+}
+
 // storedControlRequest unifies in-memory blocking control requests and SQLite
 // non-blocking control requests behind one read shape.
 type storedControlRequest struct {
@@ -64,8 +83,19 @@ type storedControlRequest struct {
 	CreatedAt      time.Time
 }
 
+func (r storedControlRequest) controlRequest() agent.ControlRequest {
+	return agent.ControlRequest{
+		RequestID:      r.RequestID,
+		Payload:        r.Payload,
+		SourceSeq:      r.SourceSeq,
+		AgentSessionID: r.AgentSessionID,
+		NonBlocking:    r.NonBlocking,
+	}
+}
+
 func cloneBlockingControlRecord(rec blockingControlRecord) blockingControlRecord {
 	rec.Payload = slices.Clone(rec.Payload)
+	rec.NativeInputIDs = slices.Clone(rec.NativeInputIDs)
 	return rec
 }
 
@@ -105,7 +135,7 @@ func (s *controlRequestStore) rangeBlockingAgentIDs(fn func(agentID string)) {
 	}
 }
 
-func (s *controlRequestStore) hasBlockingInstance(agentID, requestID, claimToken string) bool {
+func (s *controlRequestStore) hasBlockingSnapshot(agentID, requestID, claimToken, sessionID string, payload []byte) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	byReq := s.blocking[agentID]
@@ -113,7 +143,46 @@ func (s *controlRequestStore) hasBlockingInstance(agentID, requestID, claimToken
 		return false
 	}
 	rec, ok := byReq[requestID]
-	return ok && rec.ClaimToken == claimToken
+	return ok && rec.matchesSnapshot(claimToken, sessionID, payload)
+}
+
+func (s *controlRequestStore) setBlockingNativeControlInputs(agentID, sessionID, requestID, claimToken string, inputIDs []string) bool {
+	if sessionID == "" || requestID == "" || claimToken == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byReq := s.blocking[agentID]
+	if byReq == nil {
+		return false
+	}
+	rec, ok := byReq[requestID]
+	if !ok || rec.AgentSessionID != sessionID || rec.ClaimToken != claimToken {
+		return false
+	}
+	rec.NativeInputIDs = slices.Clone(inputIDs)
+	byReq[requestID] = rec
+	return true
+}
+
+func (s *controlRequestStore) hasBlockingControlForInput(agentID, sessionID, nativeTurnID, nativeInputID string) bool {
+	if sessionID == "" || (nativeTurnID == "" && nativeInputID == "") {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.blocking[agentID] {
+		if rec.AgentSessionID != sessionID {
+			continue
+		}
+		if nativeTurnID != "" && rec.NativeTurnID == nativeTurnID {
+			return true
+		}
+		if nativeInputID != "" && slices.Contains(rec.NativeInputIDs, nativeInputID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *controlRequestStore) upsertBlocking(rec blockingControlRecord) blockingControlRecord {
@@ -129,8 +198,12 @@ func (s *controlRequestStore) upsertBlocking(rec blockingControlRecord) blocking
 	}
 	rec = cloneBlockingControlRecord(rec)
 	if existing, ok := byReq[rec.RequestID]; ok {
-		if existing.ClaimToken == rec.ClaimToken && bytes.Equal(existing.Payload, rec.Payload) && existing.AgentSessionID == rec.AgentSessionID && existing.SourceSeq > 0 {
+		sameInstance := existing.matchesSnapshot(rec.ClaimToken, rec.AgentSessionID, rec.Payload)
+		if sameInstance && existing.SourceSeq > 0 {
 			rec.SourceSeq = existing.SourceSeq
+		}
+		if sameInstance && len(rec.NativeInputIDs) == 0 && len(existing.NativeInputIDs) > 0 {
+			rec.NativeInputIDs = slices.Clone(existing.NativeInputIDs)
 		}
 		if !existing.CreatedAt.IsZero() {
 			rec.CreatedAt = existing.CreatedAt
@@ -143,7 +216,7 @@ func (s *controlRequestStore) upsertBlocking(rec blockingControlRecord) blocking
 	return cloneBlockingControlRecord(rec)
 }
 
-func (s *controlRequestStore) deleteBlocking(agentID, requestID, claimToken string) (blockingControlRecord, bool) {
+func (s *controlRequestStore) deleteBlockingIf(agentID, requestID string, match func(blockingControlRecord) bool) (blockingControlRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	byReq := s.blocking[agentID]
@@ -151,10 +224,7 @@ func (s *controlRequestStore) deleteBlocking(agentID, requestID, claimToken stri
 		return blockingControlRecord{}, false
 	}
 	rec, ok := byReq[requestID]
-	if !ok {
-		return blockingControlRecord{}, false
-	}
-	if claimToken != "" && rec.ClaimToken != claimToken {
+	if !ok || !match(rec) {
 		return blockingControlRecord{}, false
 	}
 	delete(byReq, requestID)
@@ -162,6 +232,18 @@ func (s *controlRequestStore) deleteBlocking(agentID, requestID, claimToken stri
 		delete(s.blocking, agentID)
 	}
 	return cloneBlockingControlRecord(rec), true
+}
+
+func (s *controlRequestStore) deleteBlocking(agentID, requestID, claimToken string) (blockingControlRecord, bool) {
+	return s.deleteBlockingIf(agentID, requestID, func(rec blockingControlRecord) bool {
+		return claimToken == "" || rec.ClaimToken == claimToken
+	})
+}
+
+func (s *controlRequestStore) deleteObservedBlocking(agentID, requestID, claimToken, sessionID string, payload []byte) (blockingControlRecord, bool) {
+	return s.deleteBlockingIf(agentID, requestID, func(rec blockingControlRecord) bool {
+		return rec.matchesSnapshot(claimToken, sessionID, payload)
+	})
 }
 
 func (s *controlRequestStore) drainBlocking(agentID string) []blockingControlRecord {
@@ -203,6 +285,22 @@ func (s *controlRequestStore) drainBlockingForPublisher(agentID string, publishe
 		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.RequestID, b.RequestID))
 	})
 	return out
+}
+
+// lookupClaim resolves the claim token of a pending control request from
+// memory (blocking) or SQLite (non-blocking) without loading the SQLite payload.
+func (s *controlRequestStore) lookupClaim(ctx context.Context, queries *db.Queries, agentID, requestID string) (string, bool, error) {
+	if rec, ok := s.getBlocking(agentID, requestID); ok {
+		return rec.ClaimToken, true, nil
+	}
+	claim, err := queries.GetControlRequestClaim(ctx, db.GetControlRequestClaimParams{AgentID: agentID, RequestID: requestID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return claim, true, nil
 }
 
 // lookup resolves a pending control request from memory (blocking) or SQLite (non-blocking).

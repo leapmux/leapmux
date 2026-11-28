@@ -1,6 +1,7 @@
 package antigravity
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -50,6 +52,8 @@ func TestAntigravityAutoAnswerModes(t *testing.T) {
 		{mode: contracts.AntigravityModePlan, action: "write_file", target: inside},
 		{mode: contracts.AntigravityModeAcceptEdits, action: "write_file", target: inside, want: true},
 		{mode: contracts.AntigravityModeAcceptEdits, action: "command", target: inside},
+		{mode: contracts.AntigravityModeAcceptEdits, action: "read_file", target: inside},
+		{mode: contracts.AntigravityModeAcceptEdits, action: "mcp", target: inside},
 		{mode: contracts.AntigravityModeAcceptEdits, action: "write_file", target: outside},
 		{mode: contracts.AntigravityModeAcceptEdits, action: "write_file", target: workspace},
 		{mode: contracts.AntigravityModeBypass, action: "mcp", target: "server/tool", want: true},
@@ -57,8 +61,9 @@ func TestAntigravityAutoAnswerModes(t *testing.T) {
 		permission := &permissionInteraction{}
 		permission.Resource.Action = tc.action
 		permission.Resource.Target = tc.target
-		assert.Equal(t, tc.want, a.autoAnswerLocked(tc.mode, permission), "%s %s %s", tc.mode, tc.action, tc.target)
+		assert.Equal(t, tc.want, a.autoAnswer(tc.mode, permission), "%s %s %s", tc.mode, tc.action, tc.target)
 	}
+	assert.False(t, a.autoAnswer(contracts.AntigravityModeBypass, nil), "nil permission must not be auto-answered in bypass mode")
 }
 
 func TestAntigravityAcceptEditsRefusesSymlinkEscape(t *testing.T) {
@@ -95,7 +100,7 @@ func TestAntigravityAcceptEditsResolvesSymlinksBeforeParentSegments(t *testing.T
 				permission := &permissionInteraction{}
 				permission.Resource.Action = contracts.AntigravityPermissionActionWriteFile
 				permission.Resource.Target = raw
-				assert.False(t, a.autoAnswerLocked(contracts.AntigravityModeAcceptEdits, permission))
+				assert.False(t, a.autoAnswer(contracts.AntigravityModeAcceptEdits, permission))
 				writtenTarget := outsideTarget
 				untouchedTarget := filepath.Join(workspace, "secret.txt")
 				if runtime.GOOS == "windows" {
@@ -164,10 +169,11 @@ func TestAntigravityWorkspacePathBoundaries(t *testing.T) {
 
 func TestAntigravityPermissionPublishesAndWithdraws(t *testing.T) {
 	a, sink := testControlAgent(t)
-	step := antigravityStep{Status: contracts.AntigravityStepStatusWaiting}
-	step.Type = contracts.AntigravityStepTypeGeneric
-	step.RequestedInteraction = json.RawMessage(`{"permission":{"resource":{"action":"command","target":"echo"},"actionDescription":"Run echo"}}`)
-	a.root.steps[0] = &stepState{status: contracts.AntigravityStepStatusWaiting, raw: []byte(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_WAITING","metadata":{"toolCall":{"id":"call","name":"run_command"}},"requestedInteraction":{"permission":{"resource":{"action":"command","target":"echo"}}}}`)}
+	a.root.trajectoryID = "trajectory"
+	raw := []byte(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_WAITING","metadata":{"toolCall":{"id":"call","name":"run_command"}},"requestedInteraction":{"permission":{"resource":{"action":"command","target":"echo"},"actionDescription":"Run echo"}}}`)
+	step, err := decodeStep(raw)
+	require.NoError(t, err)
+	a.root.steps[0] = &stepState{status: contracts.AntigravityStepStatusWaiting, raw: raw}
 	a.registerInteraction(a.root, 0, step)
 	require.Equal(t, 1, sink.PublishedControlCount())
 	request := sink.LastPublishedControl()
@@ -176,6 +182,38 @@ func TestAntigravityPermissionPublishesAndWithdraws(t *testing.T) {
 	step.Status = contracts.AntigravityStepStatusCanceled
 	assert.NoError(t, a.applyStep(a.root, 0, step, a.root.steps[0].raw))
 	assert.Equal(t, []string{request.RequestID}, sink.CanceledControls())
+}
+
+// Every interaction control has a request ID that AnswerControlRequest reads
+// back, so each answer that its prompt offers can reach the step. A step that
+// gives no such ID has no control.
+func TestNewInteractionControlBuildsOnlyAnAnswerableRequest(t *testing.T) {
+	step, err := decodeStep(waitingInteractionStep("permission"))
+	require.NoError(t, err)
+	control, err := newInteractionControl("cascade", "trajectory", 3, step)
+	require.NoError(t, err)
+	address, err := antigravityAddressOf(control.requestID)
+	require.NoError(t, err)
+	assert.Equal(t, antigravityAddress{cascadeID: "cascade", trajectoryID: "trajectory", stepIndex: 3}, address)
+	assert.NotEmpty(t, control.instanceID)
+	assert.NotNil(t, control.permission)
+
+	unknown, err := decodeStep(waitingStep(`{"browserAction":{}}`, 0))
+	require.NoError(t, err)
+	for name, tc := range map[string]struct {
+		cascadeID, trajectoryID string
+		step                    antigravityStep
+		reason                  string
+	}{
+		"no trajectory":                        {cascadeID: "cascade", step: step, reason: "trajectory"},
+		"no cascade":                           {trajectoryID: "trajectory", step: step, reason: `"antigravity::trajectory:3"`},
+		"a colon in the cascade":               {cascadeID: "cas:cade", trajectoryID: "trajectory", step: step, reason: `"antigravity:cas:cade:trajectory:3"`},
+		"a colon in the trajectory":            {cascadeID: "cascade", trajectoryID: "traj:ectory", step: step, reason: `"antigravity:cascade:traj:ectory:3"`},
+		"an interaction LeapMux cannot answer": {cascadeID: "cascade", trajectoryID: "trajectory", step: unknown, reason: "browserAction"},
+	} {
+		_, err := newInteractionControl(tc.cascadeID, tc.trajectoryID, 3, tc.step)
+		assert.ErrorContains(t, err, tc.reason, name)
+	}
 }
 
 func TestAntigravityPlanReviewPublishesSavedPlan(t *testing.T) {
@@ -195,6 +233,7 @@ func TestAntigravityPlanReviewPublishesSavedPlan(t *testing.T) {
 	assert.Contains(t, string(content), "Step one")
 	require.Equal(t, 1, sink.PublishedControlCount())
 	assert.Contains(t, string(sink.LastPublishedControl().Payload), contracts.AntigravityControlToolPlanReview)
+	agenttest.AssertPublishedControlKeys(t, antigravityProvider{}, sink)
 }
 
 func TestAntigravityPlanReviewRefusesOutsidePath(t *testing.T) {
@@ -210,8 +249,15 @@ func TestAntigravityPlanReviewRefusesOutsidePath(t *testing.T) {
 	assert.Zero(t, sink.PublishedControlCount())
 }
 
-func TestAntigravityControlAnswerIgnoresOnlyStaleInputNotRegistered(t *testing.T) {
+// "input not registered" refuses the answer of a step that still waits, and
+// the refusal stays an error. An answer to a step whose control LeapMux no
+// longer holds reaches nothing, so it is refused before it is sent: it
+// returns ErrControlRequestNotPending, not nil, because nil would make the
+// Worker record the answer as delivered and write a transcript row for it.
+func TestAntigravityControlAnswerRefusesAStepThatTakesNoAnswer(t *testing.T) {
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("input not registered"))
 	}))
@@ -222,11 +268,14 @@ func TestAntigravityControlAnswerIgnoresOnlyStaleInputNotRegistered(t *testing.T
 	a, _ := testControlAgent(t)
 	a.rpc = antigravityRPC{endpoint: endpoint, timeout: time.Second}
 	a.root.trajectoryID = "trajectory"
-	a.root.controls[2] = &antigravityControl{kind: "permission", cascadeID: a.root.id, trajectoryID: a.root.trajectoryID, stepIndex: 2}
-	answer := []byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":2,"permission":{"allow":true}}}`)
-	assert.Error(t, a.executeControlReply(answer))
+	a.root.controls[2] = &antigravityControl{kind: antigravityControlPermission, instanceID: "instance", cascadeID: a.root.id, trajectoryID: a.root.trajectoryID, stepIndex: 2}
+	answer := agent.RawInput{Data: []byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":2,"permission":{"allow":true}}}`), ControlInstanceID: "instance"}
+	err = a.SendRawInput(answer)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, agent.ErrControlRequestNotPending, "the step still waits, so its own refusal stands")
 	delete(a.root.controls, 2)
-	assert.NoError(t, a.executeControlReply(answer))
+	assert.ErrorIs(t, a.SendRawInput(answer), agent.ErrControlRequestNotPending)
+	assert.Equal(t, int32(1), calls.Load(), "the answer to a step with no control is not sent")
 }
 
 func TestAntigravityControlReplyPreservesUncertainDelivery(t *testing.T) {
@@ -241,8 +290,8 @@ func TestAntigravityControlReplyPreservesUncertainDelivery(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	})
 	a.root.trajectoryID = "trajectory"
-	a.root.controls[2] = &antigravityControl{kind: "permission", cascadeID: a.root.id, trajectoryID: a.root.trajectoryID, stepIndex: 2}
-	err := a.executeControlReply([]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":2,"permission":{"allow":true}}}`))
+	a.root.controls[2] = &antigravityControl{kind: antigravityControlPermission, instanceID: "instance", cascadeID: a.root.id, trajectoryID: a.root.trajectoryID, stepIndex: 2}
+	err := a.SendRawInput(agent.RawInput{Data: []byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":2,"permission":{"allow":true}}}`), ControlInstanceID: "instance"})
 	assert.Equal(t, int32(1), accepted.Load())
 	assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
@@ -259,15 +308,89 @@ func TestAntigravityControlReplyRechecksRetirement(t *testing.T) {
 		_, _ = w.Write([]byte("input not registered"))
 	})
 	a.root.trajectoryID = "trajectory"
-	a.root.controls[2] = &antigravityControl{kind: "permission", cascadeID: a.root.id, trajectoryID: a.root.trajectoryID, stepIndex: 2}
+	a.root.controls[2] = &antigravityControl{kind: antigravityControlPermission, instanceID: "instance", cascadeID: a.root.id, trajectoryID: a.root.trajectoryID, stepIndex: 2}
 	done := make(chan error, 1)
 	go func() {
-		done <- a.executeControlReply([]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":2,"permission":{"allow":true}}}`))
+		done <- a.SendRawInput(agent.RawInput{Data: []byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":2,"permission":{"allow":true}}}`), ControlInstanceID: "instance"})
 	}()
 	receiveTestValue(t, entered)
 	a.withdrawInteraction(a.root, 2)
 	unblock()
-	assert.NoError(t, receiveTestValue(t, done))
+	// The language server took no answer, and the step's control is gone, so
+	// the answer reached nothing. nil would make the Worker record it as
+	// delivered.
+	err := receiveTestValue(t, done)
+	assert.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+	assert.ErrorContains(t, err, "input not registered")
+}
+
+// The language server addresses an answer to a step, not to one interaction
+// of it, and a step can replace the interaction that it waits for. So an
+// answer reaches the language server only while the request instance that it
+// answers is the step's current control. An answer to the replaced
+// permission, and an answer that states no instance, reach nothing, and the
+// refusal lets the Worker release the answer. The answer to the current
+// question reaches the step.
+func TestAntigravityControlReplyRefusesAReplacedInstance(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	rpc, server := newRecordedLanguageServer(t)
+	a.Mu.Lock()
+	a.rpc = rpc
+	a.Mu.Unlock()
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{waitingInteractionStep("permission")}))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	replaced := sink.LastPublishedControl()
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{waitingInteractionStep("question")}))
+	require.Equal(t, 2, sink.PublishedControlCount())
+	current := sink.LastPublishedControl()
+	require.Equal(t, replaced.RequestID, current.RequestID, "the step keeps its request ID")
+
+	allow, err := antigravityPermissionAnswer(replaced.RequestID, true, "")
+	require.NoError(t, err)
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: allow, ControlInstanceID: replaced.InstanceID}), agent.ErrControlInstanceReplaced)
+	assert.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: allow}), agent.ErrControlInstanceUnstated)
+	assert.Empty(t, server.answered(), "no answer reaches the question that replaced the permission")
+
+	address, err := antigravityAddressOf(current.RequestID)
+	require.NoError(t, err)
+	dismiss, err := address.answer("askQuestion", map[string]any{"cancelled": true})
+	require.NoError(t, err)
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: dismiss, ControlInstanceID: current.InstanceID}))
+	require.Len(t, server.answered(), 1)
+	assert.JSONEq(t, `{"trajectoryId":"trajectory","stepIndex":0,"askQuestion":{"cancelled":true}}`, string(server.answered()[0]))
+}
+
+// The step replaces its control before it withdraws the replaced instance
+// (registerInteraction). A manual answer to the replaced instance that
+// arrives between the two reaches nothing either.
+func TestAntigravityControlReplyRefusesAnInstanceThatItsCancelStillFollows(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	rpc, server := newRecordedLanguageServer(t)
+	a.Mu.Lock()
+	a.rpc = rpc
+	a.Mu.Unlock()
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{waitingInteractionStep("permission")}))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	replaced := sink.LastPublishedControl()
+
+	sink.cancelEntered = make(chan struct{}, 1)
+	var unblock func()
+	sink.cancelRelease, unblock = newTestGate(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- a.applyUpdate(a.root, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{waitingInteractionStep("question")}), false)
+	}()
+	receiveTestValue(t, sink.cancelEntered)
+	allow, err := antigravityPermissionAnswer(replaced.RequestID, true, "")
+	require.NoError(t, err)
+	err = a.SendRawInput(agent.RawInput{Data: allow, ControlInstanceID: replaced.InstanceID})
+	unblock()
+	require.NoError(t, receiveTestValue(t, done))
+	require.ErrorIs(t, err, agent.ErrControlInstanceReplaced)
+	assert.Empty(t, server.answered(), "no answer reaches the question that replaced the permission")
+	assert.Equal(t, []string{replaced.RequestID}, sink.CanceledControls())
+	require.Equal(t, 2, sink.PublishedControlCount(), "the user sees the question")
+	assert.NotNil(t, agenttest.ControlPromptOf(antigravityProvider{}, sink.LastPublishedControl().Payload).GetQuestion())
 }
 
 func TestAntigravityPlanReadUsesCheckedDescriptor(t *testing.T) {
@@ -293,15 +416,20 @@ func TestAntigravityPlanReadUsesCheckedDescriptor(t *testing.T) {
 	assert.Equal(t, "checked plan", string(content))
 }
 
+// An answer reaches the language server only while its control is current.
+// Every other answer reached nothing, so it returns ErrControlRequestNotPending
+// rather than nil, which would make the Worker record it as delivered. None of
+// these controls was replaced by another instance of the same request, so
+// none is the silent refusal of a replaced instance.
 func TestAntigravityManualReplyRequiresCurrentObserver(t *testing.T) {
-	for _, scenario := range []string{"current", "closed", "old generation", "wrong trajectory", "absent control", "discarded", "replacement"} {
+	for _, scenario := range []string{"current", "closed", "old generation", "wrong trajectory", "absent control", "discarded", "replacement", "unknown cascade"} {
 		t.Run(scenario, func(t *testing.T) {
 			a, _ := testControlAgent(t)
 			var calls atomic.Int32
 			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { calls.Add(1); _, _ = w.Write([]byte(`{}`)) })
 			state := a.root
 			state.trajectoryID = "trajectory"
-			state.controls[0] = &antigravityControl{kind: "permission", cascadeID: state.id, trajectoryID: state.trajectoryID, stepIndex: 0}
+			state.controls[0] = &antigravityControl{kind: antigravityControlPermission, instanceID: "instance", cascadeID: state.id, trajectoryID: state.trajectoryID, stepIndex: 0}
 			trajectory := "trajectory"
 			switch scenario {
 			case "current":
@@ -318,13 +446,338 @@ func TestAntigravityManualReplyRequiresCurrentObserver(t *testing.T) {
 			case "replacement":
 				a.installRoot(state.id, false)
 			}
-			raw, _ := json.Marshal(map[string]any{"cascadeId": state.id, "interaction": map[string]any{"trajectoryId": trajectory, "stepIndex": 0, "permission": map[string]any{"allow": true}}})
-			require.NoError(t, a.executeControlReply(raw))
-			expected := int32(0)
-			if scenario == "current" {
-				expected = 1
+			cascadeID := state.id
+			if scenario == "unknown cascade" {
+				cascadeID = "another-cascade"
 			}
-			assert.Equal(t, expected, calls.Load())
+			raw, _ := json.Marshal(map[string]any{"cascadeId": cascadeID, "interaction": map[string]any{"trajectoryId": trajectory, "stepIndex": 0, "permission": map[string]any{"allow": true}}})
+			err := a.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: "instance"})
+			if scenario == "current" {
+				require.NoError(t, err)
+				assert.Equal(t, int32(1), calls.Load())
+				return
+			}
+			assert.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+			assert.NotErrorIs(t, err, agent.ErrControlInstanceReplaced)
+			assert.Zero(t, calls.Load())
 		})
 	}
+}
+
+type atomicSteerBindSink struct {
+	agent.ProviderServices
+	publishCount atomic.Int32
+	bindAttempts atomic.Int32
+	failBind     atomic.Bool
+	publishEnter chan struct{}
+	publishGate  <-chan struct{}
+	bound        chan agent.NativeControlInputs
+}
+
+func (s *atomicSteerBindSink) PublishControlRequest(req agent.ControlRequest) error {
+	s.publishCount.Add(1)
+	if s.publishEnter != nil {
+		s.publishEnter <- struct{}{}
+		<-s.publishGate
+	}
+	return s.ProviderServices.PublishControlRequest(req)
+}
+
+func (s *atomicSteerBindSink) SetNativeControlInputs(binding agent.NativeControlInputs) error {
+	s.bindAttempts.Add(1)
+	if s.failBind.Load() {
+		return fmt.Errorf("transient binding failure")
+	}
+	err := s.ProviderServices.SetNativeControlInputs(binding)
+	if err == nil && s.bound != nil {
+		s.bound <- binding
+	}
+	return err
+}
+
+func TestAntigravityChangedExecutionIDReplacesExistingControl(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	stepForExec := func(execID string) json.RawMessage {
+		raw, err := json.Marshal(map[string]any{
+			"type":                 contracts.AntigravityStepTypeGeneric,
+			"status":               contracts.AntigravityStepStatusWaiting,
+			"metadata":             map[string]any{"executionId": execID, "toolCall": map[string]any{"id": "call-0", "name": "run_command"}},
+			"requestedInteraction": map[string]any{"permission": map[string]any{"resource": map[string]any{"action": "command", "target": "echo hi"}}},
+		})
+		require.NoError(t, err)
+		return raw
+	}
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{stepForExec("exec-1")}))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	first := sink.LastPublishedControl()
+	assert.Equal(t, "exec-1", first.NativeTurnID)
+
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{stepForExec("exec-2")}))
+	require.Equal(t, 2, sink.PublishedControlCount())
+	second := sink.LastPublishedControl()
+	assert.Equal(t, first.RequestID, second.RequestID)
+	assert.NotEqual(t, first.InstanceID, second.InstanceID)
+	assert.Equal(t, "exec-2", second.NativeTurnID)
+	assert.Equal(t, []string{first.RequestID}, sink.CanceledControls())
+}
+
+func TestAntigravityRepeatedWaitingFrameAfterModeDowngradePublishesControl(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	raw := waitingInteractionStep("permission")
+	step, err := decodeStep(raw)
+	require.NoError(t, err)
+	control, err := newInteractionControl(a.root.id, a.root.trajectoryID, 0, step)
+	require.NoError(t, err)
+	// Seed an unclaimed, unpublished control as if registered under Bypass before claim, then downgrade to Default.
+	a.Mu.Lock()
+	a.mode = contracts.AntigravityModeDefault
+	a.root.controls[0] = control
+	a.root.steps[0] = &stepState{status: contracts.AntigravityStepStatusWaiting, raw: raw}
+	a.Mu.Unlock()
+
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{raw}))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	assert.Equal(t, control.instanceID, sink.LastPublishedControl().InstanceID)
+}
+
+func TestAntigravityRetireControlClearsPendingPublicationAndSteerBindingOwners(t *testing.T) {
+	t.Run("after publish while steerBinding pending", func(t *testing.T) {
+		a, sink := testControlAgent(t)
+		rpc, _ := fakeAntigravityRPC(t)
+		a.rpc = rpc
+		var spy *atomicSteerBindSink
+		a.root.sink = agent.DecorateProviderServices(a.root.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+			spy = &atomicSteerBindSink{ProviderServices: direct}
+			spy.failBind.Store(true)
+			return spy
+		})
+		feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusRunning, TrajectoryID: "trajectory"})
+		steer, err := a.SteerInput(agent.SteerRequest{Content: "revised"})
+		require.NoError(t, err)
+		feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 3, []int{1}, replyInputStep(steer.InputID, "execution")))
+		permission := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_WAITING","metadata":{"executionId":"execution"},"requestedInteraction":{"permission":{"resource":{"action":"command","target":"printf ready"}}}}`)
+		step, err := decodeStep(permission)
+		require.NoError(t, err)
+		a.registerInteraction(a.root, 2, step)
+		require.Equal(t, int32(1), spy.publishCount.Load())
+		require.True(t, sink.OutputQueue().HasPending())
+
+		a.withdrawInteraction(a.root, 2)
+		assert.Equal(t, []string{"antigravity:cascade:trajectory:2"}, sink.CanceledControls())
+		assert.False(t, sink.OutputQueue().HasPending())
+	})
+
+	t.Run("while publication failed", func(t *testing.T) {
+		a, sink := publicationTestAgent(t, nil)
+		sink.fail.Store(true)
+		step, err := decodeStep(waitingInteractionStep("permission"))
+		require.NoError(t, err)
+		a.registerInteraction(a.root, 0, step)
+		require.Zero(t, sink.PublishedControlCount())
+		require.True(t, sink.OutputQueue().HasPending())
+
+		a.withdrawInteraction(a.root, 0)
+		assert.Empty(t, sink.CanceledControls(), "unpublished control must not emit cancel")
+		assert.False(t, sink.OutputQueue().HasPending(), "retiring must clear both publication and steer binding owners")
+	})
+
+	t.Run("during in-flight publish does not call SetNativeControlInputs", func(t *testing.T) {
+		a, sink := testControlAgent(t)
+		rpc, _ := fakeAntigravityRPC(t)
+		a.rpc = rpc
+		entered := make(chan struct{}, 1)
+		release, unblock := newTestGate(t)
+		var spy *atomicSteerBindSink
+		a.root.sink = agent.DecorateProviderServices(a.root.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+			spy = &atomicSteerBindSink{ProviderServices: direct, publishEnter: entered, publishGate: release}
+			return spy
+		})
+		feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusRunning, TrajectoryID: "trajectory"})
+		steer, err := a.SteerInput(agent.SteerRequest{Content: "revised"})
+		require.NoError(t, err)
+		feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 3, []int{1}, replyInputStep(steer.InputID, "execution")))
+		permission := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_WAITING","metadata":{"executionId":"execution"},"requestedInteraction":{"permission":{"resource":{"action":"command","target":"printf ready"}}}}`)
+		step, err := decodeStep(permission)
+		require.NoError(t, err)
+
+		done := make(chan struct{})
+		go func() {
+			a.registerInteraction(a.root, 2, step)
+			close(done)
+		}()
+		receiveTestValue(t, entered)
+		a.withdrawInteraction(a.root, 2)
+		unblock()
+		receiveTestValue(t, done)
+
+		assert.Equal(t, []string{"antigravity:cascade:trajectory:2"}, sink.CanceledControls())
+		assert.Zero(t, spy.bindAttempts.Load(), "retiring during publish must prevent SetNativeControlInputs")
+		assert.False(t, sink.OutputQueue().HasPending())
+	})
+}
+
+func TestAntigravitySteerBindingRecoversViaBackgroundOutputQueueTimer(t *testing.T) {
+	clock := testutil.NewQuartzMock(t)
+	sink := &agenttest.Sink{}
+	a := newAgentState(agent.NewProviderServices(sink), antigravityRPC{}, t.TempDir(), clock)
+	t.Cleanup(a.streamCancel)
+	a.catalog = buildAntigravityCatalog(antigravityCatalogReply{ClientModelConfigs: []antigravityModelConfig{{
+		ModelID: "gemini-test-high", Label: "Gemini Test",
+		ModelOrAlias: struct {
+			Model string `json:"model"`
+		}{Model: "MODEL_TEST"},
+	}}})
+	a.model = agent.DefaultModelSentinel
+	rpc, _ := fakeAntigravityRPC(t)
+	a.rpc = rpc
+	a.Mu.Lock()
+	a.installRoot("cascade", false)
+	a.Mu.Unlock()
+
+	queue := sink.OutputQueue()
+	queue.ConfigureRetry(t.Context(), clock, nil)
+	t.Cleanup(queue.StopRetries)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, agent.OutputRetryTimerTag)
+
+	bound := make(chan agent.NativeControlInputs, 1)
+	var spy *atomicSteerBindSink
+	a.root.sink = agent.DecorateProviderServices(a.root.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		spy = &atomicSteerBindSink{ProviderServices: direct, bound: bound}
+		spy.failBind.Store(true)
+		return spy
+	})
+
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusRunning, TrajectoryID: "trajectory"})
+	steer, err := a.SteerInput(agent.SteerRequest{Content: "revised"})
+	require.NoError(t, err)
+	feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 3, []int{1}, replyInputStep(steer.InputID, "execution")))
+	permission := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_WAITING","metadata":{"executionId":"execution"},"requestedInteraction":{"permission":{"resource":{"action":"command","target":"printf ready"}}}}`)
+	feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 3, []int{2}, permission))
+	require.Equal(t, int32(1), spy.publishCount.Load())
+	require.True(t, queue.HasPending())
+
+	spy.failBind.Store(false)
+	ctx := testutil.DeadlineContext(t)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopTimer)
+	binding := receiveTestValue(t, bound)
+	queue.StopRetries()
+
+	assert.Equal(t, int32(1), spy.publishCount.Load(), "background retry must not republish the control")
+	assert.Equal(t, "antigravity:cascade:trajectory:2", binding.RequestID)
+	assert.Equal(t, []string{steer.InputID}, binding.InputIDs)
+	assert.False(t, queue.HasPending())
+}
+
+func TestAntigravityReadPlanFileAndContentBoundaries(t *testing.T) {
+	a, _ := testControlAgent(t)
+	a.homeDir = t.TempDir()
+	brainDir := filepath.Join(a.homeDir, ".gemini", "antigravity-cli", "brain", "cascade")
+	siblingDir := filepath.Join(a.homeDir, ".gemini", "antigravity-cli", "brain", "cascade-sibling")
+	outsideDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(brainDir, 0o700))
+	require.NoError(t, os.MkdirAll(siblingDir, 0o700))
+
+	siblingFile := filepath.Join(siblingDir, "plan.md")
+	require.NoError(t, os.WriteFile(siblingFile, []byte("sibling"), 0o600))
+	outsideFile := filepath.Join(outsideDir, "secret.md")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o600))
+	escapeLink := filepath.Join(brainDir, "escape.md")
+	require.NoError(t, os.Symlink(outsideFile, escapeLink))
+
+	_, err := a.readPlanFile("cascade", siblingFile)
+	assert.ErrorContains(t, err, "outside brain/cascade")
+
+	_, err = a.readPlanFile("cascade", escapeLink)
+	assert.ErrorContains(t, err, "outside brain/cascade")
+
+	_, err = a.readPlanFile("cascade", brainDir)
+	assert.ErrorContains(t, err, "outside brain/cascade")
+
+	_, err = a.readPlanFile("cascade", filepath.Join(brainDir, "missing.md"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+
+	exactPath := filepath.Join(brainDir, "exact.md")
+	exactBytes := bytes.Repeat([]byte("a"), antigravityMaxPlanBytes)
+	require.NoError(t, os.WriteFile(exactPath, exactBytes, 0o600))
+	got, err := a.readPlanFile("cascade", exactPath)
+	require.NoError(t, err)
+	assert.Equal(t, exactBytes, got)
+
+	overPath := filepath.Join(brainDir, "over.md")
+	overBytes := bytes.Repeat([]byte("b"), antigravityMaxPlanBytes+1)
+	require.NoError(t, os.WriteFile(overPath, overBytes, 0o600))
+	_, err = a.readPlanFile("cascade", overPath)
+	assert.ErrorContains(t, err, "exceeds")
+
+	// Also exercise readPlanContent directly on exact vs +1 files.
+	exactFile, err := os.Open(exactPath)
+	require.NoError(t, err)
+	defer func() { _ = exactFile.Close() }()
+	got, err = readPlanContent(exactFile)
+	require.NoError(t, err)
+	assert.Len(t, got, antigravityMaxPlanBytes)
+
+	overFile, err := os.Open(overPath)
+	require.NoError(t, err)
+	defer func() { _ = overFile.Close() }()
+	_, err = readPlanContent(overFile)
+	assert.ErrorContains(t, err, "exceeds")
+}
+
+func TestAntigravityExecuteControlReplyValidationAndStepZero(t *testing.T) {
+	t.Run("canceled streamCtx returns ErrControlRequestNotPending", func(t *testing.T) {
+		a, _ := testControlAgent(t)
+		rpc, requests := fakeAntigravityRPC(t)
+		a.rpc = rpc
+		a.root.trajectoryID = "trajectory"
+		a.root.controls[0] = &antigravityControl{kind: antigravityControlPermission, instanceID: "inst", cascadeID: a.root.id, trajectoryID: "trajectory", stepIndex: 0}
+		a.streamCancel()
+
+		err := a.executeControlReply([]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":0,"permission":{"allow":true}}}`), "inst")
+		assert.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+		assert.Empty(t, requests("HandleCascadeUserInteraction"))
+	})
+
+	t.Run("malformed addresses and non-object interactions fail before pending lookup", func(t *testing.T) {
+		a, _ := testControlAgent(t)
+		rpc, requests := fakeAntigravityRPC(t)
+		a.rpc = rpc
+		a.root.trajectoryID = "trajectory"
+		a.root.controls[0] = &antigravityControl{kind: antigravityControlPermission, instanceID: "inst", cascadeID: a.root.id, trajectoryID: "trajectory", stepIndex: 0}
+
+		for _, tc := range []struct {
+			name string
+			raw  string
+		}{
+			{name: "negative stepIndex", raw: `{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":-1,"permission":{"allow":true}}}`},
+			{name: "float stepIndex", raw: `{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":1.5,"permission":{"allow":true}}}`},
+			{name: "string stepIndex", raw: `{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":"0","permission":{"allow":true}}}`},
+			{name: "empty cascadeId", raw: `{"cascadeId":"","interaction":{"trajectoryId":"trajectory","stepIndex":0,"permission":{"allow":true}}}`},
+			{name: "colon cascadeId", raw: `{"cascadeId":"cas:cade","interaction":{"trajectoryId":"trajectory","stepIndex":0,"permission":{"allow":true}}}`},
+			{name: "empty trajectoryId", raw: `{"cascadeId":"cascade","interaction":{"trajectoryId":"","stepIndex":0,"permission":{"allow":true}}}`},
+			{name: "colon trajectoryId", raw: `{"cascadeId":"cascade","interaction":{"trajectoryId":"traj:ectory","stepIndex":0,"permission":{"allow":true}}}`},
+			{name: "string interaction", raw: `{"cascadeId":"cascade","interaction":"allow"}`},
+			{name: "array interaction", raw: `{"cascadeId":"cascade","interaction":[]}`},
+			{name: "null interaction", raw: `{"cascadeId":"cascade","interaction":null}`},
+			{name: "number interaction", raw: `{"cascadeId":"cascade","interaction":123}`},
+		} {
+			err := a.executeControlReply([]byte(tc.raw), "inst")
+			require.Error(t, err, tc.name)
+			assert.NotErrorIs(t, err, agent.ErrControlRequestNotPending, tc.name)
+		}
+		assert.Empty(t, requests("HandleCascadeUserInteraction"))
+	})
+
+	t.Run("stepIndex 0 happy path", func(t *testing.T) {
+		a, _ := testControlAgent(t)
+		rpc, requests := fakeAntigravityRPC(t)
+		a.rpc = rpc
+		a.root.trajectoryID = "trajectory"
+		a.root.controls[0] = &antigravityControl{kind: antigravityControlPermission, instanceID: "inst-0", cascadeID: a.root.id, trajectoryID: "trajectory", stepIndex: 0}
+
+		err := a.executeControlReply([]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":0,"permission":{"allow":true}}}`), "inst-0")
+		require.NoError(t, err)
+		require.Len(t, requests("HandleCascadeUserInteraction"), 1)
+	})
 }

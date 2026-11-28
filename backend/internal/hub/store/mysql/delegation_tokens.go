@@ -80,6 +80,54 @@ func (c *mysqlConn) delegationTokenWithOwner(t gendb.DelegationToken, ownerUsern
 }
 
 func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDelegationTokensParams) (store.Page[store.DelegationTokenWithOwner], error) {
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.DelegationTokenWithOwner]{}, err
+	}
+	if hasPrefix {
+		idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+		if err != nil || empty {
+			return store.Page[store.DelegationTokenWithOwner]{}, err
+		}
+		var userID string
+		if p.UserID != nil {
+			uid, ok := userid.New(*p.UserID)
+			if !ok {
+				return store.Page[store.DelegationTokenWithOwner]{}, nil
+			}
+			userID = uid.String()
+		}
+		includeRevoked := boolToInt64(p.IncludeRevoked)
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListAllDelegationTokensByExactIDParams, error) {
+					return gendb.ListAllDelegationTokensByExactIDParams{
+						ID:             filter.Lower,
+						UserID:         userID,
+						IncludeRevoked: includeRevoked,
+					}, nil
+				},
+				s.conn.q.ListAllDelegationTokensByExactID,
+				func(r gendb.ListAllDelegationTokensByExactIDRow) (store.DelegationTokenWithOwner, error) {
+					return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+				}, s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllDelegationTokensByIDPrefixParams, error) {
+				return gendb.ListAllDelegationTokensByIDPrefixParams{
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					UserID:         userID,
+					IncludeRevoked: includeRevoked,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListAllDelegationTokensByIDPrefix,
+			func(r gendb.ListAllDelegationTokensByIDPrefixRow) (store.DelegationTokenWithOwner, error) {
+				return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			}, s.conn.queryError)
+	}
 	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
 	// (include_revoked false/true), dispatched to four generated queries
 	// (mirroring workers.go ListAdmin). The revoked dimension is split rather

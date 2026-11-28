@@ -5,18 +5,14 @@ package gitutil
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func shellSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
-}
 
 func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	// Inherited GIT_EXTERNAL_DIFF, GIT_CONFIG_PARAMETERS, and GIT_CONFIG_COUNT
@@ -33,22 +29,26 @@ func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	require.NoError(t, os.WriteFile(tracked, []byte("before\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("tracked.txt diff=leapmux-test\n"), 0o600))
 	require.NoError(t, Run(t.Context(), repo, "add", "tracked.txt", ".gitattributes"))
+	require.NoError(t, Run(t.Context(), repo, "commit", "--no-gpg-sign", "-m", "Add the baseline for the diff"))
 	require.NoError(t, os.WriteFile(tracked, []byte("after \t\n"), 0o600))
+	// Compare the staged blobs. The positive controls must have a diff even
+	// when Git is configured to trust the working tree's index entry.
+	require.NoError(t, Run(t.Context(), repo, "add", "--renormalize", "--", "tracked.txt"))
 	helperDir := filepath.Join(t.TempDir(), "helper dir 'q' $x (1)")
 	require.NoError(t, os.MkdirAll(helperDir, 0o700))
 	marker := filepath.Join(helperDir, "executed")
 	program := filepath.Join(helperDir, "diff-helper")
-	quotedProgram := shellSingleQuote(program)
+	quotedProgram := shellquote.POSIX.Quote(program)
 	t.Setenv("LEAPMUX_TEST_DIFF_MARKER", marker)
 	testutil.WriteExecutable(t, program, "#!/bin/sh\nprintf ran > \"$LEAPMUX_TEST_DIFF_MARKER\"\nprintf converted\n")
 	require.NoError(t, Run(t.Context(), repo, "config", "diff.external", quotedProgram))
-	_, err := Bytes(t.Context(), repo, "diff", "--no-textconv")
+	_, err := Bytes(t.Context(), repo, "diff", "--cached", "--no-textconv")
 	require.NoError(t, err)
 	_, err = os.Stat(marker)
 	require.NoError(t, err, "the positive control must execute the external helper")
 	require.NoError(t, os.Remove(marker))
 	require.NoError(t, Run(t.Context(), repo, "config", "diff.leapmux-test.textconv", quotedProgram))
-	_, err = Bytes(t.Context(), repo, "diff", "--no-ext-diff")
+	_, err = Bytes(t.Context(), repo, "diff", "--cached", "--no-ext-diff")
 	require.NoError(t, err)
 	_, err = os.Stat(marker)
 	require.NoError(t, err, "the positive control must execute textconv")
@@ -58,8 +58,8 @@ func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	envProgram := filepath.Join(helperDir, "env-diff-helper")
 	t.Setenv("LEAPMUX_TEST_ENV_DIFF_MARKER", envMarker)
 	testutil.WriteExecutable(t, envProgram, "#!/bin/sh\nprintf ran > \"$LEAPMUX_TEST_ENV_DIFF_MARKER\"\nprintf env-converted\n")
-	t.Setenv("GIT_EXTERNAL_DIFF", shellSingleQuote(envProgram))
-	_, err = Bytes(t.Context(), repo, "diff", "--no-textconv")
+	t.Setenv("GIT_EXTERNAL_DIFF", shellquote.POSIX.Quote(envProgram))
+	_, err = Bytes(t.Context(), repo, "diff", "--cached", "--no-textconv")
 	require.NoError(t, err)
 	_, err = os.Stat(envMarker)
 	require.NoError(t, err, "the positive control must execute GIT_EXTERNAL_DIFF")
@@ -67,7 +67,7 @@ func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 	require.NoError(t, os.Remove(envMarker))
 
-	output, err := DiffBytes(t.Context(), repo)
+	output, err := DiffBytes(t.Context(), repo, "--cached")
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "+after \t\n")
 	_, err = os.Stat(marker)

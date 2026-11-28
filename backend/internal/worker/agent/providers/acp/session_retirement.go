@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -159,12 +160,15 @@ func controlRequestSessionID(params json.RawMessage) string {
 func (b *Base) refuseControlRequest(line *providerkit.ParsedLine, sessionID string, cancelAnswer any) {
 	slog.Info("acp refused a control request of a session that it does not serve",
 		"provider", b.ProviderName(), "agent_id", b.AgentID(), "method", line.Method, "session_id", sessionID)
+	b.replyToRefusedControlRequest(line, cancelAnswer, fmt.Sprintf("session %s is no longer active in this client", sessionID))
+}
+
+func (b *Base) replyToRefusedControlRequest(line *providerkit.ParsedLine, cancelAnswer any, reason string) {
 	if !line.HasID() {
 		return
 	}
 	if cancelAnswer == nil {
-		b.SendErrorResponseDetached(line.ID, acpStaleSessionRequestError,
-			fmt.Sprintf("session %s is no longer active in this client", sessionID), "refuse "+line.Method)
+		b.SendErrorResponseDetached(line.ID, acpStaleSessionRequestError, reason, "refuse "+line.Method)
 		return
 	}
 	b.SendResponseDetached(line.ID, cancelAnswer, "refuse "+line.Method)
@@ -182,10 +186,10 @@ func (b *Base) withdrawTurnControls() {
 	b.urlElicitations = nil
 	b.Mu.Unlock()
 	if b.hooks.AnswerlessControlsOutliveTurns {
-		b.AnswerOutstandingControlRequests(b.sink)
+		b.AnswerOutstandingControlRequests()
 		return
 	}
-	b.WithdrawAllControlRequests(b.sink)
+	b.WithdrawAllControlRequests()
 }
 
 // releaseOutgoingSession ends what the outgoing session of a context clear
@@ -321,29 +325,48 @@ func (b *Base) sendSessionClose(sessionID string) {
 			slog.Warn("acp session/close failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
 		}
 	}
-	if err := b.SendDetachedRequest(MethodSessionClose, params, logFailure); err != nil {
+	if err := b.SendDetachedRequest(MethodSessionClose, params, providerkit.DetachedRequestOptions{}, logFailure); err != nil {
 		logFailure(nil, err)
 	}
 }
 
-// advertisesSessionClose reports whether an initialize response advertises
-// session/close, as `agentCapabilities.sessionCapabilities.close`. The
-// capability is an object, so an absent member, `null` and `false` all mean no.
-func advertisesSessionClose(initializeResponse []byte) bool {
-	var response struct {
-		AgentCapabilities struct {
-			SessionCapabilities struct {
-				Close json.RawMessage `json:"close"`
-			} `json:"sessionCapabilities"`
-		} `json:"agentCapabilities"`
-	}
-	if json.Unmarshal(initializeResponse, &response) != nil {
-		return false
-	}
-	switch capability := string(response.AgentCapabilities.SessionCapabilities.Close); capability {
+var _ agentapi.ForkCapable = (*Base)(nil)
+
+// SupportsNativeFork reports whether the ACP server advertised
+// agentCapabilities.sessionCapabilities.fork during initialize.
+func (b *Base) SupportsNativeFork() bool {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.forksSessions
+}
+
+// hasSessionCapability reports whether a JSON capability value from
+// agentCapabilities.sessionCapabilities is enabled. The capability is an
+// object, so an absent member, `null`, and `false` all mean no.
+func hasSessionCapability(raw json.RawMessage) bool {
+	switch string(raw) {
 	case "", "null", "false":
 		return false
 	default:
 		return true
 	}
+}
+
+// readSessionCapabilities reports whether an initialize response advertises
+// session/close and session/fork under `agentCapabilities.sessionCapabilities`.
+// Each capability is an object, so an absent member, `null`, and `false` all mean no.
+func readSessionCapabilities(initializeResponse []byte) (closeSupported, forkSupported bool) {
+	var response struct {
+		AgentCapabilities struct {
+			SessionCapabilities struct {
+				Close json.RawMessage `json:"close"`
+				Fork  json.RawMessage `json:"fork"`
+			} `json:"sessionCapabilities"`
+		} `json:"agentCapabilities"`
+	}
+	if json.Unmarshal(initializeResponse, &response) != nil {
+		return false, false
+	}
+	caps := response.AgentCapabilities.SessionCapabilities
+	return hasSessionCapability(caps.Close), hasSessionCapability(caps.Fork)
 }

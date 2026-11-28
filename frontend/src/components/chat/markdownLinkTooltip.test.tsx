@@ -108,11 +108,12 @@ describe('createMarkdownLinkTooltip', () => {
     vi.advanceTimersByTime(SHOW_DELAY_MS)
     expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/')
 
-    setHtml('<p><a href="https://two.example">Two</a></p>')
+    const nextHtml = '<p><a href="https://two.example">Two</a></p>'
+    setHtml(nextHtml)
     expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
 
     // Direct dismiss resets state cleanly during HIDE_DELAY_MS.
-    body.innerHTML = html()
+    body.innerHTML = nextHtml
     const two = body.querySelector('a') as HTMLAnchorElement
     two.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
     vi.advanceTimersByTime(SHOW_DELAY_MS)

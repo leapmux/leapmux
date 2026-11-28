@@ -76,7 +76,7 @@ func newDaemonGenerationAgent(t *testing.T) (*familyTestAgent, *agenttest.Sink, 
 		_, _ = fmt.Fprint(w, body)
 	}))
 	t.Cleanup(server.Close)
-	a.Questions.baseURL = server.URL
+	a.Daemon().setBaseURL(server.URL)
 	a.SetPromptActiveForTest(true)
 	return a, sink, peer
 }

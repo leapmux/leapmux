@@ -1,5 +1,5 @@
 /**
- * CLI helpers for end-to-end tests of leapmux control.
+ * CLI helpers for end-to-end tests of the leapmux CLI.
  * The launcher verifies the root leapmux binary through task build-backend once per run.
  * Tests use that binary for control and recover commands and parse its standard output as JSON.
  *
@@ -8,8 +8,9 @@
  * The resulting CLI requests use the same credential path as a user login, without repeating the OAuth login flow.
  */
 
-import { execFile } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
@@ -45,7 +46,7 @@ export interface CLITokenSource {
 
 /**
  * Permissions for the test CLI credential, using the scope format from RFC 6749 section 3.3.
- * Admin procedures require admin scopes even when the credential belongs to an administrator. See operating/security.md.
+ * Admin procedures require admin scopes even when the credential belongs to an administrator. See site/content/docs/admin/security-and-auth.md.
  * The remaining scopes match the default grant. An unscoped elevated session can issue this requested set.
  * The request and credential file share this list, so auth status cannot report permissions absent from the stored grant.
  */
@@ -68,6 +69,7 @@ const E2E_CLI_SCOPES = [
   'admin:users',
   'admin:settings',
   'admin:workers',
+  'admin:apps',
 ]
 
 /**
@@ -76,9 +78,13 @@ const E2E_CLI_SCOPES = [
  * The recover command supports bootstrap only. Token issuance uses AdminUserService/IssueAPIToken.
  * The token belongs to the user of the adminToken session, and the credential file targets source.hubUrl.
  */
-export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIConfigDir> {
+export async function mintCLITokenForAdmin(
+  source: CLITokenSource,
+  options: { scopes?: readonly string[], elevate?: boolean } = {},
+): Promise<CLIConfigDir> {
   const hubURL = source.hubUrl
   const cookie = source.adminToken
+  const scopes = options.scopes ?? E2E_CLI_SCOPES
   const user = await mintStep('read the administrator', () => getCurrentUser(hubURL, cookie))
   if (!user.id || !user.username)
     throw new Error('mintCLITokenForAdmin: the session user has no ID or username.')
@@ -97,23 +103,25 @@ export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIC
     installationName: `e2e-${Date.now()}`,
     ttlSeconds: '3600',
     // See E2E_CLI_SCOPES.
-    scopes: E2E_CLI_SCOPES,
+    scopes,
   }, { cookie, operation: 'mintCLITokenForAdmin' })
   const bearer = minted.accessToken
   if (!bearer) {
     throw new Error('mintCLITokenForAdmin: no accessToken in IssueAPIToken response')
   }
 
-  // LEAPMUX_CONTROL_CONFIG_DIR selects the exact credential directory. Files reside directly below it.
-  // Do not add control/. The CLI appends leapmux/control only when it derives the default from XDG_CONFIG_HOME.
+  // LEAPMUX_CONTROL_CONFIG_DIR selects the control CLI config root. Credential
+  // files live under `<configDir>/credentials/<hubHost>.json` (mirroring
+  // `control.CredentialsPath` in backend/internal/cli/control/creds.go).
   const configDir = createTestDirectory('leapmux-cli-cfg-')
-  mkdirSync(configDir, { recursive: true })
+  const credsDir = join(configDir, 'credentials')
+  mkdirSync(credsDir, { recursive: true })
 
   // The CLI keys the credential file by HubHost(hubURL); replicate
   // that here. For http(s) URLs the host is `<host>_<port>`; for
   // unix:/npipe: sockets the helper flattens the URL.
   const hubHost = hubHostForURL(hubURL)
-  const credPath = join(configDir, `${hubHost}.json`)
+  const credPath = join(credsDir, `${hubHost}.json`)
   const cred = {
     hub_url: hubURL,
     hub_id: 'e2e',
@@ -124,14 +132,15 @@ export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIC
     username: user.username,
     // This local scope list lets auth status describe the grant without a request.
     // The hub remains authoritative. Keep the list equal to the issuance request.
-    scope: E2E_CLI_SCOPES.join(' '),
+    scope: scopes.join(' '),
   }
   writeFileSync(credPath, JSON.stringify(cred, null, 2), { mode: 0o600 })
 
   // Elevate the new credential separately from the session that issued it.
   // Hub settings and some admin procedures check the acting credential, so the issuer elevation does not transfer.
   // The required approval uses a browser ceremony. The fixture performs that ceremony for the CLI.
-  await elevateMintedCredential(hubURL, bearer, cookie)
+  if (options.elevate ?? true)
+    await elevateCLICredential(hubURL, bearer, cookie)
 
   return {
     path: configDir,
@@ -152,12 +161,23 @@ async function mintStep<T>(step: string, operation: () => Promise<T>): Promise<T
 }
 
 /**
- * Elevate a newly issued CLI credential through the real approval endpoints.
+ * Read the saved `access_token` from a CLI credential directory for `hubURL`.
+ */
+export function readCLICredentialToken(configDir: string, hubURL: string): string {
+  const credPath = join(configDir, 'credentials', `${hubHostForURL(hubURL)}.json`)
+  const saved = JSON.parse(readFileSync(credPath, 'utf8')) as { access_token?: string }
+  if (!saved.access_token)
+    throw new Error(`readCLICredentialToken: saved credential at ${credPath} has no access_token`)
+  return saved.access_token
+}
+
+/**
+ * Elevate a CLI credential through the real approval endpoints.
  * Request a user code from /oauth/step-up, then approve it at /oauth/device with an elevated session.
  * Use fetch for both requests. Direct database changes would leave this approval path untested.
  * The caller elevates the approving session before issuance and supplies that cookie here.
  */
-async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
+export async function elevateCLICredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
   const started = await fetchHub(`${hubUrl}/oauth/step-up`, {
     method: 'POST',
     headers: {
@@ -188,8 +208,106 @@ async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: s
 }
 
 /**
- * Run leapmux control against the configured hub. Return the JSON data payload from standard output.
- * A CLIError preserves the error code and message for assertions.
+ * Approve an OAuth device-code authorization request (for `leapmux auth login --device-code`)
+ * against the real Hub `/oauth/device` endpoint using an authenticated browser session cookie.
+ */
+export async function approveOAuthDeviceCode(hubUrl: string, cookie: string, userCode: string): Promise<void> {
+  const approved = await fetchHub(`${hubUrl}/oauth/device`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
+    body: new URLSearchParams({
+      user_code: userCode,
+      decision: 'allow',
+      admin_confirmed: '1',
+    }).toString(),
+    redirect: 'manual',
+  })
+  if (approved.status !== 200) {
+    throw new Error(`approveOAuthDeviceCode: /oauth/device returned ${approved.status}: ${await approved.text()}`)
+  }
+}
+
+/**
+ * Sign the real `leapmux` CLI in via interactive OAuth device-code flow
+ * (`leapmux auth login --device-code`) and optionally elevate the resulting
+ * credential. Unlike `mintCLITokenForAdmin` (which issues a service-account API
+ * token that Hub policy excludes from durable admin actions like `admin user`
+ * or `admin app`), this yields a full interactive OAuth CLI credential.
+ */
+export async function mintInteractiveOAuthCLI(
+  source: CLITokenSource,
+  options: {
+    scopes?: readonly string[]
+    elevate?: boolean
+    password?: string
+    deviceName?: string
+  } = {},
+): Promise<CLIConfigDir> {
+  const hubURL = source.hubUrl
+  const cookie = source.adminToken
+  const scopes = options.scopes ?? E2E_CLI_SCOPES
+  const password = options.password ?? TEST_ADMIN_PASSWORD
+  const user = await mintStep('read the signed-in user', () => getCurrentUser(hubURL, cookie))
+  if (!user.id)
+    throw new Error('mintInteractiveOAuthCLI: the session user has no ID.')
+  await mintStep('elevate the browser session', () => elevateSessionViaAPI(hubURL, cookie, password))
+
+  const configDir = createTestDirectory('leapmux-cli-oauth-')
+  const loginArgs = [
+    'auth',
+    'login',
+    '--hub',
+    hubURL,
+    '--device-code',
+    '--device-name',
+    options.deviceName ?? 'e2e-oauth-cli',
+    '--scope',
+    scopes.join(' '),
+  ]
+  const proc = spawnCLILive(null, loginArgs, {
+    env: { LEAPMUX_CONTROL_CONFIG_DIR: configDir },
+  })
+  try {
+    const deadline = Date.now() + 20_000
+    let userCode: string | null = null
+    while (Date.now() < deadline) {
+      const text = `${proc.stdout()}\n${proc.stderr()}`
+      const match = /user_code=([A-Z0-9-]+)/.exec(text) ?? /Enter the code:\s*([A-Z0-9-]+)/.exec(text)
+      if (match?.[1]) {
+        userCode = match[1]
+        break
+      }
+      if (proc.child.exitCode !== null)
+        throw new Error(`mintInteractiveOAuthCLI: auth login exited early (${proc.child.exitCode}):\n${proc.diagnostic()}`)
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    if (!userCode)
+      throw new Error(`mintInteractiveOAuthCLI: no device user code printed:\n${proc.diagnostic()}`)
+    await approveOAuthDeviceCode(hubURL, cookie, userCode)
+    const done = await proc.finished
+    if (done.code !== 0)
+      throw new Error(`mintInteractiveOAuthCLI: auth login failed (${done.code}):\n${proc.diagnostic()}`)
+  }
+  finally {
+    await proc.stop()
+  }
+
+  const bearer = readCLICredentialToken(configDir, hubURL)
+
+  if (options.elevate ?? true)
+    await elevateCLICredential(hubURL, bearer, cookie)
+
+  return {
+    path: configDir,
+    hubURL,
+    bearer,
+    userID: user.id,
+  }
+}
+
+/**
+ * Run leapmux against the configured hub with --json. Return the data payload of the JSON envelope on standard output.
+ * A CLIError preserves the error code, message and hints for assertions.
  * Remove inherited LEAPMUX_CONTROL_* variables except the configured credential directory.
  * Otherwise, a local worker shell could change the test transport or authentication.
  */
@@ -199,19 +317,9 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
   /** Soft timeout in ms; defaults to 30s. */
   timeoutMs?: number
 }): Promise<unknown> {
-  const { binaryPath } = getGlobalState()
-  const env = scrubLeapMuxEnv({
-    ...process.env,
-    ...options?.env,
-    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
-  })
-  // `--hub` is a leaf-command flag, not top-level. The first
-  // non-flag tokens in `args` walk the control command tree
-  // (e.g. ["agent","open"]); we splice `--hub <url>` AFTER that
-  // walk so the dispatcher reaches the leaf before parsing flags.
-  const cliArgs = withHubFlag(args, cfg.hubURL)
+  const { binaryPath, cliArgs, env } = controlProcess(cfg, args, options?.env)
   try {
-    const { stdout } = await execFileAsync(binaryPath, ['control', ...cliArgs], {
+    const { stdout } = await execFileAsync(binaryPath, cliArgs, {
       env,
       timeout: options?.timeoutMs ?? 30_000,
     })
@@ -219,10 +327,10 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
   }
   catch (err) {
     // execFileAsync rejects with stdout/stderr attached when the
-    // child exits non-zero. The CLI writes the JSON `{"error": …}`
+    // child exits non-zero. With --json the CLI writes the `{"error": …}`
     // envelope to stdout (same channel as success) and a non-zero
     // exit code is the only signal of failure; only fall back to
-    // stderr for catastrophic failures that bypassed EmitError.
+    // stderr for a failure that printed no envelope.
     const e = err as { stdout?: string, stderr?: string, code?: number | string, message?: string }
     if (e.stdout) {
       try {
@@ -234,15 +342,253 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
         // fall through to the catastrophic-error path
       }
     }
-    throw new Error(`leapmux control ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
+    throw new Error(`leapmux ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
+  }
+}
+
+/** Raw stdout, stderr, and exit code from a text-mode CLI invocation. */
+export interface CLITextResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+/**
+ * Run leapmux against the configured hub in text mode (without `--json`).
+ * Returns stdout, stderr, and exit code without throwing on non-zero exit when `allowNonZero` is set.
+ */
+export async function runCLIText(cfg: CLIConfigDir, args: string[], options?: {
+  env?: Record<string, string>
+  cwd?: string
+  allowNonZero?: boolean
+}): Promise<CLITextResult> {
+  const { binaryPath } = getGlobalState()
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
+  }
+  const cliArgs = ['--hub', cfg.hubURL, ...args]
+  return execTextCLI(binaryPath, cliArgs, env, options?.cwd, options?.allowNonZero ?? false)
+}
+
+/**
+ * Run a local-only leapmux command (no `--hub` flag) with `--json`, returning its decoded `data` payload.
+ */
+export async function runCLILocal(args: string[], options?: {
+  configDir?: string
+  env?: Record<string, string>
+  cwd?: string
+}): Promise<unknown> {
+  const { binaryPath } = getGlobalState()
+  const configDir = options?.configDir ?? createTestDirectory('leapmux-cli-local-')
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: configDir,
+  }
+  const cliArgs = ['--json', ...args]
+  try {
+    const { stdout } = await execFileAsync(binaryPath, cliArgs, {
+      env,
+      cwd: options?.cwd,
+      timeout: 30_000,
+    })
+    return parseEnvelope(stdout, args)
+  }
+  catch (err) {
+    const e = err as { stdout?: string, stderr?: string, code?: number | string, message?: string }
+    if (e.stdout) {
+      try {
+        return parseEnvelope(e.stdout, args)
+      }
+      catch (parseErr) {
+        if (parseErr instanceof CLIError)
+          throw parseErr
+      }
+    }
+    throw new Error(`leapmux ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
   }
 }
 
 /**
- * Run `leapmux control tab open --type=agent` and return the tab_id
- * the hub minted. The CLI envelope is `{"data": ...}` where the
- * payload has snake_case keys including `tab_id`, `workspace_id`,
- * `worker_id`.
+ * Run a local-only leapmux command (no `--hub`, no `--json`) and return raw stdout, stderr, and exit code.
+ */
+export async function runCLILocalText(args: string[], options?: {
+  configDir?: string
+  env?: Record<string, string>
+  cwd?: string
+  allowNonZero?: boolean
+}): Promise<CLITextResult> {
+  const { binaryPath } = getGlobalState()
+  const configDir = options?.configDir ?? createTestDirectory('leapmux-cli-local-text-')
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: configDir,
+  }
+  return execTextCLI(binaryPath, args, env, options?.cwd, options?.allowNonZero ?? false)
+}
+
+async function execTextCLI(
+  binaryPath: string,
+  cliArgs: string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string | undefined,
+  allowNonZero: boolean,
+): Promise<CLITextResult> {
+  try {
+    const { stdout, stderr } = await execFileAsync(binaryPath, cliArgs, {
+      env,
+      cwd,
+      timeout: 30_000,
+    })
+    return { code: 0, stdout, stderr }
+  }
+  catch (err) {
+    const e = err as { stdout?: string, stderr?: string, code?: number | string, message?: string }
+    const numericCode = typeof e.code === 'number'
+      ? e.code
+      : 1
+    if (allowNonZero) {
+      return { code: numericCode, stdout: e.stdout ?? '', stderr: e.stderr ?? '' }
+    }
+    throw new Error(`leapmux ${cliArgs.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
+  }
+}
+
+/** A live streaming or interactive CLI child process. */
+export interface LiveCLIProcess {
+  child: ReturnType<typeof spawn>
+  finished: Promise<{ code: number | null, signal: string | null, error?: string }>
+  stdout: () => string
+  stderr: () => string
+  jsonLines: () => unknown[]
+  diagnostic: () => string
+  stop: () => Promise<{ code: number | null, signal: string | null, error?: string }>
+}
+
+/**
+ * Start a streaming or interactive leapmux command (such as `layout watch`,
+ * `tunnel forward`, `tunnel connect`, `terminal attach`, or `auth login --device-code`).
+ */
+export function spawnCLILive(
+  cfg: CLIConfigDir | null,
+  args: string[],
+  options?: { json?: boolean, env?: Record<string, string>, cwd?: string },
+): LiveCLIProcess {
+  const { binaryPath } = getGlobalState()
+  const configDir = cfg?.path ?? options?.env?.LEAPMUX_CONTROL_CONFIG_DIR ?? createTestDirectory('leapmux-cli-live-')
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: configDir,
+  }
+  const cliArgs: string[] = []
+  if (cfg)
+    cliArgs.push('--hub', cfg.hubURL)
+  if (options?.json)
+    cliArgs.push('--json')
+  cliArgs.push(...args)
+
+  const child = spawn(binaryPath, cliArgs, { env, cwd: options?.cwd })
+  let stdoutText = ''
+  let stderrText = ''
+  child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+    stdoutText += chunk
+  })
+  child.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+    stderrText += chunk
+  })
+  const finished = new Promise<{ code: number | null, signal: string | null, error?: string }>((resolve) => {
+    child.once('error', err => resolve({ code: null, signal: null, error: err.message }))
+    child.once('close', (code, signal) => resolve({ code, signal }))
+  })
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.stdin?.end()
+      child.kill(process.platform === 'win32'
+        ? 'SIGTERM'
+        : 'SIGINT')
+    }
+    return finished
+  }
+  return {
+    child,
+    finished,
+    stdout: () => stdoutText,
+    stderr: () => stderrText,
+    jsonLines: () => {
+      const complete = stdoutText.slice(0, stdoutText.lastIndexOf('\n') + 1).trim()
+      if (!complete)
+        return []
+      return complete.split('\n').filter(Boolean).map(line => parseEnvelope(line, args))
+    },
+    diagnostic: () => `stdout:\n${stdoutText}\nstderr:\n${stderrText}`,
+    stop,
+  }
+}
+
+interface ControlEventLine {
+  kind: string
+  tab_id?: string
+  sequence?: number
+  replayed?: boolean
+  body?: string
+  request?: string
+  request_instance?: string
+}
+
+/** Start an events command and keep the complete JSON lines it writes. */
+export function startControlEventStream(cli: CLIConfigDir, args: string[]) {
+  const command = ['events', ...args]
+  const { binaryPath, cliArgs, env } = controlProcess(cli, command)
+  const child = spawn(binaryPath, cliArgs, { env })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8').on('data', (text: string) => {
+    stdout += text
+  })
+  child.stderr.setEncoding('utf8').on('data', (text: string) => {
+    stderr += text
+  })
+  const finished = new Promise<{ code: number | null, signal: string | null, error?: string }>((resolve) => {
+    child.once('error', (err) => {
+      resolve({ code: null, signal: null, error: err.message })
+    })
+    child.once('close', (code, signal) => {
+      resolve({ code, signal })
+    })
+  })
+  const diagnostic = () => `stdout: ${stdout}\nstderr: ${stderr}`
+  const events = (): ControlEventLine[] => {
+    const lines = stdout.slice(0, stdout.lastIndexOf('\n') + 1).trim().split('\n').filter(Boolean)
+    return lines.map(line => parseEnvelope(line, command) as ControlEventLine)
+  }
+  return { child, finished, diagnostic, events }
+}
+
+function controlProcess(cfg: CLIConfigDir, args: string[], overrides?: Record<string, string>) {
+  const { binaryPath } = getGlobalState()
+  const env = {
+    ...scrubLeapMuxEnv(process.env),
+    ...overrides,
+    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
+  }
+  // The global flags precede the command so they never follow a `--` in args.
+  const cliArgs = [
+    '--hub',
+    cfg.hubURL,
+    '--json',
+    ...args,
+  ]
+  return { binaryPath, cliArgs, env }
+}
+
+/**
+ * Run `leapmux agent open` and return the id of the tab that the
+ * hub minted. The CLI envelope is `{"data": ...}` where the payload has
+ * snake_case keys including `id`, `workspace_id` and `worker_id`.
  */
 export async function cliAgentOpen(cli: CLIConfigDir, params: {
   workspaceId: string
@@ -250,31 +596,35 @@ export async function cliAgentOpen(cli: CLIConfigDir, params: {
   provider?: string
 }): Promise<string> {
   // Dev-mode workers register every provider they detect on PATH, so
-  // the CLI rejects `tab open` with `ambiguous_provider` unless the caller
-  // specifies one. Default to Claude Code (matches `LEAPMUX_CLAUDE_DEFAULT_MODEL`
-  // in the dev fixture) so existing call sites keep working.
+  // `agent open` refuses to guess unless the caller gives one. Default to
+  // Claude Code (matches `LEAPMUX_CLAUDE_DEFAULT_MODEL` in the dev fixture)
+  // so existing call sites keep working.
   const provider = params.provider ?? 'claude'
   const data = await runCLI(cli, [
-    'tab',
-    'open',
-    '--type',
     'agent',
-    '--workspace-id',
+    'open',
+    '--workspace',
     params.workspaceId,
-    '--worker-id',
+    '--worker',
     params.workerId,
     '--provider',
     provider,
-  ]) as { tab_id?: string, id?: string } | null
-  const id = data?.tab_id ?? data?.id
+  ]) as { id?: string } | null
+  const id = data?.id
   if (!id || typeof id !== 'string')
-    throw new Error(`cliAgentOpen: missing tab_id in response: ${JSON.stringify(data)}`)
+    throw new Error(`cliAgentOpen: missing id in response: ${JSON.stringify(data)}`)
   return id
 }
 
 export class CLIError extends Error {
-  constructor(public readonly args: string[], public readonly code: string, message: string) {
-    super(`leapmux control ${args.join(' ')} failed: ${code}: ${message}`)
+  constructor(
+    public readonly args: string[],
+    public readonly code: string,
+    message: string,
+    /** The remedies that the CLI printed after the message, one per entry. */
+    public readonly hints: string[] = [],
+  ) {
+    super(`leapmux ${args.join(' ')} failed: ${code}: ${message}`)
     this.name = 'CLIError'
   }
 }
@@ -295,18 +645,18 @@ export class CLIError extends Error {
 function parseEnvelope(stdout: string, args: string[]): unknown {
   const trimmed = stdout.trim()
   if (!trimmed)
-    throw new Error(`leapmux control ${args.join(' ')}: empty stdout`)
+    throw new Error(`leapmux ${args.join(' ')}: empty stdout`)
   let parsed: unknown
   try {
     parsed = JSON.parse(trimmed)
   }
   catch (err) {
-    throw new Error(`leapmux control ${args.join(' ')}: stdout is not JSON:\n${trimmed}\n\nparse error: ${(err as Error).message}`)
+    throw new Error(`leapmux ${args.join(' ')}: stdout is not JSON:\n${trimmed}\n\nparse error: ${(err as Error).message}`)
   }
   if (parsed && typeof parsed === 'object') {
     if ('error' in parsed) {
-      const e = (parsed as { error: { code?: string, message?: string } }).error
-      throw new CLIError(args, e.code ?? 'unknown', e.message ?? 'unknown error')
+      const e = (parsed as { error: { code?: string, message?: string, hints?: string[] } }).error
+      throw new CLIError(args, e.code ?? 'unknown', e.message ?? 'unknown error', e.hints ?? [])
     }
     if ('data' in parsed)
       return (parsed as { data: unknown }).data
@@ -316,49 +666,9 @@ function parseEnvelope(stdout: string, args: string[]): unknown {
   return parsed
 }
 
-/**
- * Splice `--hub <url>` into args AFTER the leading
- * command-tree tokens (`agent open`, `tab close`, …). The control
- * dispatcher rejects flags at the group level — it walks the tree
- * to a leaf first — so passing `--hub` before the leaf fails with
- * "unknown control command: --hub". Existing `--hub` tokens take
- * precedence: the helper only inserts when the caller didn't
- * provide one.
- */
-function withHubFlag(args: string[], hubURL: string): string[] {
-  if (args.includes('--hub'))
-    return args
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]
-    // i < args.length implies a defined element, so the undefined check is type-level only.
-    if (arg === undefined || arg.startsWith('-'))
-      break
-    i++
-  }
-  return [
-    ...args.slice(0, i),
-    '--hub',
-    hubURL,
-    ...args.slice(i),
-  ]
-}
-
-/**
- * Write one hub setting through control admin settings set.
- * Specify --hub before positional arguments. withHubFlag inserts before the first flag, but this command has only positional arguments.
- * Appending --hub after KEY and VALUE would make the Go parser treat it as another positional argument.
- */
+/** Write one hub setting through `leapmux admin settings set <key> <value>`. */
 export async function setHubSetting(cfg: CLIConfigDir, key: string, value: string): Promise<void> {
-  await runCLI(cfg, [
-    'admin',
-    'settings',
-    'set',
-    '--hub',
-    cfg.hubURL,
-    key,
-    value,
-  ])
+  await runCLI(cfg, ['admin', 'settings', 'set', key, value])
 }
 
 /**
@@ -386,10 +696,17 @@ function hubHostForURL(hubURL: string): string {
   if (hubURL.startsWith('unix:') || hubURL.startsWith('npipe:'))
     return hubURL.replace(/\//g, '_').replace(/:/g, '_').replace(/\\/g, '_')
   const url = new URL(hubURL)
-  const host = url.hostname
+  const host = url.hostname.toLowerCase()
   if (!host)
     throw new Error(`hubHostForURL: missing hostname in ${hubURL}`)
-  return url.port
-    ? `${host}_${url.port}`
-    : host
+  const scheme = url.protocol.replace(/:$/, '').toLowerCase() || 'https'
+  let key = `${scheme}_${host}`
+  if (url.port)
+    key = `${key}_${url.port}`
+  const cleanPath = url.pathname.replace(/\/+$/, '')
+  if (cleanPath) {
+    const hash = createHash('sha256').update(cleanPath).digest('hex').slice(0, 12)
+    key = `${key}_${hash}`
+  }
+  return key
 }

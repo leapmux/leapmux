@@ -171,3 +171,47 @@ func TestDroidChildTurnEndClosesToolsBeforeDividerAndRegistryClose(t *testing.T)
 		})
 	}
 }
+
+func TestDroidRawInterruptBoundaryInputsAndSendRawInput(t *testing.T) {
+	t.Parallel()
+	provider := droidProvider{}
+	cases := map[string]struct {
+		raw  []byte
+		want bool
+	}{
+		"exact interrupt":    {[]byte(`{"type":"interrupt"}`), true},
+		"interrupt with ext": {[]byte(`{"type":"interrupt","reason":"user"}`), true},
+		"nil":                {nil, false},
+		"empty":              {[]byte(""), false},
+		"empty object":       {[]byte(`{}`), false},
+		"wrong case":         {[]byte(`{"type":"INTERRUPT"}`), false},
+		"trailing space":     {[]byte(`{"type":"interrupt "}`), false},
+		"response type":      {[]byte(`{"type":"response","id":"1"}`), false},
+		"non-string type":    {[]byte(`{"type":123}`), false},
+		"invalid json":       {[]byte(`not json`), false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, isDroidRawInterrupt(tc.raw))
+			assert.Equal(t, tc.want, provider.IsInterrupt(string(tc.raw)))
+		})
+	}
+
+	a, _, stdin := newSteerAgent(t)
+	a.startTurn()
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"interrupt"}`)}))
+	frames := stdin.frames()
+	require.Len(t, frames, 1)
+	var env struct {
+		Type   string `json:"type"`
+		Method string `json:"method"`
+		Params struct {
+			SessionID string `json:"sessionId"`
+		} `json:"params"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(frames[0]), &env))
+	assert.Equal(t, droidTypeRequest, env.Type)
+	assert.Equal(t, droidMethodInterruptSession, env.Method)
+	assert.Equal(t, "main-session", env.Params.SessionID)
+}

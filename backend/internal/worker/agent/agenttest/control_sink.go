@@ -12,6 +12,7 @@ type ControlRequestRecord struct {
 	// request: the one that the request states, else the session that the sink
 	// holds when it stores the request (see ControlSink.PublishControlRequest).
 	AgentSessionID string
+	NativeTurnID   string
 	RequestID      string
 	InstanceID     string
 	Payload        []byte
@@ -52,6 +53,7 @@ func (s *ControlSink) PublishControlRequest(request agent.ControlRequest) error 
 	}
 	s.publishedControls = append(s.publishedControls, ControlRequestRecord{
 		AgentSessionID: sessionID,
+		NativeTurnID:   request.NativeTurnID,
 		RequestID:      request.RequestID,
 		InstanceID:     request.InstanceID,
 		Payload:        append([]byte(nil), request.Payload...),
@@ -112,6 +114,21 @@ func (s *ControlSink) PublishedControlCount() int {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
 	return len(s.publishedControls)
+}
+
+// Answer is data as the Worker delivers an answer to the request requestID:
+// with the instance of the request's latest publication
+// (agent.RawInput.ControlInstanceID). It states no instance for a request that
+// the sink never published.
+func (s *ControlSink) Answer(requestID string, data []byte) agent.RawInput {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	for i := len(s.publishedControls) - 1; i >= 0; i-- {
+		if s.publishedControls[i].RequestID == requestID {
+			return agent.RawInput{Data: data, ControlInstanceID: s.publishedControls[i].InstanceID}
+		}
+	}
+	return agent.RawInput{Data: data}
 }
 
 func (s *ControlSink) LastPublishedControl() ControlRequestRecord {

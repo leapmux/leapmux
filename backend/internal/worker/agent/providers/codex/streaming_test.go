@@ -184,9 +184,9 @@ func TestHandleCodexOutput_ARetryReleasesTheUnroutedChildBufferBudget(t *testing
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
-	a.bufferCodexModelText("first", "child-1", strings.Repeat("x", codexPendingChildGenerationLimit), agent.AssembledMessageKindText, providerkit.JoinVerbatim, true)
+	a.bufferCodexModelText("first", "child-1", "turn-child-1", strings.Repeat("x", codexPendingChildGenerationLimit), agent.AssembledMessageKindText, providerkit.JoinVerbatim, true)
 	feedCodexLines(a, `{"method":"error","params":{"threadId":"child-1","willRetry":true,"error":{"message":"Reconnecting... 1/3"}}}`)
-	a.bufferCodexModelText("second", "child-1", "OK", agent.AssembledMessageKindText, providerkit.JoinVerbatim, true)
+	a.bufferCodexModelText("second", "child-1", "turn-child-1", "OK", agent.AssembledMessageKindText, providerkit.JoinVerbatim, true)
 	buffer := a.codexChildGenerationBuffer("child-1")
 	assert.Equal(t, []string{"second"}, buffer.ScopeIDs())
 	_, text, present := buffer.ScopeSnapshot("second")

@@ -17,6 +17,7 @@ import { createTestTabStores, projectionMemo } from '~/test-support/tabStores'
 import { tabKey } from './tab.helpers'
 import { createTabMetadataStore, liveTabIds } from './tabMetadata.store'
 import { emitAddTab } from './tabOps'
+import { createTabStatusStore } from './tabStatus.store'
 import { createTabView } from './tabView'
 
 /**
@@ -36,7 +37,12 @@ function mountView() {
   // cache keeps `renderedTabs` identity-stable. A hand-rolled projection here
   // would be a different reactive graph than the app runs.
   const { state, projection } = projectionMemo()
-  const view = createTabView({ projection, state, metadata })
+  const view = createTabView({
+    projection,
+    state,
+    metadata,
+    statuses: createTabStatusStore(),
+  })
   return { view, metadata }
 }
 
@@ -52,6 +58,7 @@ describe('tabView detached terminals', () => {
       projection,
       state,
       metadata,
+      statuses: createTabStatusStore(),
       detachedTerminals: () => [
         { id: detachedId, workerId: 'w1', workspaceId: 'ws-1' },
       ],
@@ -107,6 +114,7 @@ describe('tabView detached terminals', () => {
           projection: projectionMemo().projection,
           state: projectionMemo().state,
           metadata: createTabMetadataStore(),
+          statuses: createTabStatusStore(),
           detachedTerminals: () => {
             if (!constructed)
               askedDuringConstruction = true
@@ -232,6 +240,7 @@ describe('tabView', () => {
           projection,
           state,
           metadata,
+          statuses: createTabStatusStore(),
           isWorkspaceMutatable: workspaceId => workspaceId !== 'ws-archived',
         })
         emitAddTab({
@@ -272,6 +281,7 @@ describe('tabView', () => {
           projection,
           state,
           metadata,
+          statuses: createTabStatusStore(),
           isWorkspaceMutatable: () => false,
         })
         emitAddTab({
@@ -938,7 +948,12 @@ describe('tabView', () => {
         const counting = countingMetadata()
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
-          const view = createTabView({ projection, state, metadata: counting.store })
+          const view = createTabView({
+            projection,
+            state,
+            metadata: counting.store,
+            statuses: createTabStatusStore(),
+          })
           for (const id of ['a1', 'a2', 'a3']) {
             emitAddTab({
               type: TabType.AGENT,
@@ -971,7 +986,12 @@ describe('tabView', () => {
         const counting = countingMetadata()
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
-          const view = createTabView({ projection, state, metadata: counting.store })
+          const view = createTabView({
+            projection,
+            state,
+            metadata: counting.store,
+            statuses: createTabStatusStore(),
+          })
           for (const id of ['a1', 'a2', 'a3']) {
             emitAddTab({
               type: TabType.AGENT,
@@ -1006,7 +1026,12 @@ describe('tabView', () => {
         const counting = countingMetadata()
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
-          const view = createTabView({ projection, state, metadata: counting.store })
+          const view = createTabView({
+            projection,
+            state,
+            metadata: counting.store,
+            statuses: createTabStatusStore(),
+          })
           for (const id of ['a1', 'a2', 'a3']) {
             emitAddTab({
               type: TabType.AGENT,
@@ -1044,7 +1069,12 @@ describe('tabView', () => {
         const counting = countingMetadata()
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
-          const view = createTabView({ projection, state, metadata: counting.store })
+          const view = createTabView({
+            projection,
+            state,
+            metadata: counting.store,
+            statuses: createTabStatusStore(),
+          })
           emitAddTab({
             type: TabType.AGENT,
             id: 'a1',
@@ -1136,6 +1166,7 @@ describe('tabView', () => {
             return state
           },
           metadata: createTabMetadataStore(),
+          statuses: createTabStatusStore(),
         })
 
         expect(view.all()).toHaveLength(1)
@@ -1373,7 +1404,12 @@ describe('tabView', () => {
             })
             return { ...s, tabs } as UserCrdtState
           }
-          const view = createTabView({ projection, state: countingState, metadata })
+          const view = createTabView({
+            projection,
+            state: countingState,
+            metadata,
+            statuses: createTabStatusStore(),
+          })
           const bridge = getCRDTBridge()!
           for (const id of ['a1', 'a2', 'a3']) {
             emitAddTab({

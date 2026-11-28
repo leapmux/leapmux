@@ -8,13 +8,12 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 const (
@@ -52,18 +51,125 @@ type ampExportMessage struct {
 	} `json:"state"`
 }
 
-// ampSteerSubmission retains ownership after a live echo removes its ledger entry.
-// The agent mutex protects these fields. Each baseline is immutable.
+type ampSteerState uint8
+
+const (
+	ampSteerPending ampSteerState = iota
+	ampSteerEchoed
+	ampSteerFinished
+	ampSteerUncertain
+)
+
+// ampSteerSubmission tracks one identified steer from submission through echo,
+// live frame capture, and recovery or retirement. The agent mutex protects
+// these fields.
 type ampSteerSubmission struct {
-	ticket       providerkit.SteerTicket
-	key          string
 	threadID     string
-	baseline     map[string]bool
 	nativeID     string
-	echoed       bool
-	finished     bool
-	uncertain    bool
-	liveMessages [][]ampBlock
+	resolution   agent.SteerResolution
+	state        ampSteerState
+	liveFrames   []ampReplyFrame
+	liveUnproved bool
+}
+
+func (s *ampSteerSubmission) markFinished() {
+	s.state = ampSteerFinished
+	s.liveFrames = nil
+}
+
+// ampInFlightExport coalesces concurrent export requests for one thread at the
+// same or older export generation while letting newer-generation callers run
+// independently.
+type ampInFlightExport struct {
+	gen      uint64
+	done     chan struct{}
+	exported *ampThreadExport
+	err      error
+
+	mu      sync.Mutex
+	waiters int
+	cancel  context.CancelFunc
+}
+
+func (s *ampInFlightExport) join() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.waiters <= 0 {
+		return false
+	}
+	s.waiters++
+	return true
+}
+
+func (s *ampInFlightExport) release() {
+	s.mu.Lock()
+	s.waiters--
+	last := s.waiters == 0
+	s.mu.Unlock()
+	if last {
+		s.cancel()
+	}
+}
+
+func (a *Agent) bumpExportGen() {
+	a.exportGen.Add(1)
+}
+
+func (a *Agent) readInputExport(ctx context.Context, threadID string) (*ampThreadExport, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	minGen := a.exportGen.Load()
+	a.exportMu.Lock()
+	var slot *ampInFlightExport
+	if existing := a.activeExports[threadID]; existing != nil && existing.gen >= minGen && existing.join() {
+		slot = existing
+	} else {
+		runCtx, runCancel := context.WithCancel(a.ctx)
+		slot = &ampInFlightExport{
+			gen:     minGen,
+			done:    make(chan struct{}),
+			waiters: 1,
+			cancel:  runCancel,
+		}
+		if a.activeExports == nil {
+			a.activeExports = make(map[string]*ampInFlightExport)
+		}
+		a.activeExports[threadID] = slot
+		a.exportWG.Add(1)
+		go func(s *ampInFlightExport) {
+			defer a.exportWG.Done()
+			defer func() {
+				a.exportMu.Lock()
+				if a.activeExports[threadID] == s {
+					delete(a.activeExports, threadID)
+				}
+				a.exportMu.Unlock()
+				close(s.done)
+			}()
+			raw, err := a.exportThread(runCtx, threadID)
+			if err == nil && runCtx.Err() != nil {
+				err = runCtx.Err()
+			}
+			if err == nil {
+				s.exported, err = parseThreadExport(raw, threadID)
+			}
+			s.err = err
+		}(slot)
+	}
+	a.exportMu.Unlock()
+
+	select {
+	case <-slot.done:
+		slot.release()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return slot.exported, slot.err
+	case <-ctx.Done():
+		slot.release()
+		return nil, ctx.Err()
+	}
 }
 
 func parseThreadExport(raw []byte, threadID string) (*ampThreadExport, error) {
@@ -90,11 +196,7 @@ func parseThreadExport(raw []byte, threadID string) (*ampThreadExport, error) {
 // refreshThreadSettings reads immutable native choices before a resumed agent publishes its catalog.
 // An absent feature list is unknown; an explicit empty list confirms standard speed.
 func (a *Agent) refreshThreadSettings(ctx context.Context, threadID string) error {
-	raw, err := a.exportThread(ctx, threadID)
-	if err != nil {
-		return err
-	}
-	exported, err := parseThreadExport(raw, threadID)
+	exported, err := a.readInputExport(ctx, threadID)
 	if err != nil {
 		return err
 	}
@@ -110,56 +212,14 @@ func (a *Agent) refreshThreadSettings(ctx context.Context, threadID string) erro
 	return nil
 }
 
-func (exported *ampThreadExport) identities() map[string]bool {
-	ids := make(map[string]bool, len(exported.Messages))
-	for _, message := range exported.Messages {
-		ids[message.ID] = true
-	}
-	return ids
-}
-
-func (message ampExportMessage) steerKey() (string, bool) {
-	if message.Role != "user" || !message.Meta.Steer || !message.Meta.FromExecutor {
-		return "", false
-	}
-	var texts []string
-	hasPrompt := false
-	for _, raw := range message.Content {
-		var block struct {
-			Type string          `json:"type"`
-			Text json.RawMessage `json:"text"`
-		}
-		if json.Unmarshal(raw, &block) != nil {
-			return "", false
-		}
-		switch block.Type {
-		case contracts.AmpBlockTypeText:
-			text, ok := providerkit.RawString(block.Text)
-			if !ok {
-				return "", false
-			}
-			texts = append(texts, text)
-			hasPrompt = true
-		case blockTypeImage:
-			hasPrompt = true
-		default:
-			return "", false
-		}
-	}
-	return ampEchoKey(texts), hasPrompt
-}
-
-// associateSteers assigns each new native identity to at most one local submission.
-// A key with missing or extra candidates remains unresolved. Text alone cannot identify that delivery.
-// Earlier submissions stay in the search even after their live echoes settle.
+// associateSteers assigns each tracked submission its proved native message ID
+// when that ID appears in exported thread history as a user prompt.
 func associateSteers(submissions []*ampSteerSubmission, exported *ampThreadExport) {
 	claimed := make(map[string]bool)
-	proposed := make(map[*ampSteerSubmission]string)
-	positions := make(map[string]int)
+	positions := make(map[string]int, len(exported.Messages))
 	for i, message := range exported.Messages {
 		positions[message.ID] = i
 	}
-	groups := make(map[string][]*ampSteerSubmission)
 	for _, submission := range submissions {
 		if submission.threadID != exported.ID {
 			continue
@@ -168,82 +228,41 @@ func associateSteers(submissions []*ampSteerSubmission, exported *ampThreadExpor
 			claimed[submission.nativeID] = true
 			continue
 		}
-		groups[submission.key] = append(groups[submission.key], submission)
-	}
-	for key, group := range groups {
-		var candidates []ampExportMessage
-		for _, message := range exported.Messages {
-			candidateKey, ok := message.steerKey()
-			if !ok || candidateKey != key || claimed[message.ID] {
-				continue
-			}
-			if slices.ContainsFunc(group, func(submission *ampSteerSubmission) bool { return !submission.baseline[message.ID] }) {
-				candidates = append(candidates, message)
+		if id := submission.resolution.Receipt.InputID; id != "" {
+			if position, ok := positions[id]; ok && !claimed[id] && isAmpExportPrompt(exported.Messages[position]) {
+				submission.nativeID = id
+				claimed[id] = true
 			}
 		}
-		if len(candidates) != len(group) {
-			continue
-		}
-		valid := true
-		for i, submission := range group {
-			if submission.baseline[candidates[i].ID] {
-				valid = false
-				break
-			}
-		}
-		if !valid {
-			continue
-		}
-		for i, submission := range group {
-			proposed[submission] = candidates[i].ID
-			claimed[candidates[i].ID] = true
-		}
 	}
-	last := -1
-	for _, submission := range submissions {
-		if submission.threadID != exported.ID {
-			continue
-		}
-		id := submission.nativeID
-		if id == "" {
-			id = proposed[submission]
-		}
-		if id == "" {
-			continue
-		}
-		position, ok := positions[id]
-		if !ok || position <= last {
-			return
-		}
-		last = position
-	}
-	for submission, id := range proposed {
-		submission.nativeID = id
-	}
-
 }
 
 func (a *Agent) exportThread(ctx context.Context, threadID string) ([]byte, error) {
 	if a.exportFn != nil {
 		return a.exportFn(ctx, threadID)
 	}
-	return providerkit.RunCLI(ctx, providerkit.CLIRun{
-		Locator: ampLocator, Label: "Amp", Shell: a.launch.opts.Shell, LoginShell: a.launch.opts.LoginShell,
-		Args: []string{"threads", "export", threadID}, WorkingDir: a.launch.opts.WorkingDir,
-		StripEnvKeys: ampIdentityEnvKeys, SetEnv: []string{envSkipUpdateCheck + "=1"},
-		Env: a.launch.processEnv, Timeout: ampExportBudget, MaxOutput: 64 << 20,
-	})
+	return a.runCLI(ctx, []string{"threads", "export", threadID}, ampExportBudget, 64<<20)
 }
 
 // exportContext includes command duration in the injected timeout.
 func (a *Agent) exportContext() (context.Context, func()) {
+	return a.exportContextForProc(nil)
+}
+
+func (a *Agent) exportContextForProc(proc *ampProcess) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(a.ctx)
 	timer := a.clock.NewTimer(ampExportBudget, AmpExportBudgetTag)
+	var procEnding <-chan struct{}
+	if proc != nil {
+		procEnding = proc.endingSignal()
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		select {
 		case <-timer.C:
+			cancel()
+		case <-procEnding:
 			cancel()
 		case <-ctx.Done():
 		}
@@ -251,60 +270,51 @@ func (a *Agent) exportContext() (context.Context, func()) {
 	return ctx, func() { cancel(); timer.Stop(); <-done }
 }
 
-func (a *Agent) steerBaseline() (*ampThreadExport, error) {
-	a.mu.Lock()
-	threadID := a.threadID
-	a.mu.Unlock()
-	if threadID == "" {
-		// Amp emits its first init after a complete message. Waiting would hold the user's steer request for that whole response.
-		return nil, agent.ErrSteeringUnsupported
-	}
-	ctx, cancel := a.exportContext()
-	defer cancel()
-	raw, err := a.exportThread(ctx, threadID)
-	if err != nil {
-		return nil, fmt.Errorf("read the history before steering Amp: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	exported, err := parseThreadExport(raw, threadID)
-	if err != nil {
-		return nil, err
-	}
-	a.mu.Lock()
-	associateSteers(a.nativeSteers, exported)
-	a.mu.Unlock()
-	return exported, nil
-}
-
-func (a *Agent) rememberSteer(proc *ampProcess, key string, baseline *ampThreadExport) (providerkit.SteerTicket, error) {
+func (a *Agent) rememberSteer(proc *ampProcess, threadID string, resolution agent.SteerResolution) (*ampSteerSubmission, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.stopped || a.proc != proc || a.threadID != baseline.ID || !a.turn.active || proc.ending() {
-		return 0, agent.ErrNoActiveTurn
+	if a.stopped || a.proc != proc || a.threadID != threadID || !a.turn.active || proc.ending() {
+		return nil, agent.ErrNoActiveTurn
 	}
 	select {
 	case <-proc.ProcessDone():
-		return 0, agent.ErrNoActiveTurn
+		return nil, agent.ErrNoActiveTurn
 	default:
 	}
-	ticket := a.steers.Add(key)
-	a.nativeSteers = append(a.nativeSteers, &ampSteerSubmission{ticket: ticket, key: key, threadID: baseline.ID, baseline: baseline.identities()})
-	return ticket, nil
+	if resolution.Receipt.InputID == "" {
+		return nil, nil
+	}
+	submission := &ampSteerSubmission{threadID: threadID, resolution: resolution}
+	a.nativeSteers = append(a.nativeSteers, submission)
+	return submission, nil
 }
 
-func (a *Agent) forgetSteer(ticket providerkit.SteerTicket) {
+// forgetUnconsumedSteer removes a failed write unless native history or
+// uncertainty already claimed ownership of the submission.
+func (a *Agent) forgetUnconsumedSteer(target *ampSteerSubmission) bool {
 	a.mu.Lock()
-	a.nativeSteers = slices.DeleteFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool { return submission.ticket == ticket })
+	if target.state != ampSteerPending || target.nativeID != "" {
+		a.mu.Unlock()
+		return false
+	}
+	a.nativeSteers = slices.DeleteFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool { return submission == target })
 	a.mu.Unlock()
+	return true
 }
 
 func (a *Agent) hasUncertainSteer(threadID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return slices.ContainsFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool {
-		return submission.uncertain && submission.threadID == threadID
+		return submission.state == ampSteerUncertain && submission.threadID == threadID
+	})
+}
+
+func (a *Agent) clearSettledUncertainSteers(threadID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nativeSteers = slices.DeleteFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool {
+		return submission.state == ampSteerUncertain && submission.threadID == threadID
 	})
 }
 
@@ -315,14 +325,7 @@ func (a *Agent) checkUncertainThread(threadID string) error {
 	}
 	ctx, cancel := a.exportContext()
 	defer cancel()
-	raw, err := a.exportThread(ctx, threadID)
-	if err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	exported, err := parseThreadExport(raw, threadID)
+	exported, err := a.readInputExport(ctx, threadID)
 	if err != nil {
 		return err
 	}
@@ -333,24 +336,14 @@ func (a *Agent) checkUncertainThread(threadID string) error {
 		}
 		if message.Role == "assistant" {
 			if message.State.Type == "complete" && message.State.StopReason == stopReasonEndTurn {
+				a.clearSettledUncertainSteers(threadID)
 				return nil
 			}
 			return agent.ErrAgentBusy
 		}
 	}
+	a.clearSettledUncertainSteers(threadID)
 	return nil
-}
-
-// noteSteerEcho retains the live receipt after the input queue removes the input.
-func (a *Agent) noteSteerEcho(ticket providerkit.SteerTicket) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, submission := range a.nativeSteers {
-		if submission.ticket == ticket {
-			submission.echoed = true
-			return
-		}
-	}
 }
 
 func visibleExportBlocks(content []json.RawMessage) ([]ampBlock, error) {
@@ -367,27 +360,53 @@ func visibleExportBlocks(content []json.RawMessage) ([]ampBlock, error) {
 	return visible, nil
 }
 
-func (a *Agent) noteLiveAssistant(message *ampMessage) {
-	blocks, err := visibleExportBlocks(message.Content)
-	if err != nil {
-		return
-	}
+func (a *Agent) noteLiveAssistant(threadID string, reply *ampInputReply, frame ampReplyFrame, ended bool) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	var latestTracked string
+	if reply != nil {
+		if reply.startsWithSteer {
+			latestTracked = reply.receipt.InputID
+		}
+		if count := len(reply.steers); count > 0 {
+			latestTracked = reply.steers[count-1].InputID
+		}
+	}
 	for i := len(a.nativeSteers) - 1; i >= 0; i-- {
 		submission := a.nativeSteers[i]
-		if submission.echoed && !submission.finished {
-			submission.liveMessages = append(submission.liveMessages, blocks)
+		if threadID != "" && submission.threadID != threadID {
+			continue
+		}
+		if submission.state == ampSteerEchoed {
+			if latestTracked != "" && latestTracked != submission.nativeID {
+				continue
+			}
+			if reply != nil && !reply.unproved {
+				submission.liveFrames = append(submission.liveFrames, frame)
+			} else {
+				submission.liveUnproved = true
+			}
 			break
 		}
 	}
-	if message.StopReason != nil && *message.StopReason == stopReasonEndTurn {
-		for _, submission := range a.nativeSteers {
-			if submission.echoed {
-				submission.finished = true
-			}
+	if ended {
+		a.finishEchoedSteersLocked(threadID)
+	}
+	a.mu.Unlock()
+}
+
+func (a *Agent) finishEchoedSteersLocked(threadID string) {
+	for _, submission := range a.nativeSteers {
+		if submission.state == ampSteerEchoed && (threadID == "" || submission.threadID == threadID) {
+			submission.markFinished()
 		}
 	}
+	a.pruneTrackedSteersLocked()
+}
+
+func (a *Agent) hasRecoverableSteerLocked() bool {
+	return slices.ContainsFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool {
+		return submission.state == ampSteerPending || submission.state == ampSteerEchoed
+	})
 }
 
 // prepareSteerRecovery prevents a process-end row from releasing known server work.
@@ -400,11 +419,9 @@ func (a *Agent) prepareSteerRecovery() bool {
 	if a.stopped {
 		return false
 	}
-	for _, submission := range a.nativeSteers {
-		if !submission.finished && !submission.uncertain {
-			a.reconciling = true
-			return true
-		}
+	if a.hasRecoverableSteerLocked() {
+		a.reconciling = true
+		return true
 	}
 	return false
 }
@@ -449,24 +466,27 @@ func (a *Agent) reconcileStoppedSteers(threadID string) {
 	}
 	// An absent record is not proof of a native drop.
 	a.mu.Lock()
-	var uncertain []providerkit.SteerTicket
+	var uncertain []*ampSteerSubmission
 	knownUnfinished := false
 	for _, submission := range a.nativeSteers {
-		if submission.finished || submission.uncertain {
+		if submission.state == ampSteerFinished || submission.state == ampSteerUncertain {
 			continue
 		}
-		if !submission.echoed && submission.nativeID == "" {
-			submission.uncertain = true
-			uncertain = append(uncertain, submission.ticket)
+		if submission.state == ampSteerPending && submission.nativeID == "" {
+			submission.state = ampSteerUncertain
+			uncertain = append(uncertain, submission)
 		} else {
 			knownUnfinished = true
 		}
 	}
 	a.mu.Unlock()
-	for _, ticket := range uncertain {
-		a.steers.Uncertain(ticket)
+	for _, submission := range uncertain {
+		resolution := submission.resolution
+		resolution.Outcome, resolution.Receipt = agent.SteerOutcomeUncertain, agent.NativeInputReceipt{}
+		if err := agent.RetainSteerResolution(a.sink, resolution); !agent.OutputRetained(err) {
+			slog.Warn("retain the Amp steer uncertainty", "agent_id", a.agentID, "error", err)
+		}
 	}
-	a.steers.Settle(a.sink)
 	// Uncertainty pauses the queue. A confirmed reply still owns an active turn.
 	if knownUnfinished {
 		a.ensureTurn()
@@ -486,19 +506,11 @@ func (a *Agent) reconcileStoppedSteers(threadID string) {
 }
 
 func (a *Agent) readRecoveredSteers(ctx context.Context, threadID string) bool {
-	raw, err := a.exportThread(ctx, threadID)
-	if err == nil {
-		err = ctx.Err()
-	}
+	exported, err := a.readInputExport(ctx, threadID)
 	if err != nil {
 		if a.ctx.Err() == nil {
 			slog.Warn("read the Amp recovery history", "agent_id", a.agentID, "error", err)
 		}
-		return false
-	}
-	exported, err := parseThreadExport(raw, threadID)
-	if err != nil {
-		slog.Warn("read the Amp recovery history", "agent_id", a.agentID, "error", err)
 		return false
 	}
 	return a.applyRecoveredSteers(exported)
@@ -513,78 +525,16 @@ func (a *Agent) applyRecoveredSteers(exported *ampThreadExport) bool {
 	associateSteers(a.nativeSteers, exported)
 	submissions := slices.Clone(a.nativeSteers)
 	a.mu.Unlock()
-	positions := make(map[string]int, len(exported.Messages))
-	for i, message := range exported.Messages {
-		positions[message.ID] = i
+	if !a.recoverTrackedSteers(exported, submissions) {
+		return false
 	}
 	for _, submission := range submissions {
-		if a.discarding() || a.IsStopped() {
+		a.mu.Lock()
+		state := submission.state
+		a.mu.Unlock()
+		if state == ampSteerPending || state == ampSteerEchoed {
 			return false
 		}
-		a.mu.Lock()
-		finished, uncertain, nativeID := submission.finished, submission.uncertain, submission.nativeID
-		live := slices.Clone(submission.liveMessages)
-		a.mu.Unlock()
-		if finished || uncertain {
-			continue
-		}
-		position, found := positions[nativeID]
-		if !found {
-			return false
-		}
-		a.ensureTurn()
-		a.mu.Lock()
-		submission.echoed = true
-		a.mu.Unlock()
-		a.steers.Echo(submission.ticket)
-		a.steers.Settle(a.sink)
-		liveIndex := 0
-		complete := false
-		for _, message := range exported.Messages[position+1:] {
-			if message.Role == "user" && message.Meta.FromExecutor {
-				// Consecutive owned steers can share one reply. The later steer owns that reply.
-				a.mu.Lock()
-				complete = slices.ContainsFunc(submissions, func(next *ampSteerSubmission) bool {
-					return next.nativeID == message.ID && next.threadID == exported.ID
-				})
-				a.mu.Unlock()
-				break
-			}
-			if message.Role != "assistant" {
-				continue
-			}
-			if message.State.Type != "complete" {
-				return false
-			}
-			blocks, err := visibleExportBlocks(message.Content)
-			if err != nil {
-				return false
-			}
-			if liveIndex < len(live) {
-				// Native stdout has no message identity. Match its complete visible prefix before importing any later message.
-				before, err := json.Marshal(live[liveIndex])
-				if err != nil {
-					return false
-				}
-				after, err := json.Marshal(blocks)
-				if err != nil || !agent.JSONCanonicalEqual(before, after) {
-					return false
-				}
-				liveIndex++
-			} else if !a.persistExportMessage(exported.ID, message, blocks) {
-				return false
-			}
-			if message.State.StopReason == stopReasonEndTurn {
-				complete = true
-				break
-			}
-		}
-		if liveIndex < len(live) || !complete {
-			return false
-		}
-		a.mu.Lock()
-		submission.finished = true
-		a.mu.Unlock()
 	}
 	a.finishTurn(agent.MessageCompletionComplete, nil)
 	return true
@@ -596,7 +546,8 @@ func (a *Agent) persistExportMessage(threadID string, message ampExportMessage, 
 		return false
 	}
 	a.mu.Lock()
-	if a.importedMessages[message.ID] {
+	importedKey := threadID + "\x00" + message.ID
+	if a.importedMessages[importedKey] {
 		a.mu.Unlock()
 		return true
 	}
@@ -611,7 +562,7 @@ func (a *Agent) persistExportMessage(threadID string, message ampExportMessage, 
 		default:
 			continue
 		}
-		if strings.TrimSpace(text) == "" {
+		if agent.TrimJavaScriptSpace(text) == "" {
 			continue
 		}
 		raw, err := agent.MarshalAssembledMessage(kind, text, agent.MessageCompletionComplete)
@@ -621,7 +572,7 @@ func (a *Agent) persistExportMessage(threadID string, message ampExportMessage, 
 		}
 		rows = append(rows, agent.TranscriptMessage{
 			Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-			Content: agent.MessageContent{Original: raw, AgentSessionID: threadID, IdempotencyKey: fmt.Sprintf("amp-export:%s:%s:%d", threadID, message.ID, index)},
+			Content: agent.MessageContent{Original: raw, AgentSessionID: threadID, IdempotencyKey: exportMessageKey(threadID, message.ID, index)},
 		})
 	}
 	err := agent.PersistTranscriptBatch(a.sink, rows)
@@ -633,7 +584,11 @@ func (a *Agent) persistExportMessage(threadID string, message ampExportMessage, 
 	if a.importedMessages == nil {
 		a.importedMessages = make(map[string]bool)
 	}
-	a.importedMessages[message.ID] = true
+	a.importedMessages[importedKey] = true
 	a.mu.Unlock()
 	return true
+}
+
+func exportMessageKey(threadID, messageID string, index int) string {
+	return fmt.Sprintf("amp-export:%s:%s:%d", threadID, messageID, index)
 }

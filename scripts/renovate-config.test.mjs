@@ -262,6 +262,7 @@ describe('trusted Renovate configuration', () => {
       'go.work.sum',
       'backend/generated/example.go',
       'backend/internal/hub/generated/frontend/embed.go',
+      'backend/internal/skills/generated/catalog/embed.go',
       'frontend/.output/index.html',
       'desktop/rust/target/example',
     ])

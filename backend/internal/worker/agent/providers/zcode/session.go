@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -431,10 +431,12 @@ func (a *Agent) adoptCompleteZCodeSessionSnapshot(snap zcodeStateSnapshot, fresh
 	a.applyParsedStateSnapshotLocked(snap)
 	a.lastSeq = max(a.lastSeq, snap.Runtime.EventSeq)
 	newOwner := snap.Runtime.ActiveTurnID != "" && a.turns[snap.Runtime.ActiveTurnID] == nil
+	var displaced []agent.NativeInputReceipt
 	if newOwner {
-		a.createResumedZCodeTurnLocked(snap)
+		displaced = a.createResumedZCodeTurnLocked(snap)
 	}
 	a.Mu.Unlock()
+	a.retireUnprovedInputs(displaced)
 	if newOwner {
 		a.publishZCodeModelAPIRetryLocked()
 	}
@@ -461,7 +463,7 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 		a.persistIncompleteZCodeToolsForChild(spawn.spanID, agent.MessageCompletionInterrupted)
 	}
 	a.Mu.Lock()
-	a.clearZCodeTurnsLocked()
+	retired := a.clearZCodeTurnsLocked()
 	a.compactionSessionID = ""
 	a.cancelStoppedZCodeTurnLocked()
 	a.TurnToolUses = 0
@@ -474,6 +476,9 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 	shellRowKeys := slices.Sorted(maps.Keys(a.openShellTasks))
 	clear(a.openShellTasks)
 	a.Mu.Unlock()
+	for _, receipt := range retired {
+		a.retireObservedInput(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	}
 	a.publishZCodeModelAPIRetryLocked()
 	a.upsertZCodeWorkflowRows(upserts)
 	for _, spawn := range activeSpawns {
@@ -514,12 +519,13 @@ func (a *Agent) resetZCodeSessionCountersLocked() {
 // reports. The owner starts without content or a user-message anchor.
 // Recovery can select native messages whose turn anchor matches this turn.
 // The caller holds a.Mu.
-func (a *Agent) createResumedZCodeTurnLocked(snap zcodeStateSnapshot) {
-	a.createZCodeTurnLocked(zcodeTurnState{
+func (a *Agent) createResumedZCodeTurnLocked(snap zcodeStateSnapshot) []agent.NativeInputReceipt {
+	_, displaced := a.createZCodeTurnLocked(zcodeTurnState{
 		id:                snap.Runtime.ActiveTurnID,
 		background:        false,
 		admissionRevision: snap.Runtime.StateRevision,
 	})
+	return displaced
 }
 
 func (a *Agent) applyParsedStateSnapshotLocked(snap zcodeStateSnapshot) {

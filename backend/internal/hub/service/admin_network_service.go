@@ -27,10 +27,10 @@ type ListenReporter interface {
 	// address it could not bind.
 	Bound() []listenset.Bound
 	// PrimaryListenAddr is the address a browser-facing URL should give, in
-	// the form -listen carries, or "" when the hub binds no TCP address.
+	// the form --listen carries, or "" when the hub binds no TCP address.
 	//
 	// It is NOT derivable from Bound: the answer for a hub with nothing bound
-	// is the address -listen was given, which is by definition not in a report
+	// is the address --listen was given, which is by definition not in a report
 	// of what is bound.
 	PrimaryListenAddr() string
 	// BaseTCPAddresses reports the full TCP merge input in bind order, each

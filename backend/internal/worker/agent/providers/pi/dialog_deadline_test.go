@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -40,6 +41,7 @@ func TestPiDialogIsWithdrawnWhenTheDeadlinePiStatedPasses(t *testing.T) {
 	a, sink, output, ctx, clock := newPiDeadlineFixture(t)
 	a.handlePiExtensionUIRequest([]byte(piTimedConfirm))
 	require.Len(t, sink.PublishedControls(), 1)
+	agenttest.AssertPublishedControlKeys(t, piProvider{}, sink)
 
 	clock.Advance(30*time.Second - time.Millisecond).MustWait(ctx)
 	assert.Empty(t, sink.CanceledControls(), "the deadline has not passed")
@@ -52,7 +54,7 @@ func TestPiAnsweredDialogIsNotWithdrawnAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	a, sink, _, ctx, clock := newPiDeadlineFixture(t)
 	a.handlePiExtensionUIRequest([]byte(piTimedConfirm))
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`)}))
 
 	clock.Advance(time.Minute).MustWait(ctx)
 	assert.Empty(t, sink.CanceledControls())
@@ -100,7 +102,7 @@ func TestPiQuestionDialogThatTimedOutIsForgotten(t *testing.T) {
 	a.Mu.Unlock()
 	assert.False(t, remembered)
 	late := `{"type":"extension_ui_response","id":"select","value":"My custom answer"}`
-	require.NoError(t, a.SendRawInput([]byte(late), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(late)}))
 	assert.Equal(t, late+"\n", output.String(), "no custom-answer exchange starts for a dialog Pi no longer waits for")
 }
 
@@ -132,12 +134,15 @@ func TestPiExtensionUIRequestHeaderDeadline(t *testing.T) {
 		{timeout: 30000, want: 30 * time.Second},
 		{timeout: 1.5, want: 1500 * time.Microsecond},
 		{timeout: 1e300, want: 0},
-		{timeout: maxPiDialogTimeoutMillis, want: 0},
+		{timeout: providerkit.MaxDialogTimeoutMillis, want: 0},
+		{timeout: math.NaN(), want: 0},
+		{timeout: math.Inf(1), want: 0},
+		{timeout: math.Inf(-1), want: 0},
 	} {
 		assert.Equal(t, tc.want, piExtensionUIRequestHeader{Timeout: tc.timeout}.deadline(), tc.timeout)
 	}
 	// Just below the largest wait that a time.Duration holds, the conversion
 	// stays positive: it does not overflow into a negative wait, which would
 	// read as no deadline.
-	assert.Positive(t, piExtensionUIRequestHeader{Timeout: maxPiDialogTimeoutMillis - 1}.deadline())
+	assert.Positive(t, piExtensionUIRequestHeader{Timeout: providerkit.MaxDialogTimeoutMillis - 1}.deadline())
 }

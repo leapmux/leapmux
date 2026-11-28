@@ -14,8 +14,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+// SelectedOptionResult is the JSON-RPC permission answer that selects one
+// option ID in the ACP-shaped outcome envelope shared across providers.
+func SelectedOptionResult(requestID, optionID string) []byte {
+	return agent.JSONRPCResult(requestID, map[string]any{
+		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": optionID},
+	})
+}
 
 // JSONRPCProcess shares request correlation across JSON-RPC providers.
 type JSONRPCProcess struct {
@@ -58,17 +67,14 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 }
 
 // SendRawInput preserves provider JSON inside the selected frame and removes its answered control.
+// It refuses, and writes nothing, an answer to a held request that states another
+// instance or none, or whose standing approval is in flight (takeOutstandingControl).
 // Remove the control before the write because withdrawal can occur during that write.
 // A write that delivers no bytes restores the control for another answer.
 // ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
 // Restoring it in that case can send a second answer to a retired request.
-func (b *JSONRPCProcess) SendRawInput(data []byte, stop agent.StopContext) error {
-	restore, _ := b.takeOutstandingControl(data)
-	err := b.writeRawFrame(data)
-	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
-		restore()
-	}
-	return err
+func (b *JSONRPCProcess) SendRawInput(input agent.RawInput) error {
+	return b.sendRawInput(input, false)
 }
 
 func (b *JSONRPCProcess) writeRawFrame(data []byte) error {
@@ -190,9 +196,26 @@ func (b *JSONRPCProcess) sendRequest(ctx context.Context, method string, params 
 	return decodeJSONRPCResponse(resp)
 }
 
-func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
+type DetachedRequestObservation struct {
+	// BeforeWrite runs on the stdin writer before the native write.
+	BeforeWrite func()
+	// Response runs on the reader before the completion callback can run.
+	Response func(json.RawMessage)
+}
+
+// DetachedRequestOptions configures timeout and transport observation for
+// SendDetachedRequest. Zero Timeout leaves the request open until process exit.
+type DetachedRequestOptions struct {
+	Timeout     time.Duration
+	Observation DetachedRequestObservation
+}
+
+// SendDetachedRequest writes a JSON-RPC request synchronously and invokes handle
+// asynchronously when the correlated reply arrives or times out. Neither
+// observer in options.Observation may wait for another request.
+func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessage, options DetachedRequestOptions, handle func(json.RawMessage, error)) error {
 	reqID := b.nextReqID.Add(1)
-	ch, release, err := b.Register(reqID)
+	ch, release, err := b.RegisterObserved(reqID, options.Observation.Response)
 	if err != nil {
 		return &jsonRPCRequestNotSentError{cause: err}
 	}
@@ -201,13 +224,13 @@ func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessa
 		release()
 		return &jsonRPCRequestNotSentError{cause: fmt.Errorf("marshal request: %w", err)}
 	}
-	if err := b.writeJSONRPCMessage(data); err != nil {
+	if err := b.writeStdin(b.frameJSONRPCMessage(data), options.Observation.BeforeWrite); err != nil {
 		release()
 		return jsonRPCRequestWriteError(err)
 	}
 	go func() {
 		defer release()
-		resp, err := b.AwaitResponse(ch, method, 0)
+		resp, err := b.AwaitResponse(ch, method, options.Timeout)
 		if err == nil {
 			resp, err = decodeJSONRPCResponse(resp)
 		}

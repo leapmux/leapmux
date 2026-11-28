@@ -78,6 +78,8 @@ type Channel struct {
 	streamCbs  map[uint64]*streamCallback
 	reassembly map[uint64]*channelwire.ChunkBuffer
 	closed     atomic.Bool
+	closeErrMu sync.Mutex
+	closeErr   error
 
 	// The first Close caller signals closeFinished. The receiver also has
 	// to return, since a WebSocket read can initiate transport close itself.
@@ -612,6 +614,9 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 			return nil, err
 		}
 		if ch.Closed() {
+			if err := ch.transportCloseErr(); err != nil {
+				return nil, fmt.Errorf("open channel: channel closed during pin commit: %w", err)
+			}
 			return nil, errors.New("open channel: channel closed during pin commit")
 		}
 		commitCtx, cancelCommit := ctxutil.WithLinkedCancel(ctx, ch.Context())
@@ -631,6 +636,9 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		return nil, err
 	}
 	if ch.Closed() {
+		if err := ch.transportCloseErr(); err != nil {
+			return nil, fmt.Errorf("open channel: channel closed before handout: %w", err)
+		}
 		return nil, errors.New("open channel: channel closed before handout")
 	}
 
@@ -666,6 +674,36 @@ func rollbackRegisteredChannel(client leapmuxv1connect.ChannelServiceClient, opt
 // re-resolving a fresh one -- exactly the self-heal this predicate gates.
 func (ch *Channel) Closed() bool {
 	return ch.closed.Load() || ch.ctx.Err() != nil
+}
+
+// recordCloseErr records the first transport error that ended the channel's
+// receive loop so callers waking on ch.ctx.Done() receive the underlying
+// failure (such as a WebSocket CloseError) instead of context.Canceled.
+func (ch *Channel) recordCloseErr(err error) {
+	if err == nil {
+		return
+	}
+	ch.closeErrMu.Lock()
+	if ch.closeErr == nil {
+		ch.closeErr = err
+	}
+	ch.closeErrMu.Unlock()
+}
+
+// transportCloseErr returns the recorded transport close error, if any.
+func (ch *Channel) transportCloseErr() error {
+	ch.closeErrMu.Lock()
+	defer ch.closeErrMu.Unlock()
+	return ch.closeErr
+}
+
+// closedErr returns the recorded transport close error when present, falling
+// back to ch.ctx.Err().
+func (ch *Channel) closedErr() error {
+	if err := ch.transportCloseErr(); err != nil {
+		return err
+	}
+	return ch.ctx.Err()
 }
 
 // Close closes the channel.
@@ -720,11 +758,17 @@ func (ch *Channel) CloseDone() <-chan struct{} {
 // set ctx accordingly; a cancelled ctx no longer tears down the shared channel
 // mid-rekey (the Ack wait is bound to the channel lifetime + Ack timer).
 func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (*leapmuxv1.InnerRpcResponse, error) {
+	return ch.CallRequest(ctx, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload})
+}
+
+// CallRequest is CallRPC for a request that the caller built whole, such as a
+// call that a Worker relays with the CallSource of the tab that made it.
+func (ch *Channel) CallRequest(ctx context.Context, req *leapmuxv1.InnerRpcRequest) (*leapmuxv1.InnerRpcResponse, error) {
 	if ctx == nil {
 		return nil, errors.New("rpc operation context is required")
 	}
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait(ctx, method, payload, RPCHandlers{Response: respCh})
+	reqID, err := ch.SendRequestNoWait(ctx, req, RPCHandlers{Response: respCh})
 	if err != nil {
 		return nil, err
 	}
@@ -751,12 +795,21 @@ func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (
 		}
 		return nil, fmt.Errorf("rpc timeout: %w", waitCtx.Err())
 	case <-ch.ctx.Done():
-		return nil, ch.ctx.Err()
+		return nil, ch.closedErr()
 	}
 }
 
 // SendRPCNoWait sends an inner RPC after atomically installing all handlers.
 func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers RPCHandlers) (uint64, error) {
+	return ch.SendRequestNoWait(ctx, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, handlers)
+}
+
+// SendRequestNoWait is SendRPCNoWait for a request that the caller built
+// whole. It sends req as it is; the caller must not change it afterwards.
+func (ch *Channel) SendRequestNoWait(ctx context.Context, req *leapmuxv1.InnerRpcRequest, handlers RPCHandlers) (uint64, error) {
+	if req == nil {
+		return 0, errors.New("rpc request is required")
+	}
 	if ctx == nil {
 		return 0, errors.New("rpc operation context is required")
 	}
@@ -764,7 +817,7 @@ func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []b
 		return 0, err
 	}
 	if err := ch.ctx.Err(); err != nil {
-		return 0, fmt.Errorf("channel closed: %w", err)
+		return 0, fmt.Errorf("channel closed: %w", ch.closedErr())
 	}
 	// deliverResponse delivers with a non-blocking send so one slow caller can
 	// never wedge the sole receive goroutine, which makes buffering the caller's
@@ -794,6 +847,9 @@ func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []b
 		if stream != nil {
 			stream.stop()
 		}
+		if closeErr := ch.transportCloseErr(); closeErr != nil {
+			return 0, fmt.Errorf("channel closed: %w", closeErr)
+		}
 		return 0, netClosedError()
 	}
 	reqID := ch.allocateReqIDLocked()
@@ -805,12 +861,7 @@ func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []b
 	}
 	ch.mu.Unlock()
 	innerReq := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_Request{
-			Request: &leapmuxv1.InnerRpcRequest{
-				Method:  method,
-				Payload: payload,
-			},
-		},
+		Kind: &leapmuxv1.InnerMessage_Request{Request: req},
 	}
 
 	if err := ch.sendInnerContext(ctx, reqID, innerReq); err != nil {
@@ -861,7 +912,7 @@ func (ch *Channel) sendStreamAction(ctx context.Context, reqID uint64, request *
 		return err
 	}
 	if err := ch.ctx.Err(); err != nil {
-		return fmt.Errorf("channel closed: %w", err)
+		return fmt.Errorf("channel closed: %w", ch.closedErr())
 	}
 	inner := &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{StreamRequest: request},
@@ -1007,7 +1058,7 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 		return err
 	}
 	if err := ch.ctx.Err(); err != nil {
-		return fmt.Errorf("channel closed: %w", err)
+		return fmt.Errorf("channel closed: %w", ch.closedErr())
 	}
 	// Write under the channel's LIFETIME context, not the caller's ctx:
 	// coder/websocket registers context.AfterFunc(ctx, c.close) for any
@@ -1054,6 +1105,11 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 		// down with it.
 		if !errors.Is(err, channelwire.ErrSendAborted) {
 			ch.cancel()
+		}
+		if ctx.Err() == nil {
+			if closeErr := ch.transportCloseErr(); closeErr != nil {
+				return fmt.Errorf("channel closed: %w", closeErr)
+			}
 		}
 		return err
 	}
@@ -1279,6 +1335,7 @@ func (ch *Channel) recvLoop() {
 			if ch.closed.Load() || ch.ctx.Err() != nil {
 				return
 			}
+			ch.recordCloseErr(err)
 			slog.Error("tunnel channel recv error", "channel_id", ch.channelID, "error", err)
 			return
 		}

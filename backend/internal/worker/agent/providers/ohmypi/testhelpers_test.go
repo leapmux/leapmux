@@ -47,6 +47,7 @@ type rig struct {
 	sink   *agenttest.ControlSink
 	stdinR *os.File
 	stdinW *os.File
+	cancel context.CancelFunc
 	// clock is the agent's clock. No timer of the agent fires unless a test
 	// advances it.
 	clock *quartz.Mock
@@ -98,7 +99,7 @@ func newRig(t *testing.T) *rig {
 	}
 	a.SkipStderr()
 	r := &rig{
-		t: t, agent: a, sink: sink, stdinR: stdinR, stdinW: stdinW, clock: clock,
+		t: t, agent: a, sink: sink, stdinR: stdinR, stdinW: stdinW, cancel: cancel, clock: clock,
 		lines: make(chan rigLine, 256), done: make(chan struct{}),
 	}
 	go r.dispatch()

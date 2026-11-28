@@ -55,6 +55,16 @@ func (b *Base) PrepareSteer() {
 // reader of the two (EndAgentTurnWithoutRow) never finds a queued turn with
 // no boundary that the prompt's end did not take yet.
 func (b *Base) BeginAgentTurn() bool {
+	return b.beginAgentTurn("")
+}
+
+// BeginAgentTurnWithReply identifies an agent-initiated turn by the native ID
+// that its end will carry. The Worker binds each steer when the provider echoes it.
+func (b *Base) BeginAgentTurnWithReply(turnID string) bool {
+	return b.beginAgentTurn(turnID)
+}
+
+func (b *Base) beginAgentTurn(turnID string) bool {
 	b.turnMu.Lock()
 	b.Mu.Lock()
 	switch {
@@ -71,7 +81,7 @@ func (b *Base) BeginAgentTurn() bool {
 		if !drained {
 			turn = b.markPromptBoundaryLocked()
 		}
-		target := b.openRootTranscriptLocked(sessionID, true, b.promptTarget)
+		target := b.openAgentTurnTranscriptLocked(sessionID, turnID, b.promptTarget)
 		b.rootTarget = target
 		if drained {
 			b.promptTarget = target
@@ -83,6 +93,10 @@ func (b *Base) BeginAgentTurn() bool {
 		b.endPromptOutput(turn)
 		return true
 	}
+	return b.startIdleAgentTurnLocked(turnID)
+}
+
+func (b *Base) startIdleAgentTurnLocked(turnID string) bool {
 	b.promptActive = true
 	b.promptOutputDrained = false
 	b.agentTurnActive = true
@@ -90,7 +104,7 @@ func (b *Base) BeginAgentTurn() bool {
 	b.Mu.Unlock()
 	turn := b.takeUnownedOutputLocked()
 	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, true, nil)
+	target := b.openAgentTurnTranscriptLocked(sessionID, turnID, nil)
 	b.rootTarget, b.promptTarget = target, target
 	b.turnMu.Unlock()
 	b.persistUnownedText(turn)
@@ -99,6 +113,18 @@ func (b *Base) BeginAgentTurn() bool {
 	}
 	b.notePromptActive()
 	return true
+}
+
+func (b *Base) openAgentTurnTranscriptLocked(sessionID, turnID string, preceding *acpTranscriptTarget) *acpTranscriptTarget {
+	var receipt agent.NativeInputReceipt
+	if turnID != "" {
+		receipt = agent.NativeInputReceipt{SessionID: sessionID, TurnID: turnID}
+	}
+	target := b.openRootTranscriptLocked(sessionID, true, preceding, receipt)
+	if turnID != "" {
+		target.receiptStarted = true
+	}
+	return target
 }
 
 // AdmitAgentTurn records a turn that the agent ASKS to start, and only when no
@@ -122,22 +148,7 @@ func (b *Base) AdmitAgentTurn() bool {
 		b.turnMu.Unlock()
 		return false
 	}
-	b.promptActive = true
-	b.promptOutputDrained = false
-	b.agentTurnActive = true
-	sessionID := b.sessionID
-	b.Mu.Unlock()
-	turn := b.takeUnownedOutputLocked()
-	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, true, nil)
-	b.rootTarget, b.promptTarget = target, target
-	b.turnMu.Unlock()
-	b.persistUnownedText(turn)
-	if err := target.prepare(); err != nil {
-		slog.Error("prepare ACP root transcript", "error", err)
-	}
-	b.notePromptActive()
-	return true
+	return b.startIdleAgentTurnLocked("")
 }
 
 // endPromptOutput stores the text of the running prompt that the boundary took,
@@ -158,44 +169,7 @@ func (b *Base) endPromptOutput(turn acpTurnSnapshot) {
 // provider can consume it at its hook, as Gemini does, or avoid it with a
 // resume that sends no replay.
 func (b *Base) persistUnownedText(turn acpTurnSnapshot) {
-	if turn.priorText == nil {
-		b.main().persistBufferedText(turn, agent.MessageCompletionComplete)
-		return
-	}
-	// Owned segments already have earlier local positions.
-	if turn.thoughtAdmission != nil {
-		b.main().persistFinishedTextTo(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, agent.MessageCompletionComplete)
-	}
-	if turn.assistantAdmission != nil {
-		b.main().persistFinishedTextTo(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, agent.MessageCompletionComplete)
-	}
-	err := turn.priorText.Prepare(func() []agent.CapturedTranscriptOperation {
-		var operations []agent.CapturedTranscriptOperation
-		appendText := func(kind agent.AssembledMessageKind, messageID, text string, admission *acpTranscriptAdmission) {
-			if text == "" || admission != nil {
-				return
-			}
-			template, prepare, err := b.main().preparedAssembledText(kind, messageID, text, agent.MessageCompletionComplete)
-			if err != nil {
-				slog.Error("prepare preceding ACP text", "error", err)
-				return
-			}
-			capture, present, err := agent.CapturePreparedTranscript(b.sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, template, agent.SpanInfo{}, prepare)
-			if err != nil {
-				slog.Error("capture preceding ACP text", "error", err)
-				return
-			}
-			if present {
-				operations = append(operations, capture.MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
-			}
-		}
-		appendText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, turn.thoughtAdmission)
-		appendText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, turn.assistantAdmission)
-		return operations
-	})
-	if err != nil && !agent.OutputRetained(err) {
-		slog.Error("persist preceding ACP text", "error", err)
-	}
+	b.main().persistBufferedText(turn, agent.MessageCompletionComplete)
 }
 
 // AgentTurnActive reports whether the running turn is one that the agent
@@ -223,17 +197,47 @@ func (b *Base) AgentTurnActive() bool {
 // the agent turn under b.Mu, so a swap that wins the race leaves nothing for
 // this to end, and each drain of the turn output takes its own snapshot.
 func (b *Base) EndAgentTurn(frame json.RawMessage) {
+	b.endAgentTurn(acpAgentTurnEnd{frame: frame})
+}
+
+type acpAgentTurnEnd struct {
+	frame   json.RawMessage
+	turnID  string
+	outcome leapmuxv1.AgentInputTurnOutcome
+}
+
+// EndAgentTurnWithReply completes only the agent-initiated turn with turnID.
+// The provider supplies the outcome from the native end event.
+func (b *Base) EndAgentTurnWithReply(turnID string, frame json.RawMessage, outcome leapmuxv1.AgentInputTurnOutcome) {
+	b.endAgentTurn(acpAgentTurnEnd{frame: frame, turnID: turnID, outcome: outcome})
+}
+
+func (b *Base) endAgentTurn(end acpAgentTurnEnd) {
 	b.turnMu.Lock()
 	b.Mu.Lock()
+	if target := b.rootTarget; end.turnID != "" &&
+		(target == nil || !target.agentInitiated || target.inputReceipt.TurnID != end.turnID) {
+		b.Mu.Unlock()
+		b.turnMu.Unlock()
+		return
+	}
 	if b.agentTurnQueued {
-		b.queuedAgentTurnEnd = append(json.RawMessage(nil), frame...)
+		if len(end.frame) > 0 {
+			end.frame = append(json.RawMessage(nil), end.frame...)
+		}
+		b.queuedAgentTurnEnd = &end
 		b.Mu.Unlock()
 		b.turnMu.Unlock()
 		return
 	}
 	active := b.agentTurnActive
 	sessionID := b.sessionID
-	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(frame)
+	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(end.frame) ||
+		end.outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	outcome := end.outcome
+	if stopped && outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED {
+		outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	}
 	b.agentTurnActive = false
 	b.Mu.Unlock()
 	if !active {
@@ -246,11 +250,21 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 	b.Mu.Unlock()
 	b.turnMu.Unlock()
 	textCompletion, incomplete := b.turnOutputCompletions(stopped)
+	wroteOutcome := false
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
-		b.persistPromptResponseTo(writer, frame, count, sessionID, stopped)
+		content := agent.MessageContent{Original: end.frame}
+		if end.turnID != "" && outcome != 0 {
+			content = turn.endingAdmission.tagReply(content)
+			content.InputTurnOutcome = outcome
+			wroteOutcome = true
+		}
+		b.persistPromptResponseTo(writer, content, count, sessionID, stopped)
 	})
 	if stopped {
 		b.releaseAwaitedTerminals()
+	}
+	if !wroteOutcome {
+		b.retireSharedInputs(turn.endingAdmission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 	}
 	b.endTurn(sessionID)
 }
@@ -265,9 +279,9 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 //
 // An agent turn that is still queued behind a prompt of LeapMux's is dropped:
 // the work ended before its turn could begin. Its turn set a boundary on the
-// prompt's output (see BeginAgentTurn), and a turn that never runs takes
-// nothing after that boundary. So the boundary goes, and the prompt's end
-// stores the whole output, with the prompt's own count of finished tools. When
+// prompt's output (see BeginAgentTurn). Store the work's text as a separate
+// segment before restoring the prompt's output target. The prompt's end still
+// closes the remaining tools and keeps their count. When
 // the prompt's end already took its part of the output, the rest is the
 // work's, and this stores it. With no agent turn it does nothing.
 func (b *Base) EndAgentTurnWithoutRow() {
@@ -279,18 +293,28 @@ func (b *Base) EndAgentTurnWithoutRow() {
 		sessionID := b.sessionID
 		stopped := b.StoppedLocked() || b.interruptRequested
 		b.Mu.Unlock()
-		drained := !b.dropPromptBoundaryLocked()
-		var turn acpTurnSnapshot
-		if drained {
-			turn = b.drainTurnLocked(!stopped)
-			b.Mu.Lock()
-			b.captureRootSnapshotLocked(&turn, false)
-			b.Mu.Unlock()
+		if b.dropPromptBoundaryLocked() {
+			text := b.takeBufferedTextLocked()
+			text.sessionID = sessionID
+			if b.IsDiscardingOutput() {
+				b.turnMu.Unlock()
+				text.releaseTranscriptAdmissions()
+				return
+			}
+			text.textProgressCompleted = true
+			b.reserveBufferedTextLocked(&text)
+			b.turnMu.Unlock()
+			b.completeBufferedTextProgress(text)
+			textCompletion, _ := b.turnOutputCompletions(stopped)
+			b.main().persistBufferedText(text, textCompletion)
+			return
 		}
+		turn := b.drainTurnLocked(!stopped)
+		b.Mu.Lock()
+		b.captureRootSnapshotLocked(&turn, false)
+		b.Mu.Unlock()
 		b.turnMu.Unlock()
-		if drained {
-			b.storeWorkOutput(turn, sessionID, stopped)
-		}
+		b.storeWorkOutput(turn, sessionID, stopped)
 		return
 	}
 	active := b.agentTurnActive
@@ -328,8 +352,8 @@ func (b *Base) storeWorkOutput(turn acpTurnSnapshot, sessionID string, stopped b
 // agent turn queued behind it, and reports whether one was. The fields of the
 // ended turn go, as they go at any turn end, and promptActive stays, so no
 // idle state is published between the two turns. end is the queued turn's
-// own end frame when it arrived before this.
-func (b *Base) takeQueuedAgentTurn(sessionID string) (end json.RawMessage, queued bool) {
+// own end record when it arrived before this.
+func (b *Base) takeQueuedAgentTurn(sessionID string) (end *acpAgentTurnEnd, queued bool) {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	if !b.agentTurnQueued || b.sessionID != sessionID {
@@ -365,10 +389,7 @@ func (b *Base) endTurn(sessionID string) {
 	if !current {
 		return
 	}
-	if end, queued := b.takeQueuedAgentTurn(sessionID); queued {
-		if end != nil {
-			b.EndAgentTurn(end)
-		}
+	if b.handoffQueuedAgentTurn(sessionID) {
 		return
 	}
 	if b.schedulePendingFollowUp(sessionID) {
@@ -395,9 +416,7 @@ func (b *Base) endTurn(sessionID string) {
 		}
 	}
 	if !b.clearActivePromptForSession(sessionID) {
-		if end, queued := b.takeQueuedAgentTurn(sessionID); queued && end != nil {
-			b.EndAgentTurn(end)
-		}
+		b.handoffQueuedAgentTurn(sessionID)
 	}
 }
 
@@ -484,7 +503,7 @@ func (b *Base) continueWithPromptForBatch(sessionID, content string, attachments
 	// after that turn and before this prompt.
 	turn := b.takeUnownedOutputLocked()
 	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, false, nil)
+	target := b.openRootTranscriptLocked(sessionID, false, nil, agent.NativeInputReceipt{})
 	b.rootTarget, b.promptTarget = target, target
 	b.turnMu.Unlock()
 	b.persistUnownedText(turn)
@@ -495,7 +514,7 @@ func (b *Base) continueWithPromptForBatch(sessionID, content string, attachments
 	if b.hooks.PromptPrepared != nil {
 		b.hooks.PromptPrepared()
 	}
-	err := b.sendOwnedPromptDetachedLocked(sessionID, target, content, attachments, releaseOperation)
+	_, err := b.sendOwnedPromptDetachedLocked(sessionID, target, content, attachments, releaseOperation)
 	if err != nil {
 		b.finishUnsentPrompt(sessionID)
 	}

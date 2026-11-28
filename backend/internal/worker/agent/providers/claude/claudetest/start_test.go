@@ -19,9 +19,9 @@ func TestStartEchoAcceptsRawServiceFramesWithoutNativeRequests(t *testing.T) {
 		_ = running.Wait()
 	})
 	frame := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"service-request","response":{"behavior":"allow"}}}`)
-	require.NoError(t, running.SendRawInput(frame, agent.StopContext{}))
+	require.NoError(t, running.SendRawInput(agent.RawInput{Data: frame}))
 	running.Stop()
-	require.ErrorContains(t, running.SendRawInput(frame, agent.StopContext{}), "stopped")
+	require.ErrorContains(t, running.SendRawInput(agent.RawInput{Data: frame}), "stopped")
 }
 
 func TestStartEchoReturnsRawFramesWhileTheProcessStaysOpen(t *testing.T) {
@@ -33,7 +33,7 @@ func TestStartEchoReturnsRawFramesWhileTheProcessStaysOpen(t *testing.T) {
 	goals, ok := running.(agent.GoalCapable)
 	require.True(t, ok)
 	assert.Empty(t, goals.SupportedGoalActions())
-	require.NoError(t, running.SendRawInput([]byte("{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n"), agent.StopContext{}))
+	require.NoError(t, running.SendRawInput(agent.RawInput{Data: []byte("{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")}))
 	require.Eventually(t, func() bool {
 		return len(goals.SupportedGoalActions()) != 0
 	}, 30*time.Second, time.Millisecond)

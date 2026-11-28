@@ -672,21 +672,6 @@ func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoRetry(t *testing.T) {
 	}
 }
 
-func TestPiTurnDurationMs(t *testing.T) {
-	t.Parallel()
-
-	base := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
-
-	assert.Nil(t, piTurnDurationMs(time.Time{}, base), "an unobserved start has nothing to measure")
-	assert.Nil(t, piTurnDurationMs(base, base.Add(-time.Second)), "a backwards clock reports nothing")
-
-	require.NotNil(t, piTurnDurationMs(base, base))
-	assert.Equal(t, int64(0), *piTurnDurationMs(base, base))
-
-	require.NotNil(t, piTurnDurationMs(base, base.Add(1500*time.Millisecond)))
-	assert.Equal(t, int64(1500), *piTurnDurationMs(base, base.Add(1500*time.Millisecond)))
-}
-
 func TestHandlePiOutput_MessageUpdate_OtherDeltaTypesIgnored(t *testing.T) {
 	t.Parallel()
 
@@ -1187,7 +1172,7 @@ func TestPiCompactCommandFailureEndsLiveState(t *testing.T) {
 	rig := newPiTestRig(t, agent.NewProviderServices(sink))
 	rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) { return nil, false, "summary failed" })
 	rig.agent.HandleOutput([]byte(`{"type":"compaction_start","reason":"manual"}`))
-	require.ErrorContains(t, rig.agent.SendInput("/compact", nil), "summary failed")
+	require.ErrorContains(t, agenttest.SendInput(rig.agent, "/compact", nil), "summary failed")
 	assert.Equal(t, []any{map[string]any{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 }
 

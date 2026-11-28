@@ -1,3 +1,4 @@
+import type { Vite } from 'vitest/node'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
@@ -8,6 +9,17 @@ import { NODE_TEST_FILES, PINNED_TEST_TIMEZONE, TIMEZONE_TEST_FILES } from './vi
 
 const require = createRequire(import.meta.url)
 const TEST_TIMEOUT_MS = 30_000
+
+const skipVanillaExtractDiskCache: Vite.Plugin = {
+  name: 'skip-vanilla-extract-disk-cache',
+  configureVitest({ defineCacheKeyGenerator }) {
+    // Vanilla Extract embeds imported class names in each CSS module. The
+    // module can change when an import changes, even with the same source.
+    defineCacheKeyGenerator(({ id }) => /\.css\.ts(?:\.vanilla\.css)?(?:\?|$)/.test(id)
+      ? false
+      : undefined)
+  },
+}
 
 // vite-plugin-solid aliases solid-refresh to /@solid-refresh even with hot:false.
 // That option stops Babel hot-module-replacement (HMR) injection only.
@@ -46,6 +58,7 @@ export default defineConfig({
   // Tests require no HMR injection. Its /@solid-refresh ID breaks fileURLToPath on Windows.
   plugins: [
     vanillaExtractPlugin(),
+    skipVanillaExtractDiskCache,
     resolveSolidRefreshVirtual,
     solid({ hot: false }),
   ],

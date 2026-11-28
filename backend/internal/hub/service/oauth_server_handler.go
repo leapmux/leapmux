@@ -431,7 +431,7 @@ func gateModeFor(r *http.Request) gateMode {
 // point a signed-in victim's browser at /oauth/authorize and re-arm their
 // elevation window for another two hours, as often as it liked, up to the
 // absolute cap. "The window closes when I stop using the app" is the property
-// the End now button and site/content/docs/admin/security.md both rest on, and a third party
+// the End now button and site/content/docs/admin/security-and-auth.md both rest on, and a third party
 // must not be able to extend it.
 //
 // The endpoint still RUNS. It only reads the session and renders a page; the

@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -192,6 +193,52 @@ func (s *oauthClientStore) List(ctx context.Context, p store.ListOAuthClientsPar
 		// hub-wide app, which is arguably harmless -- but this listing answers
 		// "what may THIS user see", and there is no such user.
 		return store.Page[store.OAuthClient]{}, nil
+	}
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.OAuthClient]{}, err
+	}
+	if active {
+		if empty {
+			return store.Page[store.OAuthClient]{}, nil
+		}
+		ownerNull := sql.NullString{String: owner, Valid: true}
+		includeRevoked := ptrconv.BoolToInt64(p.IncludeRevoked)
+		hubWideOnly := ptrconv.BoolToInt64(p.HubWideOnly)
+		includeHubWide := ptrconv.BoolToInt64(p.IncludeHubWide)
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListOAuthClientsByIDExactParams, error) {
+					return gendb.ListOAuthClientsByIDExactParams{
+						ClientID:       filter.Lower,
+						IncludeRevoked: includeRevoked,
+						HubWideOnly:    hubWideOnly,
+						UserID:         ownerNull,
+						IncludeHubWide: includeHubWide,
+					}, nil
+				},
+				s.conn.q.ListOAuthClientsByIDExact,
+				func(r gendb.ListOAuthClientsByIDExactRow) (store.OAuthClient, error) {
+					return s.conn.fromGetOAuthClientRow(gendb.GetOAuthClientRow(r))
+				}, s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListOAuthClientsByIDPrefixParams, error) {
+				return gendb.ListOAuthClientsByIDPrefixParams{
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					IncludeRevoked: includeRevoked,
+					HubWideOnly:    hubWideOnly,
+					UserID:         ownerNull,
+					IncludeHubWide: includeHubWide,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListOAuthClientsByIDPrefix,
+			func(r gendb.ListOAuthClientsByIDPrefixRow) (store.OAuthClient, error) {
+				return s.conn.fromGetOAuthClientRow(gendb.GetOAuthClientRow(r))
+			}, s.conn.queryError)
 	}
 	return store.QueryPageErr(ctx, p.Limit,
 		func() (gendb.ListOAuthClientsParams, error) {

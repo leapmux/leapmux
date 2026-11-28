@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -224,7 +225,7 @@ func TestControlPublicationWatcherCanPublishAnotherRequestSynchronously(t *testi
 						svc.Output.NoteAgentStopRequested(agentID, agentID).Delivered(target)
 					}
 				case "finalize":
-					err = svc.finalizeControlResponse(answer)
+					err = svc.finalizeControlResponse(t.Context(), answer)
 				}
 				completed <- err
 			}()
@@ -453,7 +454,17 @@ func TestControlPublicationDoesNotPublishAfterStorageFailure(t *testing.T) {
 func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "agent-1"}
 	createClaimTestAgent(t, svc, "agent-1")
+	_, start, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	payload := []byte(`{"id":7,"request_id":"permission-1","method":"interaction/requestPermission"}`)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "permission-1", Payload: payload}))
@@ -464,6 +475,122 @@ func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "permission-1", Payload: []byte(`{"id":7,"request_id":"permission-1","changed":true}`)}))
 	changed := requireLookupControlRequest(t, context.Background(), svc.Output, "agent-1", "permission-1")
 	assert.NotEqual(t, first.ClaimToken, changed.ClaimToken, "a revised request starts a new instance")
+	reader, _, err := journal.Open(t.Context(), tab, start.GetCursor())
+	require.NoError(t, err)
+	records, _, err := reader.Read(t.Context(), start.GetAfterSequence())
+	require.NoError(t, err)
+	var lifecycle []*leapmuxv1.SemanticTabFact
+	for _, record := range records {
+		fact := record.GetRecord().GetFact()
+		if fact.GetAgentRequest() != nil || fact.GetAgentRequestEnded() != nil {
+			lifecycle = append(lifecycle, fact)
+		}
+	}
+	require.Len(t, lifecycle, 3)
+	opened, ended, replacement := lifecycle[0].GetAgentRequest(), lifecycle[1].GetAgentRequestEnded(), lifecycle[2].GetAgentRequest()
+	require.NotNil(t, opened)
+	require.NotNil(t, ended, "replacement must end the earlier request before the new opening")
+	require.NotNil(t, replacement)
+	assert.Equal(t, journal.RequestInstance(tab.ID, first.ClaimToken), opened.GetRequestInstance())
+	assert.Equal(t, opened.GetRequestInstance(), ended.GetRequestInstance())
+	assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, ended.GetState())
+	assert.Equal(t, journal.RequestInstance(tab.ID, changed.ClaimToken), replacement.GetRequestInstance())
+}
+
+func TestControlPublicationReannouncementAfterRetentionPruneRecordsNoDuplicateOpening(t *testing.T) {
+	t.Parallel()
+	for _, nonBlocking := range []bool{false, true} {
+		name := "blocking"
+		if nonBlocking {
+			name = "non-blocking"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := setupTestService(t)
+			svc.EnableSemanticEvents()
+			t.Cleanup(func() {
+				svc.Shutdown()
+				svc.FinalizeSemanticEvents(true)
+			})
+			journal := svc.semanticEvents.journal.Load()
+			require.NotNil(t, journal)
+			const agentID = "agent-1"
+			tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: agentID}
+			createClaimTestAgent(t, svc, agentID)
+			_, start, err := journal.Open(t.Context(), tab, nil)
+			require.NoError(t, err)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+			payload := []byte(`{"id":7,"request_id":"permission-1","method":"interaction/requestPermission"}`)
+			req := agent.ControlRequest{RequestID: "permission-1", NonBlocking: nonBlocking, Payload: payload}
+			require.NoError(t, sink.PublishControlRequest(req))
+
+			// Wait for the opening to commit and verify it landed.
+			reader, _, err := journal.Open(t.Context(), tab, start.GetCursor())
+			require.NoError(t, err)
+			records, _, err := reader.Read(t.Context(), start.GetAfterSequence())
+			require.NoError(t, err)
+			var afterFirst int64
+			openings := 0
+			for _, frame := range records {
+				if rec := frame.GetRecord(); rec != nil {
+					afterFirst = rec.GetSequence()
+					if rec.GetFact().GetAgentRequest() != nil {
+						openings++
+					}
+				}
+			}
+			require.Equal(t, 1, openings)
+
+			// Simulate retention pruning of the original opening entry from SQLite.
+			_, err = svc.DB.ExecContext(t.Context(), `DELETE FROM semantic_event_entries WHERE tab_type = ? AND tab_id = ?`,
+				leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+			require.NoError(t, err)
+
+			// Register a live watcher to verify claim reuse still delivers to
+			// live watchers (EnqueueAgentEventLiveOnly) while skipping the journal.
+			live := newTestWriter()
+			registerAgentWatch(svc, live.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, live)
+
+			// Re-announcing the same request reuses the claim and must not append
+			// a duplicate AgentRequest fact even though the original row was pruned.
+			require.NoError(t, sink.PublishControlRequest(req))
+			firstStored := requireLookupControlRequest(t, t.Context(), svc.Output, agentID, "permission-1")
+			// Re-announcing with the explicit matching InstanceID also reuses the
+			// active claim without appending a duplicate opening.
+			explicitReuse := req
+			explicitReuse.InstanceID = firstStored.ClaimToken
+			require.NoError(t, sink.PublishControlRequest(explicitReuse))
+
+			var liveDelivered int
+			for _, msg := range live.streamsSnapshot() {
+				var resp leapmuxv1.WatchEventsResponse
+				require.NoError(t, proto.Unmarshal(msg.GetPayload(), &resp))
+				if cr := resp.GetAgentEvent().GetControlRequest(); cr != nil && cr.GetRequestId() == "permission-1" {
+					liveDelivered++
+				}
+			}
+			assert.Equal(t, 2, liveDelivered, "live watchers must still receive re-announced control requests")
+
+			// Publish a distinct request to prove the journal is still recording
+			// new openings and to flush the barrier.
+			require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+				RequestID:   "permission-2",
+				NonBlocking: nonBlocking,
+				Payload:     []byte(`{"id":8,"request_id":"permission-2","method":"interaction/requestPermission"}`),
+			}))
+			readerAfter, _, err := journal.Open(t.Context(), tab, start.GetCursor())
+			require.NoError(t, err)
+			afterRecords, _, err := readerAfter.Read(t.Context(), afterFirst)
+			require.NoError(t, err)
+			var seen []string
+			for _, frame := range afterRecords {
+				if reqFact := frame.GetRecord().GetFact().GetAgentRequest(); reqFact != nil {
+					seen = append(seen, reqFact.GetRequestId())
+				}
+			}
+			assert.Equal(t, []string{"permission-2"}, seen, "claim reuse must not record a second AgentRequest after retention prune")
+		})
+	}
 }
 
 func TestControlPublicationCancellationKeepsAReplacementInstance(t *testing.T) {
@@ -529,6 +656,8 @@ func TestControlPublicationConcurrentAnnouncementsShareOneClaim(t *testing.T) {
 type testControlRequestParams struct {
 	AgentID        string
 	AgentSessionID string
+	NativeTurnID   string
+	NativeInputIDs []string
 	RequestID      string
 	Payload        []byte
 	ClaimToken     string
@@ -553,6 +682,8 @@ func createTestControlRequest(t *testing.T, ctx context.Context, output *OutputH
 	output.controls.upsertBlocking(blockingControlRecord{
 		AgentID:        params.AgentID,
 		AgentSessionID: params.AgentSessionID,
+		NativeTurnID:   params.NativeTurnID,
+		NativeInputIDs: params.NativeInputIDs,
 		RequestID:      params.RequestID,
 		Payload:        params.Payload,
 		ClaimToken:     params.ClaimToken,
@@ -736,12 +867,12 @@ func TestControlFinalizationWaitsForAnInFlightRepeatedPublication(t *testing.T) 
 		publicationDone <- sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: before.Payload})
 	}()
 	<-entered
-	svc.sendControlResponseFn = func(string, []byte) error { return nil }
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { return nil }
 	responseDone := make(chan error, 1)
 	go func() {
-		responseDone <- svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-			AgentId: "agent-1", ClaimToken: before.ClaimToken,
-			Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"request","response":{"behavior":"allow"}}}`),
+		responseDone <- svc.processControlAnswer(row, workerAnswer{
+			claimToken: before.ClaimToken,
+			content:    []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"request","response":{"behavior":"allow"}}}`),
 		})
 	}()
 	st := svc.Output.activityFor("agent-1", "agent-1")
@@ -1151,7 +1282,7 @@ func TestCompletedAsyncQuestionIsNotRepublished(t *testing.T) {
 				if skip {
 					response = questionSkipResponse(request.RequestID)
 				}
-				_, _, err := processControlResponseForTest(svc, row.ID, row, response, request.InstanceID)
+				_, _, err := processControlAnswerForTest(svc, row, response, request.InstanceID)
 				require.NoError(t, err)
 				if replaceSink {
 					sink = newTestRootOutputSink(t, svc.Output, row.ID, row.AgentProvider)

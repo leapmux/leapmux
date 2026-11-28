@@ -26,7 +26,7 @@ func TestControlRequestStore_BlockingLifecycleAndUnifiedListing(t *testing.T) {
 
 	var store controlRequestStore
 	assert.False(t, store.hasBlocking("agent-1"))
-	assert.False(t, store.hasBlockingInstance("agent-1", "req-1", "claim-1"))
+	assert.False(t, store.hasBlockingSnapshot("agent-1", "req-1", "claim-1", "sess-1", nil))
 	_, found := store.getBlocking("agent-1", "req-1")
 	assert.False(t, found)
 
@@ -49,8 +49,8 @@ func TestControlRequestStore_BlockingLifecycleAndUnifiedListing(t *testing.T) {
 	})
 	assert.Equal(t, int64(7), replayed.SourceSeq)
 	assert.Equal(t, t2, replayed.CreatedAt)
-	assert.True(t, store.hasBlockingInstance("agent-1", "req-b", "claim-b"))
-	assert.False(t, store.hasBlockingInstance("agent-1", "req-b", "wrong-claim"))
+	assert.True(t, store.hasBlockingSnapshot("agent-1", "req-b", "claim-b", "sess-1", []byte(`{"tool":"bash"}`)))
+	assert.False(t, store.hasBlockingSnapshot("agent-1", "req-b", "wrong-claim", "sess-1", []byte(`{"tool":"bash"}`)))
 
 	// Insert a second blocking request under pubB and a non-blocking request in SQLite.
 	store.upsertBlocking(blockingControlRecord{
@@ -96,7 +96,7 @@ func TestControlRequestStore_BlockingLifecycleAndUnifiedListing(t *testing.T) {
 	drainedA := store.drainBlockingForPublisher("agent-1", pubA)
 	require.Len(t, drainedA, 1)
 	assert.Equal(t, "req-b", drainedA[0].RequestID)
-	assert.True(t, store.hasBlockingInstance("agent-1", "req-c", "claim-c"))
+	assert.True(t, store.hasBlockingSnapshot("agent-1", "req-c", "claim-c", "", nil))
 
 	drainedRest := store.drainBlocking("agent-1")
 	require.Len(t, drainedRest, 1)
@@ -307,5 +307,73 @@ func TestControlRequestStore_EdgeCasesAndErrorPropagation(t *testing.T) {
 
 		_, err = store.list(ctx, badQueries, "agent-1")
 		require.Error(t, err)
+	})
+
+	t.Run("snapshot verification, observed delete, native control bindings, and lookupClaim", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		svc, _, _ := setupTestService(t)
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID:            "agent-1",
+			WorkingDir:    t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		}))
+
+		var store controlRequestStore
+		inputs := []string{"in-1"}
+		store.upsertBlocking(blockingControlRecord{
+			AgentID: "agent-1", AgentSessionID: "sess-1", NativeTurnID: "turn-1",
+			NativeInputIDs: inputs, RequestID: "req-1", Payload: []byte(`{"a":1}`), ClaimToken: "claim-1",
+		})
+		inputs[0] = "mutated"
+		assert.True(t, store.hasBlockingControlForInput("agent-1", "sess-1", "turn-1", ""))
+		assert.True(t, store.hasBlockingControlForInput("agent-1", "sess-1", "", "in-1"))
+		assert.False(t, store.hasBlockingControlForInput("agent-1", "sess-1", "", "mutated"))
+		assert.False(t, store.hasBlockingControlForInput("agent-1", "other-sess", "turn-1", "in-1"))
+
+		// Identical replay with empty NativeInputIDs keeps existing input bindings.
+		store.upsertBlocking(blockingControlRecord{
+			AgentID: "agent-1", AgentSessionID: "sess-1", NativeTurnID: "turn-1",
+			RequestID: "req-1", Payload: []byte(`{"a":1}`), ClaimToken: "claim-1",
+		})
+		assert.True(t, store.hasBlockingControlForInput("agent-1", "sess-1", "", "in-1"))
+
+		// setBlockingNativeControlInputs requires exact session and claim match.
+		assert.False(t, store.setBlockingNativeControlInputs("agent-1", "sess-1", "req-1", "wrong-claim", []string{"in-2"}))
+		assert.False(t, store.setBlockingNativeControlInputs("agent-1", "wrong-sess", "req-1", "claim-1", []string{"in-2"}))
+		assert.True(t, store.setBlockingNativeControlInputs("agent-1", "sess-1", "req-1", "claim-1", []string{"in-2"}))
+		assert.False(t, store.hasBlockingControlForInput("agent-1", "sess-1", "", "in-1"))
+		assert.True(t, store.hasBlockingControlForInput("agent-1", "sess-1", "", "in-2"))
+
+		// Snapshot matching and observed delete guard payload and session identity.
+		assert.True(t, store.hasBlockingSnapshot("agent-1", "req-1", "claim-1", "sess-1", []byte(`{"a":1}`)))
+		assert.False(t, store.hasBlockingSnapshot("agent-1", "req-1", "claim-1", "sess-1", []byte(`{"a":2}`)))
+		assert.False(t, store.hasBlockingSnapshot("agent-1", "req-1", "claim-1", "sess-2", []byte(`{"a":1}`)))
+		_, ok := store.deleteObservedBlocking("agent-1", "req-1", "claim-1", "sess-1", []byte(`{"a":2}`))
+		assert.False(t, ok)
+
+		// lookupClaim resolves blocking from memory and non-blocking from SQLite.
+		claim, found, err := store.lookupClaim(ctx, svc.Queries, "agent-1", "req-1")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "claim-1", claim)
+
+		_, err = svc.Queries.StoreControlRequest(ctx, db.StoreControlRequestParams{
+			AgentID: "agent-1", AgentSessionID: "sess-1", RequestID: "req-sql", Payload: []byte(`{}`), ClaimToken: "claim-sql",
+		})
+		require.NoError(t, err)
+		claim, found, err = store.lookupClaim(ctx, svc.Queries, "agent-1", "req-sql")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "claim-sql", claim)
+
+		_, found, err = store.lookupClaim(ctx, svc.Queries, "agent-1", "missing")
+		require.NoError(t, err)
+		assert.False(t, found)
+
+		removed, ok := store.deleteObservedBlocking("agent-1", "req-1", "claim-1", "sess-1", []byte(`{"a":1}`))
+		require.True(t, ok)
+		assert.Equal(t, "req-1", removed.RequestID)
+		assert.False(t, store.hasBlocking("agent-1"))
 	})
 }

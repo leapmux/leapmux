@@ -1,0 +1,6 @@
+{{- /* Return the page's clean Markdown companion Permalink, falling back to .Permalink. */ -}}
+{{- $url := .Permalink -}}
+{{- with .OutputFormats.Get "markdown" -}}
+  {{- $url = .Permalink -}}
+{{- end -}}
+{{- return $url -}}

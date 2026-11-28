@@ -39,7 +39,7 @@ func TestOpenCodeFamilySteerFailureReachesTheReader(t *testing.T) {
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 	ag.SetPromptActiveForTest(true)
 
-	require.NoError(t, ag.SteerInput("guide the turn", nil))
+	require.NoError(t, agenttest.SteerInput(ag, agent.SteerRequest{Content: "guide the turn"}))
 	require.Eventually(t, func() bool { return len(sink.Notifications()) == 1 }, time.Second, time.Millisecond)
 	notice := sink.Notifications()[0]
 	assert.Equal(t, contracts.NotificationTypeAgentError, notice["type"])
@@ -78,7 +78,7 @@ func TestKiloSteerPersistsAnAnswerAfterTheFirstPromptEnds(t *testing.T) {
 	sink := &agenttest.Sink{}
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 	ag.SetPromptActiveForTest(true)
-	require.NoError(t, ag.SteerInput("guide the turn", nil))
+	require.NoError(t, agenttest.SteerInput(ag, agent.SteerRequest{Content: "guide the turn"}))
 	testutil.RequireEventually(t, func() bool { return len(requests()) == 1 })
 	recorded := requests()[0]
 	assert.Equal(t, acp.MethodSessionPrompt, recorded.Method)
@@ -115,8 +115,8 @@ func TestKiloSteerKeepsConcurrentRepliesInOneTurn(t *testing.T) {
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("first steer", nil))
-	require.NoError(t, a.SteerInput("second steer", nil))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "first steer"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "second steer"}))
 	var requests []struct {
 		ID int64 `json:"id"`
 	}
@@ -161,7 +161,67 @@ func TestKiloSteerFailedWriteReleasesItsTurn(t *testing.T) {
 	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
 	a.SetPromptActiveForTest(true)
 
-	require.Error(t, a.SteerInput("guide the turn", nil))
+	require.Error(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "guide the turn"}))
 	a.FinishPromptRequestForTest("session-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 	assert.False(t, a.PromptActive(), "a failed detached write leaves no turn behind")
+}
+
+func TestKiloNativePromptDoesNotHoldSessionLockWhileWaitingForDaemon(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a := newAgent(false)
+	a.AttachPeerForTest(ctx, cancel, &agenttest.Stdin{}, "test-agent", "session-1")
+	*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, a.ApplyPermissionModeStartup(&acp.SessionResult{
+		CurrentModelID: "openai/gpt-5",
+		Models:         []acp.ModelInfo{{ModelID: "openai/gpt-5", Name: "GPT-5"}},
+	}, agent.Options{}, "", ""))
+	a.SetPromptActiveForTest(true)
+
+	// Start a native SteerInput that blocks on a.Daemon().WaitReady.
+	steerDone := make(chan error, 1)
+	go func() {
+		_, err := a.SteerInput(agent.SteerRequest{InputID: "in-1", Content: "steer while daemon starting"})
+		steerDone <- err
+	}()
+
+	// Wait until beginKiloSteer has recorded the pending steer and entered submitNativePrompt.
+	testutil.RequireEventually(t, func() bool {
+		a.steers.mu.Lock()
+		defer a.steers.mu.Unlock()
+		return a.steers.pending == 1
+	})
+
+	// Verify WithSessionID (sessionMu.RLock) is NOT blocked by daemon wait.
+	sessionAcquired := make(chan struct{})
+	go func() {
+		_ = a.WithSessionID(func(string) error {
+			close(sessionAcquired)
+			return nil
+		})
+	}()
+
+	select {
+	case <-sessionAcquired:
+	case <-time.After(300 * time.Millisecond):
+		cancel()
+		t.Fatal("WithSessionID blocked on sessionMu while submitNativePrompt waited for daemon readiness")
+	}
+	// MarkUnavailableForTest must unblock submitNativePrompt immediately with an error.
+	a.Daemon().MarkUnavailableForTest(nil)
+	err := <-steerDone
+	require.ErrorIs(t, err, opencode.ErrDaemonUnavailable)
+}
+
+func TestKiloDaemonReadyIsIdempotent(t *testing.T) {
+	t.Parallel()
+	a := newAgent(false)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	assert.NotPanics(t, func() {
+		a.DaemonReady(ctx)
+		a.DaemonReady(ctx)
+	})
 }

@@ -56,7 +56,7 @@ func TestModelAcknowledgmentPrecedesAudioPreparation(t *testing.T) {
 	assert.True(t, nativeModelChanged.Load())
 	inputDone := make(chan error, 1)
 	go func() {
-		inputDone <- b.SendInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
+		inputDone <- agenttest.SendInput(b, "listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
 	}()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()

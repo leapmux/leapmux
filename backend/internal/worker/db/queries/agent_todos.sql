@@ -29,3 +29,13 @@ DELETE FROM agent_todos WHERE agent_id = ? AND seq = ?;
 
 -- name: DeleteAllAgentTodos :exec
 DELETE FROM agent_todos WHERE agent_id = ?;
+
+-- CloneAgentTodosForFork copies one agent's to-do rows into a forked agent in
+-- seq order so the forked tab inherits the source's current task list.
+-- name: CloneAgentTodosForFork :execrows
+INSERT INTO agent_todos (agent_id, seq, task_id, content, active_form, description, status, updated_at)
+SELECT sqlc.arg(target_agent_id), source.seq, source.task_id, source.content,
+       source.active_form, source.description, source.status, source.updated_at
+FROM agent_todos AS source
+WHERE source.agent_id = sqlc.arg(source_agent_id)
+ORDER BY source.seq ASC;

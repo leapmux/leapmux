@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -102,7 +101,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		toolInvocations: map[string]*zcodeToolInvocation{},
 		pendingControls: map[string]*pendingControl{},
 	}
-	a.sink = zcodeProgressSink{ProviderServices: agent.NewModelProgressResetSink(a.sink)}
+	a.sink = agent.DecorateProviderServices(agent.NewModelProgressResetSink(a.sink), func(direct agent.ProviderServices) agent.ProviderServices {
+		return zcodeProgressSink{ProviderServices: direct}
+	})
 	a.toolTranscript = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -143,7 +144,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, a.FormatStartupError("provider configuration", err)
 	}
 
-	if err := a.openSession(opts.ResumeSessionID, timeout); err != nil {
+	if err := a.openSession(opts.Session.ResumeID(), timeout); err != nil {
 		cleanup()
 		return nil, a.FormatStartupError("session open", err)
 	}

@@ -3,6 +3,7 @@ package muse
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -225,7 +226,7 @@ func TestChildCommandsKeepUncertainIdentityUntilConfirmed(t *testing.T) {
 			invoke := func() error {
 				switch operation {
 				case "steer":
-					return a.SteerChildInput("key", "note", nil)
+					return agenttest.SteerChildInput(a, "key", "note", nil)
 				case "interrupt":
 					return a.InterruptChild("key", agent.StopContext{})
 				default:
@@ -262,7 +263,7 @@ func TestChildCommandsRejectRetiredRoutesBeforeWriting(t *testing.T) {
 				return agenttest.RPCReply{Result: data}
 			}})
 			assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("key"))
-			require.ErrorIs(t, a.SteerChildInput("key", "note", nil), agent.ErrChildRouteNotReady)
+			require.ErrorIs(t, agenttest.SteerChildInput(a, "key", "note", nil), agent.ErrChildRouteNotReady)
 			require.ErrorIs(t, a.InterruptChild("key", agent.StopContext{}), agent.ErrChildRouteNotReady)
 			assert.Zero(t, writes)
 		})
@@ -305,7 +306,7 @@ func TestChildInputValidatesBeforeNativeAdmission(t *testing.T) {
 			}
 			var err error
 			if tc.steer {
-				err = a.SteerChildInput("key", tc.text, attachments)
+				err = agenttest.SteerChildInput(a, "key", tc.text, attachments)
 			} else {
 				err = agenttest.SendChildInput(a, "key", agent.ChildInput{Content: tc.text, Attachments: attachments})
 			}
@@ -687,4 +688,150 @@ func TestLiveSubagentFollowupRevivalSurvivesRegistryRetry(t *testing.T) {
 	row := requireRegistryStatus(t, h, key, bgtask.StatusRunning)
 	assert.True(t, row.EndedAt.IsZero())
 	assert.Equal(t, []string{key}, h.base.RevivedTasks())
+}
+
+func TestChildInputReturnsProvedReceiptWhenLogProofPrecedesRPCFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		steer     bool
+		retire    bool
+		rpcResult agenttest.RPCReply
+	}{
+		{name: "followup proved before uncertain reply", rpcResult: agenttest.RPCReply{Result: json.RawMessage(`{}`)}},
+		{name: "followup proved before host retire and uncertain reply", retire: true, rpcResult: agenttest.RPCReply{Result: json.RawMessage(`{}`)}},
+		{name: "followup proved before normal acceptance", rpcResult: agenttest.RPCReply{}},
+		{name: "steer proved before uncertain reply", steer: true, rpcResult: agenttest.RPCReply{Result: json.RawMessage(`{}`)}},
+		{name: "steer proved before normal acceptance", steer: true, rpcResult: agenttest.RPCReply{}},
+		{name: "steer proved before host retire and rpc error", steer: true, retire: true, rpcResult: agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"late failure"}`)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, root := testAgent(t)
+			childSink := root.Child("child-agent")
+			child := &sessionState{
+				sink: a.sink.ChildSink("child-agent"), childKey: "key", childID: "child-agent",
+				parentSessionID: "session", subagentID: "native-child", childViewPrefix: childViewPrefixReady,
+			}
+			if tc.steer {
+				child.turnID = "active-turn"
+			}
+			a.sessions["child"] = child
+			a.viewWork.CloseAndWait()
+
+			var commandID string
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(_ string, raw json.RawMessage) agenttest.RPCReply {
+				var params struct {
+					CommandID string `json:"commandId"`
+				}
+				require.NoError(t, json.Unmarshal(raw, &params))
+				commandID = params.CommandID
+				proved := agent.NativeInputReceipt{SessionID: "child", InputID: commandID, TurnID: "child-run"}
+				require.NoError(t, a.retainProvedChildInput("child", child, proved))
+				if tc.retire {
+					a.retireHost(agent.MessageCompletionInterrupted)
+				}
+				if len(tc.rpcResult.Result) == 0 && len(tc.rpcResult.Error) == 0 {
+					accepted, err := json.Marshal(map[string]any{"commandId": commandID, "status": "accepted"})
+					require.NoError(t, err)
+					return agenttest.RPCReply{Result: accepted}
+				}
+				return tc.rpcResult
+			}})
+
+			if tc.steer {
+				receipt, err := a.SteerChildInput("key", agent.SteerRequest{Content: "note", InputID: "steer-input", AttemptID: "attempt-1"})
+				require.NoError(t, err)
+				assert.Empty(t, receipt)
+				assert.Equal(t, []agent.SteerResolution{{
+					InputID: "steer-input", AttemptID: "attempt-1", Outcome: agent.SteerOutcomeEchoed,
+					Receipt: agent.NativeInputReceipt{SessionID: "child", InputID: commandID, TurnID: "child-run"},
+				}}, childSink.SteerResolutions())
+			} else {
+				res, err := a.SendChildInput("key", agent.ChildInput{InputID: "ordinary-input", Content: "note"})
+				require.NoError(t, err)
+				assert.Equal(t, agent.NativeInputReceipt{SessionID: "child", InputID: commandID, TurnID: "child-run"}, res.NativeReceipt)
+				assert.Empty(t, childSink.NativeReplyRetirements())
+			}
+			assert.NotContains(t, a.uncertainChildCommands, "key")
+		})
+	}
+}
+
+func TestChildInputJoinsMultipleTextAttachmentsInOrder(t *testing.T) {
+	t.Parallel()
+	a, _ := testAgent(t)
+	a.sessions["child"] = &sessionState{
+		childKey: "key", childID: "child-agent", parentSessionID: "session",
+		subagentID: "native-child", childViewPrefix: childViewPrefixReady,
+	}
+	a.viewWork.CloseAndWait()
+	var body string
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+		require.Equal(t, methodChildFollowup, method)
+		var p struct {
+			CommandID string `json:"commandId"`
+			Body      string `json:"body"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &p))
+		body = p.Body
+		data, err := json.Marshal(map[string]any{"commandId": p.CommandID, "status": "accepted"})
+		require.NoError(t, err)
+		return agenttest.RPCReply{Result: data}
+	}})
+	err := agenttest.SendChildInput(a, "key", agent.ChildInput{
+		Content: "  Inspect both files  ",
+		Attachments: []*leapmuxv1.Attachment{
+			{Filename: "first.txt", MimeType: "text/plain", Data: []byte("alpha")},
+			{Filename: "second.txt", MimeType: "text/plain", Data: []byte("beta")},
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(body, "Inspect both files"))
+	firstIdx := strings.Index(body, "first.txt")
+	secondIdx := strings.Index(body, "second.txt")
+	require.Greater(t, firstIdx, 0)
+	require.Greater(t, secondIdx, firstIdx)
+	assert.Contains(t, body, "alpha")
+	assert.Contains(t, body, "beta")
+}
+
+func TestChildInputCleansUpUnprovedCommandOnRPCFailure(t *testing.T) {
+	t.Parallel()
+	for _, steer := range []bool{false, true} {
+		name := "followup"
+		if steer {
+			name = "steer"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, root := testAgent(t)
+			childSink := root.Child("child-agent")
+			child := &sessionState{
+				sink: a.sink.ChildSink("child-agent"), childKey: "key", childID: "child-agent",
+				parentSessionID: "session", subagentID: "native-child", childViewPrefix: childViewPrefixReady,
+			}
+			if steer {
+				child.turnID = "active-turn"
+			}
+			a.sessions["child"] = child
+			a.viewWork.CloseAndWait()
+
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(string, json.RawMessage) agenttest.RPCReply {
+				return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"refused"}`)}
+			}})
+
+			if steer {
+				_, err := a.SteerChildInput("key", agent.SteerRequest{Content: "note", InputID: "steer-input", AttemptID: "attempt-1"})
+				require.Error(t, err)
+			} else {
+				_, err := a.SendChildInput("key", agent.ChildInput{InputID: "ordinary-input", Content: "note"})
+				require.Error(t, err)
+			}
+			assert.Empty(t, child.childInputCommands)
+			a.retireHost(agent.MessageCompletionInterrupted)
+			assert.Empty(t, childSink.NativeReplyRetirements())
+			assert.Empty(t, childSink.SteerResolutions())
+		})
+	}
 }

@@ -39,6 +39,38 @@ func TestDeliveredStopKeepsDistinctClaimsThatReuseOneRequestID(t *testing.T) {
 	assert.Equal(t, second.ClaimToken, cancellations[0].ClaimToken)
 }
 
+func TestSuccessorTurnAcceptsControlsAfterThePriorStop(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const agentID = "successor-turn-controls"
+	createClaimTestAgent(t, svc, agentID)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{AgentID: agentID, WorkingDir: t.TempDir()}, sink, claudetest.StartSilent)
+	require.NoError(t, err)
+	lead := agent.TurnState{Active: true, Steerable: true, TurnSequence: 1}
+	sink.SetTurnState(lead, 1)
+	stop := svc.Output.NoteAgentStopRequested(agentID, agentID)
+	target, err := svc.Agents.CaptureStopTarget(agentID)
+	require.NoError(t, err)
+	stop.Delivered(target)
+
+	request := agent.ControlRequest{RequestID: "pending", Payload: []byte(`{"native":"permission"}`)}
+	sink.SetTurnState(lead, 2)
+	require.NoError(t, sink.PublishControlRequest(request))
+	requireNoControlRequest(t, t.Context(), svc.Output, agentID, request.RequestID)
+
+	sink.SetTurnState(agent.TurnState{Active: true, Steerable: true, TurnSequence: 3}, 3)
+	require.False(t, stop.IsCurrent())
+	require.NoError(t, sink.PublishControlRequest(request))
+	sink.SetTurnState(lead, 2)
+	stop.Delivered(target)
+	requireLookupControlRequest(t, t.Context(), svc.Output, agentID, request.RequestID)
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+	require.NoError(t, err)
+	assert.True(t, snapshot.ActiveTurn)
+	assert.True(t, snapshot.ActiveTurnSteerable)
+}
+
 func TestStopAttemptFailureAndIgnoredReportsPreserveOtherAttempts(t *testing.T) {
 	for _, report := range []string{"failed", "ignored"} {
 		t.Run(report, func(t *testing.T) {

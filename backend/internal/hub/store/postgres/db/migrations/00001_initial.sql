@@ -144,17 +144,6 @@ CREATE TABLE workers (
     slhdsa_public_key BYTEA NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at  TIMESTAMPTZ,
-    -- Set when the worker is deregistered; the persisted deregistration intent.
-    -- The store derives the reported WorkerStatus from this column and
-    -- deleted_at, and no column stores it:
-    --   ACTIVE:        deregistering_at IS NULL     AND deleted_at IS NULL
-    --   DEREGISTERING: deregistering_at IS NOT NULL AND deleted_at IS NULL
-    --   DELETED:       deleted_at IS NOT NULL
-    -- A deregistering worker is told to stop whenever it is connected, and a
-    -- valid acknowledgement deletes it. The cleanup loop deletes a worker
-    -- still deregistering after the grace period
-    -- (CompleteStaleDeregistrations).
-    deregistering_at TIMESTAMPTZ,
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
     -- worker. The owner's deregistration path refuses these, and the admin
@@ -171,6 +160,8 @@ CREATE TABLE workers (
     -- multiple NULLs and rejects duplicate non-NULL values.
     registration_attempt_id TEXT COLLATE "C" DEFAULT NULL UNIQUE,
     registration_key_hash BYTEA DEFAULT NULL UNIQUE,
+    -- Soft-delete timestamp. See the sqlite migration for the lifecycle
+    -- state mapping (ACTIVE vs DELETED).
     deleted_at    TIMESTAMPTZ,
     CONSTRAINT workers_registration_attempt CHECK (
         (registration_attempt_id IS NULL AND registration_key_hash IS NULL)
@@ -194,14 +185,6 @@ CREATE INDEX idx_workers_created_at ON workers(created_at DESC, id DESC) WHERE d
 CREATE INDEX idx_workers_registered_by_deleted_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_workers_deleted_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
-CREATE INDEX idx_workers_deregistering ON workers(deregistering_at) WHERE deregistering_at IS NOT NULL AND deleted_at IS NULL;
-
--- Exact live states need their own ordered populations. A residual state
--- filter would scan every worker of the other live state before a rare match.
-CREATE INDEX idx_workers_active_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
-CREATE INDEX idx_workers_registered_by_active_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
-CREATE INDEX idx_workers_deregistering_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
-CREATE INDEX idx_workers_registered_by_deregistering_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
 
 -- Active worker registration keys.
 --
@@ -215,6 +198,12 @@ CREATE INDEX idx_workers_registered_by_deregistering_created ON workers(register
 -- The store implements soft-delete by setting expires_at to a past instant.
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
+-- The enrollment revision survives the removal of the Worker's row.
+CREATE TABLE worker_enrollment_revisions (
+    user_id TEXT COLLATE "C" NOT NULL PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    revision BIGINT NOT NULL CHECK (revision > 0)
+);
+
 CREATE TABLE worker_registration_keys (
     id          TEXT COLLATE "C" PRIMARY KEY, -- public id; the key itself is never stored
     key_hash BYTEA NOT NULL UNIQUE CHECK (octet_length(key_hash) = 32),
@@ -307,6 +296,35 @@ CREATE TABLE user_op_batches (
 -- that exists only to prove nothing is left to delete.
 CREATE INDEX idx_user_op_batches_physical_ms ON user_op_batches(physical_ms);
 
+-- The layout journal retains facts independently of CRDT compaction.
+CREATE TABLE layout_event_heads (
+    user_id TEXT COLLATE "C" PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    journal_id TEXT COLLATE "C" NOT NULL CHECK (journal_id <> ''),
+    -- Encrypted 32-byte HMAC cursor key carries 44 bytes of XChaCha20-Poly1305
+    -- envelope overhead (4-byte version + 24-byte nonce + 16-byte tag) = 76 bytes.
+    cursor_key BYTEA NOT NULL CHECK (octet_length(cursor_key) = 76),
+    high_sequence BIGINT NOT NULL DEFAULT 0 CHECK (high_sequence >= 0),
+    floor_sequence BIGINT NOT NULL DEFAULT 0 CHECK (floor_sequence >= 0 AND floor_sequence <= high_sequence)
+);
+
+CREATE TABLE layout_event_entries (
+    user_id TEXT COLLATE "C" NOT NULL REFERENCES layout_event_heads(user_id) ON DELETE CASCADE,
+    sequence BIGINT NOT NULL CHECK (sequence > 0),
+    observed_unix_millis BIGINT NOT NULL,
+    -- Encrypted serialized LayoutEventFact carries 44 bytes of envelope overhead,
+    -- so > 44 rejects an empty plaintext payload.
+    fact BYTEA NOT NULL CHECK (octet_length(fact) > 44),
+    PRIMARY KEY (user_id, sequence)
+);
+
+-- A scoped reader can finish after its deletion fact expires.
+CREATE TABLE layout_workspace_ends (
+    user_id TEXT COLLATE "C" NOT NULL REFERENCES layout_event_heads(user_id) ON DELETE CASCADE,
+    workspace_id TEXT COLLATE "C" NOT NULL CHECK (workspace_id <> ''),
+    final_sequence BIGINT NOT NULL CHECK (final_sequence > 0),
+    PRIMARY KEY (user_id, workspace_id)
+);
+
 -- One materialized UserCrdtState blob per user. Only the compaction pass
 -- rewrites this row: when the compaction watermark advances, when the epoch
 -- rotates, and on the first persist of an epoch start that Bootstrap stamped.
@@ -380,6 +398,7 @@ CREATE TABLE lifecycle_outbox (
     -- that branch unreachable.
     op_type     SMALLINT NOT NULL CHECK (op_type BETWEEN 1 AND 3),
     payload     BYTEA NOT NULL,
+    layout_fact_written BOOLEAN NOT NULL DEFAULT FALSE,
     consumed_at TIMESTAMPTZ
 );
 CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id) WHERE consumed_at IS NULL;
@@ -604,6 +623,7 @@ CREATE TABLE oauth_providers (
     client_secret   BYTEA NOT NULL,
     scopes          BYTEA NOT NULL,
     trust_email     BOOLEAN NOT NULL DEFAULT TRUE,
+    response_mode   SMALLINT NOT NULL DEFAULT 1 CHECK (response_mode BETWEEN 1 AND 2),
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -695,11 +715,15 @@ DROP TABLE IF EXISTS lifecycle_outbox;
 DROP TABLE IF EXISTS user_recent_batch_ids;
 DROP TABLE IF EXISTS workspace_tab_owned;
 DROP TABLE IF EXISTS user_state;
+DROP TABLE IF EXISTS layout_workspace_ends;
+DROP TABLE IF EXISTS layout_event_entries;
+DROP TABLE IF EXISTS layout_event_heads;
 DROP TABLE IF EXISTS user_op_batches;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
 DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS workers;
+DROP TABLE IF EXISTS worker_enrollment_revisions;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;

@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,6 +30,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -84,10 +87,11 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", sockURL)
 	t.Setenv("LEAPMUX_CONTROL_TOKEN", rawToken)
 
-	c, err := control.NewClientFromEnv("")
+	p, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
-	require.True(t, c.IsWorkerIPC(), "client should be worker-IPC when LEAPMUX_CONTROL_SOCK is set")
-	assert.Equal(t, sockURL, c.HubURL, "HubURL preserves the socket URL for display and IsWorkerIPC()")
+	c, ok := p.(*control.WorkerIPCClient)
+	require.True(t, ok, "client should be *WorkerIPCClient when LEAPMUX_CONTROL_SOCK is set")
+	assert.Equal(t, sockURL, c.SocketURL, "SocketURL preserves the socket URL for display")
 
 	ipc, err := c.ControlIPCService()
 	require.NoError(t, err)
@@ -143,8 +147,10 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", sockURL)
 	t.Setenv("LEAPMUX_CONTROL_TOKEN", rawToken)
 
-	c, err := control.NewClientFromEnv("")
+	p, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
+	c, ok := p.(*control.WorkerIPCClient)
+	require.True(t, ok)
 
 	ipc, err := c.ControlIPCService()
 	require.NoError(t, err)
@@ -231,15 +237,15 @@ func (f *fakeChannelHub) CloseChannel(
 // is the only thing a test needs to know about the credential and the only
 // thing a transport ever sees. The field itself is unexported, so the
 // refresh mutex cannot be bypassed.
-func bearerHeader(c *control.Client) string {
+func bearerHeader(c *control.HubClient) string {
 	h := http.Header{}
 	c.ApplyAuth(h)
 	return h.Get("Authorization")
 }
 
 // startFakeChannelHub serves fakeChannelHub over httptest and returns a
-// hub-bound Client pointed at it with the given resolved user id.
-func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Client {
+// hub-bound HubClient pointed at it with the given resolved user id.
+func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.HubClient {
 	t.Helper()
 
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
@@ -267,7 +273,7 @@ func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Cli
 	require.NoError(t, err)
 	c.HTTPClient = srv.Client()
 	c.WSClient = srv.Client()
-	c.Pins = newPinsForTest(t)
+	control.SetPinsForTest(c, newPinsForTest(t))
 	return c
 }
 
@@ -453,19 +459,49 @@ func (h *workerSideChannelHub) CloseChannel(
 
 // TestNewClientFromEnv_NoHubErrorMentionsControlCommand locks the
 // guidance a user sees when the caller supplies no transport input: neither the
-// --hub flag, LEAPMUX_HUB, nor LEAPMUX_CONTROL_SOCK. The message points
-// at the renamed `leapmux control auth login` command, so a future
-// rename that forgets this string fails the test.
+// --hub flag, LEAPMUX_HUB, nor LEAPMUX_CONTROL_SOCK, and no stored credential.
+// The envelope points at the `leapmux auth login` command, so a
+// future rename that forgets this string fails the test.
 func TestNewClientFromEnv_NoHubErrorMentionsControlCommand(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 	t.Setenv("LEAPMUX_HUB", "")
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 
 	_, err := control.NewClientFromEnv("")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "leapmux control auth login",
-		"the no-transport error must guide the user at the control command")
-	assert.NotContains(t, err.Error(), "leapmux remote",
+	var noHub *control.NoHubError
+	require.ErrorAs(t, err, &noHub)
+	envelope := cli.FromError(err)
+	assert.Equal(t, cli.CodeNotLoggedIn, envelope.Code, "with no credential stored, the user is signed in nowhere")
+	hints := strings.Join(envelope.Hints, "\n")
+	assert.Contains(t, hints, "leapmux auth login",
+		"the no-transport error must guide the user at the auth command")
+	assert.Contains(t, hints, "--hub")
+	assert.NotContains(t, hints, "leapmux remote",
 		"the guidance must not reference the retired remote command name")
+}
+
+// With several credentials stored and no default chosen, the user is signed
+// in and must choose: the envelope is a usage error that states `auth use`.
+func TestNewClientFromEnv_SeveralHubsAndNoDefaultAskForAChoice(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+	t.Setenv("LEAPMUX_HUB", "")
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	for _, hub := range []string{"https://a.example", "https://b.example"} {
+		require.NoError(t, control.SaveCredentials(hub, control.CredentialFile{HubURL: hub, AccessToken: "lmx_a_x"}))
+	}
+
+	_, err := control.NewClientFromEnv("")
+	envelope := cli.FromError(err)
+	assert.Equal(t, cli.CodeUsage, envelope.Code)
+	assert.Contains(t, envelope.Message, "2 hubs")
+	assert.Contains(t, strings.Join(envelope.Hints, "\n"), "leapmux auth use <hub>")
+
+	require.NoError(t, control.SetDefaultHub("https://b.example"))
+	p, err := control.NewClientFromEnv("")
+	require.NoError(t, err, "a chosen default selects the hub")
+	c, ok := p.(*control.HubClient)
+	require.True(t, ok)
+	assert.Equal(t, "https://b.example", c.HubURL)
 }
 
 // TestOpenE2EEChannel_RejectsIdentityMismatch pins the ExpectedUserID
@@ -527,23 +563,11 @@ func TestHubSocketClientSendsBearerNotIPCHeader(t *testing.T) {
 
 	c, err := control.NewClient(sockURL)
 	require.NoError(t, err)
-	assert.False(t, c.IsWorkerIPC(), "a hub client is not a worker-IPC client even over a socket URL")
 
 	header := http.Header{}
 	c.ApplyAuth(header)
 	assert.Equal(t, "Bearer lmx_test_token", header.Get("Authorization"))
 	assert.Empty(t, header.Get("X-LeapMux-Token"), "the hub's listener does not read the IPC header")
-
-	// ControlIPCService refuses: the peer is the hub, not the worker.
-	_, err = c.ControlIPCService()
-	require.Error(t, err)
-
-	// The WebSocket surfaces refuse a socket hub URL: they build absolute
-	// WS URLs from the hub origin, which a socket URL cannot provide.
-	_, err = c.OpenUserEvents(context.Background(), nil)
-	require.ErrorContains(t, err, "http(s) hub origin")
-	_, err = c.OpenE2EEChannel(context.Background(), context.Background(), "worker-1")
-	require.ErrorContains(t, err, "http(s) hub origin")
 }
 
 // TestWorkerIPCClientSendsIPCHeader is the mirror: a worker-spawned
@@ -551,7 +575,6 @@ func TestHubSocketClientSendsBearerNotIPCHeader(t *testing.T) {
 func TestWorkerIPCClientSendsIPCHeader(t *testing.T) {
 	c, err := control.NewLocalClient("unix:/tmp/does-not-exist.sock", "ipc-token")
 	require.NoError(t, err)
-	assert.True(t, c.IsWorkerIPC())
 
 	header := http.Header{}
 	c.ApplyAuth(header)
@@ -651,10 +674,9 @@ func TestNewClientAndNewClientOrAnonymous_BuildTheSameTransport(t *testing.T) {
 	anonymous, err := control.NewClientOrAnonymous(testHub)
 	require.NoError(t, err)
 
-	for _, c := range []*control.Client{withCreds, anonymous} {
+	for _, c := range []*control.HubClient{withCreds, anonymous} {
 		assert.Equal(t, testHub, c.HubURL)
 		assert.Equal(t, testHub, c.ConnectURL())
-		assert.False(t, c.IsWorkerIPC(), "a hub URL is never the worker-IPC peer")
 		assert.NotNil(t, c.HTTPClient)
 	}
 	assert.Equal(t, "Bearer lmx_a_test", bearerHeader(withCreds))
@@ -703,7 +725,7 @@ func TestNewClient_RemoteHubGetsAWebSocketClient(t *testing.T) {
 // TestWorkerIPCStreamLaneCarriesNoTimeout pins the lane a control-IPC SERVER
 // STREAM must run on.
 //
-// `events watch` over local IPC and `agent messages --follow` both open
+// `layout watch` over local IPC and `agent messages --follow` both open
 // ControlIPCService.StreamInner, which rides the HTTP client rather than a
 // WebSocket. An http.Client timeout covers the BODY read and a stream's body
 // ends only when the stream does, so the timed unary client severed both
@@ -731,20 +753,141 @@ func TestWorkerIPCStreamLaneCarriesNoTimeout(t *testing.T) {
 	require.NotNil(t, stream)
 }
 
-// A hub-bound client has no control-IPC lane at all, and the stream accessor
-// must refuse it for the same reason the unary one does.
-func TestControlIPCStreamServiceRefusesAHubClient(t *testing.T) {
-	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
+func TestNewClientForHub_LocalAllowsAnonymousRemoteRequiresCredentials(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
-	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
-		HubURL: srv.URL, AccessToken: "lmx_test_secret", UserID: "u-1",
-	}))
-	c, err := control.NewClient(srv.URL)
-	require.NoError(t, err)
 
-	_, err = c.ControlIPCStreamService()
+	// Remote HTTP(S) hub without stored credentials returns ErrNotLoggedIn.
+	_, err := control.NewClientForHub("https://remote.example")
+	require.ErrorIs(t, err, control.ErrNotLoggedIn)
+
+	// Remote HTTP(S) hub with stored credentials succeeds and carries the bearer.
+	require.NoError(t, control.SaveCredentials("https://remote.example", control.CredentialFile{
+		HubURL:      "https://remote.example",
+		AccessToken: "lmx_remote_tok",
+		UserID:      "u-remote",
+		Username:    "alice",
+	}))
+	remoteClient, err := control.NewClientForHub("https://remote.example")
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer lmx_remote_tok", bearerHeader(remoteClient))
+	assert.Equal(t, "u-remote", remoteClient.UserID)
+
+	// Local IPC socket without stored credentials succeeds anonymously.
+	localURL := locallistentest.UniqueListenURL(t, "hubfor")
+	anonLocal, err := control.NewClientForHub(localURL)
+	require.NoError(t, err)
+	assert.Empty(t, bearerHeader(anonLocal))
+
+	// Local IPC socket with stored credentials uses the stored bearer.
+	require.NoError(t, control.SaveCredentials(localURL, control.CredentialFile{
+		HubURL:      localURL,
+		AccessToken: "lmx_local_tok",
+	}))
+	authedLocal, err := control.NewClientForHub(localURL)
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer lmx_local_tok", bearerHeader(authedLocal))
+
+	// Local IPC socket with corrupt credential JSON fails instead of falling back.
+	credPath, err := control.CredentialsPath(localURL)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(credPath, []byte("{corrupt"), 0o600))
+	_, err = control.NewClientForHub(localURL)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "worker-IPC")
+	assert.Contains(t, err.Error(), "parse credentials")
+}
+
+func TestNewClientFromEnv_PrecedenceAndErrorPaths(t *testing.T) {
+	t.Run("explicit hub overrides worker IPC socket and LEAPMUX_HUB", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_CONTROL_SOCK", locallistentest.UniqueListenURL(t, "tabsock"))
+		t.Setenv("LEAPMUX_CONTROL_TOKEN", "tab-secret")
+		t.Setenv("LEAPMUX_HUB", "https://env.example")
+
+		localHub := locallistentest.UniqueListenURL(t, "explicithub")
+		p, err := control.NewClientFromEnv(localHub)
+		require.NoError(t, err)
+		hubClient, ok := p.(*control.HubClient)
+		require.True(t, ok, "explicit --hub must select *HubClient even inside a tab")
+		assert.Equal(t, localHub, hubClient.HubURL)
+		assert.Empty(t, bearerHeader(hubClient))
+	})
+
+	t.Run("worker IPC socket without token returns error", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_SOCK", locallistentest.UniqueListenURL(t, "notoken"))
+		t.Setenv("LEAPMUX_CONTROL_TOKEN", "")
+		t.Setenv("LEAPMUX_HUB", "")
+
+		_, err := control.NewClientFromEnv("")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "local IPC socket and token required")
+	})
+
+	t.Run("NewLocalClient rejects missing socket or token", func(t *testing.T) {
+		_, err := control.NewLocalClient("", "tok")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "local IPC socket and token required")
+
+		_, err = control.NewLocalClient("unix:/tmp/x.sock", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "local IPC socket and token required")
+	})
+
+	t.Run("sole stored credential constructs HubClient with loaded identity", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+		t.Setenv("LEAPMUX_HUB", "")
+		require.NoError(t, control.SaveCredentials("https://sole.example", control.CredentialFile{
+			HubURL:      "https://sole.example",
+			AccessToken: "lmx_sole_tok",
+			UserID:      "u-sole",
+			Username:    "sole-user",
+		}))
+
+		p, err := control.NewClientFromEnv("")
+		require.NoError(t, err)
+		hubClient, ok := p.(*control.HubClient)
+		require.True(t, ok)
+		assert.Equal(t, "https://sole.example", hubClient.HubURL)
+		assert.Equal(t, "Bearer lmx_sole_tok", bearerHeader(hubClient))
+		assert.Equal(t, "u-sole", hubClient.UserID)
+		assert.Equal(t, "sole-user", hubClient.Username)
+	})
+
+	t.Run("discovered live local hub constructs anonymous HubClient", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix domain socket discovery applies only to non-Windows hosts")
+		}
+		root, err := os.MkdirTemp("", "lmxenv-*")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+		cfgDir := filepath.Join(root, "control")
+		soloDir := filepath.Join(root, "solo", "hub")
+		require.NoError(t, os.MkdirAll(cfgDir, 0o700))
+		require.NoError(t, os.MkdirAll(soloDir, 0o700))
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+		t.Setenv("LEAPMUX_HUB", "")
+
+		soloSock := filepath.Join(soloDir, "hub.sock")
+		ln, err := net.Listen("unix", soloSock)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			for {
+				conn, acceptErr := ln.Accept()
+				if acceptErr != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+
+		p, err := control.NewClientFromEnv("")
+		require.NoError(t, err)
+		hubClient, ok := p.(*control.HubClient)
+		require.True(t, ok)
+		assert.Equal(t, "unix:"+soloSock, hubClient.HubURL)
+		assert.Empty(t, bearerHeader(hubClient))
+	})
 }

@@ -1,5 +1,6 @@
 import type { AgentProvider, AgentStartupPrompt, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { TabStatusView } from '~/lib/tabStatus'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 /**
@@ -73,6 +74,12 @@ export interface BaseTab {
    * same repo, different toplevels mean different repos.
    */
   gitToplevel?: string | undefined
+  /**
+   * The status that a process reported for this tab through
+   * `leapmux control tab status set`, which the tab shows beside its title.
+   * `tabView` joins it from the tab status store; see `createTabStatusStore`.
+   */
+  tabStatus?: TabStatusView | undefined
 }
 
 /**

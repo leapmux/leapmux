@@ -60,8 +60,7 @@ func (qoderProvider) IsInterrupt(content string) bool {
 		frame.Request.Subtype == contracts.QoderControlRequestSubtypeInterrupt
 }
 
-// ResolveControlResponse turns the browser's neutral decision into Qoder's
-// native answer.
+// ResolveControlResponse turns the neutral answer into Qoder's native answer.
 func (qoderProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	res := agent.DefaultControlResponseResolution(ctx)
 	if res.Withhold {
@@ -79,9 +78,9 @@ func (qoderProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 // decision object. ok is false when the payload is not a can_use_tool answer;
 // only a payload that actually states allow or deny is translated.
 //
-// An allow carries the `updatedInput` the browser folded its answer into, and
-// states NO outcome beside it: Qoder resolves an explicit outcome first and
-// would then drop the input (see canUseToolAnswer). An allow that modifies
+// An allow carries the `updatedInput` that AnswerControlRequest folded the
+// answers into, and states NO outcome beside it: Qoder resolves an explicit
+// outcome first and would then drop the input (see canUseToolAnswer). An allow that modifies
 // nothing states `proceed_once`, or the `permissionScope` of the session pill
 // the reader selected (see scopeChoiceOf). A deny carries the user's words on
 // `message` and `reason` and states no outcome either, so the words reach the
@@ -95,7 +94,9 @@ func (qoderProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 // runtime derives and keeps the session rule itself. Any other id (or none) is
 // the once answer, so a stale pill can never invent a wider grant.
 func scopeChoiceOf(content []byte) string {
-	if choice := agent.DecodeControlChoice(content); choice == "session" {
+	// The option id of the session pill (qoderPermissionOptions), and Qoder's
+	// own word for the session scope, share one spelling.
+	if choice := agent.DecodeControlChoice(content); choice == qoderOptionSession {
 		return "session"
 	}
 	return ""
@@ -103,11 +104,11 @@ func scopeChoiceOf(content []byte) string {
 
 func translateQoderCanUseTool(content []byte) ([]byte, bool) {
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(content)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		return nil, false
 	}
 	answer := canUseToolAnswer{Behavior: behavior}
-	if behavior == agent.ControlBehaviorAllow {
+	if behavior == contracts.ControlAnswerBehaviorAllow {
 		if updatedInput := agent.DecodeControlUpdatedInput(content); updatedInput != nil {
 			answer.UpdatedInput = updatedInput
 		} else if scope := scopeChoiceOf(content); scope != "" {
@@ -117,24 +118,12 @@ func translateQoderCanUseTool(content []byte) ([]byte, bool) {
 		}
 	} else if message != "" {
 		// Only the words the user typed. A bare deny states no message, so the
-		// placeholder the browser auto-fills is never handed to the model as if
-		// the user had written it.
+		// placeholder that DenyResponse fills in is never handed to the model as
+		// if the user had written it.
 		answer.Message = message
 		answer.Reason = message
 	}
-	out := map[string]any{
-		"type": frameTypeControlResponse,
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": requestID,
-			"response":   answer,
-		},
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return nil, false
-	}
-	return raw, true
+	return agent.ControlResponseEnvelope(requestID, answer), true
 }
 
 // ListStoredSessions reads Qoder's own transcripts. See sessions.go.
@@ -174,27 +163,6 @@ func (qoderProvider) PlanApprovalOptions(mode string) map[string]string {
 	return map[string]string{agent.OptionIDPermissionMode: mode}
 }
 
-// IsSelfDisplayingControlTool reports false: Qoder echoes no control answer
-// back into its output stream as a tool_result.
-func (qoderProvider) IsSelfDisplayingControlTool(string) bool { return false }
-
-// TurnEndToolUses reads the tool-use count of a result frame.
-func (qoderProvider) TurnEndToolUses(content []byte) (int32, bool) {
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(content, &probe); err != nil {
-		return 0, false
-	}
-	raw, present := probe["num_tool_uses"]
-	if !present {
-		return 0, false
-	}
-	var count int32
-	if err := json.Unmarshal(raw, &count); err != nil {
-		return 0, false
-	}
-	return count, true
-}
-
 // ChildCapabilities states what a child tab offers.
 //
 // AcceptsMessages reports false: the Agent implements InputSteerer for the
@@ -205,5 +173,3 @@ func (qoderProvider) TurnEndToolUses(content []byte) (int32, bool) {
 func (qoderProvider) ChildCapabilities(options optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsInterrupt: options[qoderOptionChildKind] == qoderChildKindTask}
 }
-
-// controlRequestSubtype extracts the subtype of a control request payload.

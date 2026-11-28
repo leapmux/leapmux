@@ -8,7 +8,7 @@ import (
 )
 
 // restoreControlResponseID reads the native ID from the persisted request.
-// The browser uses the worker's string ID because JSON numbers can lose precision there.
+// An answer carries the worker's string key of the request as its ID (JSONRPCResult).
 func restoreControlResponseID(ctx ControlResponseContext) ControlResponseResolution {
 	resolution := ControlResponseResolution{Content: ctx.ResponseContent}
 	if len(ctx.RequestPayload) == 0 {
@@ -27,21 +27,24 @@ func restoreControlResponseID(ctx ControlResponseContext) ControlResponseResolut
 		return resolution
 	}
 	nativeID, requestID, validRequest := ExtractJSONRPCID(ctx.RequestPayload)
-	_, responseID, validResponse := ExtractJSONRPCID(ctx.ResponseContent)
-	// The refusal states which half failed, so the reader learns whether the
-	// stored request or the answer is the part nobody can read.
-	switch {
-	case !validRequest:
+	if !validRequest {
 		resolution.Refuse(RefusalUnreadableRequest)
 		return resolution
-	case !validResponse:
+	}
+	_, responseID, validResponse := ExtractJSONRPCID(ctx.ResponseContent)
+	if !validResponse {
 		resolution.Refuse(RefusalUnreadableAnswer)
-		return resolution
-	case StoredControlRequestID(ctx, requestID) != responseID:
-		resolution.Refuse(RefusalOtherRequest)
 		return resolution
 	}
 	if bytes.Equal(nativeID, response["id"]) {
+		return resolution
+	}
+	expectedID := ctx.RequestID
+	if expectedID == "" {
+		expectedID = requestID
+	}
+	if responseID != expectedID {
+		resolution.Refuse(RefusalUnreadableAnswer)
 		return resolution
 	}
 	content, err := jsonfield.Set(ctx.ResponseContent, nativeID, "id")

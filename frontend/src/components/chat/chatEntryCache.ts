@@ -9,7 +9,7 @@ import type { MessageRevision, MessageSpanIdentity, ToolSpanRole } from '~/lib/m
 import type { SettingsLabelDependency } from '~/lib/settingsLabelCache'
 import { createMemo } from 'solid-js'
 import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
-import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
+import { collectSettingsLabelDependencies, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
 import { shallowEqual, shallowEqualSets } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
@@ -50,7 +50,10 @@ export interface EntryFreshness {
   revisionKey: string
   /** Whether the classifier read these messages in a subagent's own transcript. */
   isChildTranscript: boolean
-  /** Revisions of the exact display-label groups that this row reads. */
+  /**
+   * Revisions of the exact display-label groups that this row's classification reads.
+   * The row model cache keeps the groups that the row's extraction reads (see cachedChatRow).
+   */
   settingsLabelRevision: string
   /**
    * The span role of the row. It decides whether the list counts the row as the request
@@ -186,9 +189,6 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     selected: ResolvedMessage | undefined,
     labelDependencies: readonly SettingsLabelDependency[],
   ): EntryFreshness => {
-    // Subscribe the window memo to catalog changes. The dependency key below
-    // decides whether this row actually needs a rebuild.
-    settingsLabelCacheRevision()
     const own: MessageRevision = selected?.revision ?? {
       id: message.id,
       seq: message.seq,
@@ -214,6 +214,8 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
           : {}),
       }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
+      // Reading the revision subscribes the window memo to catalog changes, also for a
+      // row that read no label. The key decides whether this row needs a rebuild.
       settingsLabelRevision: settingsLabelDependencyRevision(labelDependencies),
       role,
     }

@@ -23,7 +23,7 @@ type mimoProvider struct {
 func (mimoProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == contracts.AttachmentMediaKindAudio {
 		if !slices.Contains(contracts.MiMoAudioMIMEMembers, attachment.MIMEType) {
-			return fmt.Errorf("the MiMo Code agent does not accept audio format %q", attachment.MIMEType)
+			return fmt.Errorf("the MiMo Code agent does not accept audio format %q: %s", attachment.MIMEType, attachment.Filename)
 		}
 		if len(attachment.Data) == 0 {
 			return fmt.Errorf("the audio attachment %q is empty", attachment.Filename)
@@ -74,11 +74,12 @@ func (mimoProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) strin
 	}
 }
 
-// ResolveControlResponse checks a browser answer against its stored request.
+// ResolveControlResponse checks an answer against its stored request.
 //
-// It changes no byte. The answer keeps the shape the browser wrote, because
-// the persisted answer row shows that shape and the browser labels it, and
-// SendRawInput reads the same shape when it sends the answer to MiMo. What this
+// It changes no byte. The answer keeps the shape that AnswerControlRequest
+// wrote, because the persisted answer row shows that shape and the browser
+// labels it, and SendRawInput reads the same shape when it sends the answer to
+// MiMo. What this
 // adds is the refusal: an answer that does not fit its request is withheld, so
 // MiMo keeps waiting and the user can answer again.
 func (mimoProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
@@ -97,17 +98,11 @@ func (mimoProvider) ResolveControlResponse(ctx agent.ControlResponseContext) age
 	if kind == controlPlan {
 		res.PlanModeControl = agent.PlanModeControlExit
 	}
-	answer, err := readControlAnswer(kind, ctx.RequestPayload, ctx.ResponseContent)
-	if err != nil {
+	if _, err := readControlAnswer(kind, ctx.RequestPayload, ctx.ResponseContent); err != nil {
 		// The error IS the reason the reader sees: readControlAnswer words each
 		// failure for the banner, and the same text goes to the log.
 		slog.Warn("mimo control response does not fit its request", "request_id", ctx.RequestID, "error", err)
 		res.Refuse(err.Error())
-		return res
-	}
-	if ctx.RequestID != "" && answer.requestID != ctx.RequestID {
-		slog.Warn("mimo control response addressed another request", "answered", answer.requestID, "stored", ctx.RequestID)
-		res.Refuse(agent.RefusalOtherRequest)
 	}
 	return res
 }

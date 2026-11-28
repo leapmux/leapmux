@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -17,7 +18,9 @@ import (
 	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -59,12 +62,13 @@ type ScreenBuffer struct {
 	// runs with mu released so a handler can read the buffer.
 	deliverMu sync.Mutex
 
-	mu      sync.Mutex
-	buf     []byte
-	pos     int
-	full    bool
-	total   int64 // Total bytes ever written (monotonic within a PTY session).
-	tracker modeTracker
+	mu       sync.Mutex
+	buf      []byte
+	pos      int
+	full     bool
+	total    int64 // Total bytes ever written (monotonic within a PTY session).
+	tracker  modeTracker
+	geometry screenGeometryHistory
 }
 
 // NewScreenBuffer creates a new screen buffer.
@@ -92,7 +96,10 @@ func NewScreenBufferWithOffset(initialOffset int64) *ScreenBuffer {
 func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
+	return sb.writeLocked(data)
+}
 
+func (sb *ScreenBuffer) writeLocked(data []byte) (int64, []Signal) {
 	// Observe the bytes for sticky-mode tracking before the ring copy.
 	// Order is irrelevant for correctness (feed is a pure function of
 	// data), but feeding first reads naturally and keeps the tracker
@@ -145,12 +152,35 @@ func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 // not a new way to block: the PTY reader already calls its handler
 // synchronously between reads, and AppendOutput already ran the same
 // handler on its own goroutine.
-func (sb *ScreenBuffer) WriteAndDeliver(data []byte, deliver OutputHandler) {
+func (sb *ScreenBuffer) WriteAndDeliver(owner uint64, data []byte, deliver OutputHandler) {
 	sb.deliverMu.Lock()
 	defer sb.deliverMu.Unlock()
 
-	endOffset, signals := sb.Write(data)
-	deliver(data, endOffset, signals)
+	sb.mu.Lock()
+	if owner != sb.geometry.owner {
+		sb.mu.Unlock()
+		return
+	}
+	endOffset, signals := sb.writeLocked(data)
+	geometry := sb.geometry.current()
+	sb.mu.Unlock()
+	if deliver != nil {
+		deliver(Output{Data: data, EndOffset: endOffset, Signals: signals, ScreenEpoch: geometry.Epoch, GeometryRevision: geometry.Revision})
+	}
+}
+
+// InputModes returns the modes that the program in the terminal enabled and
+// that change the bytes of an input: the application cursor key mode and
+// bracketed paste. The tracker reads them from the output, so they miss a mode
+// change that the PTY has not delivered yet. The modes of the browser's
+// xterm.js have the same delay.
+func (sb *ScreenBuffer) InputModes() terminput.Modes {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return terminput.Modes{
+		ApplicationCursorKeys: sb.tracker.appCursorKeys,
+		BracketedPaste:        sb.tracker.bracketedPaste,
+	}
 }
 
 // TotalBytes returns the cumulative byte count ever written to this buffer.
@@ -169,20 +199,17 @@ func (sb *ScreenBuffer) TotalBytes() int64 {
 func (sb *ScreenBuffer) Snapshot() ([]byte, int64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	body := sb.tailBytesLocked(sb.retainedLocked())
-	return prependPrefix(sb.tracker.snapshotPrefix(), body), sb.total
+	return sb.snapshotBytesLocked(sb.tracker.snapshotPrefix(), sb.retainedLocked()), sb.total
 }
 
-// prependPrefix concatenates prefix and body. Returns body unchanged
-// when prefix is nil so the common case (default tracker state) avoids
-// the extra alloc + copy.
-func prependPrefix(prefix, body []byte) []byte {
-	if len(prefix) == 0 {
-		return body
-	}
-	out := make([]byte, 0, len(prefix)+len(body))
-	out = append(out, prefix...)
-	out = append(out, body...)
+// snapshotBytesLocked copies prefix and the trailing n retained bytes into one
+// freshly allocated slice. Caller must hold sb.mu.
+func (sb *ScreenBuffer) snapshotBytesLocked(prefix []byte, n int) []byte {
+	head, wrap := sb.tailLocked(n)
+	out := make([]byte, len(prefix)+len(head)+len(wrap))
+	off := copy(out, prefix)
+	off += copy(out[off:], head)
+	copy(out[off:], wrap)
 	return out
 }
 
@@ -279,8 +306,7 @@ func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset
 	// have with the snapshot flag, prefixed with the tracker's mode-restore
 	// bytes so a TUI in alt screen still renders correctly after the
 	// xterm reset+replay.
-	body := sb.tailBytesLocked(sb.retainedLocked())
-	return prependPrefix(sb.tracker.snapshotPrefix(), body), total, true
+	return sb.snapshotBytesLocked(sb.tracker.snapshotPrefix(), sb.retainedLocked()), total, true
 }
 
 // OutputHandler is called for each chunk of output from the PTY. The
@@ -288,7 +314,17 @@ func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset
 // forward it to watchers as the resume cursor for this event. Signals
 // carry notification-class escape sequences (bell, title, notification,
 // progress) interpreted worker-side from this chunk.
-type OutputHandler func(data []byte, endOffset int64, signals []Signal)
+type OutputHandler func(Output)
+
+// Output is one observation from the screen buffer. A resize has no PTY bytes.
+type Output struct {
+	Data             []byte
+	EndOffset        int64
+	Signals          []Signal
+	ScreenEpoch      string
+	GeometryRevision uint64
+	Resize           *ScreenGeometry
+}
 
 // Terminal manages a single PTY session.
 type Terminal struct {
@@ -326,9 +362,21 @@ type Terminal struct {
 	// cumulative offset to the user-provided OutputHandler, through
 	// ScreenBuffer.WriteAndDeliver so those two writers cannot deliver
 	// their chunks out of offset order.
-	outputFn  func(data []byte)
-	screenBuf *ScreenBuffer
-	mu        sync.Mutex
+	outputFn     func(data []byte)
+	screenBuf    *ScreenBuffer
+	screenOwner  uint64
+	screenOutput OutputHandler
+	// startupMu serializes pre-activation startup bytes against activate().
+	// Before activation, readOutput buffers into startupBuf instead of mutating
+	// screenBuf so a failed spawn or restart never corrupts a shared buffer.
+	startupMu  sync.Mutex
+	activated  bool
+	startupBuf []byte
+	mu         sync.Mutex
+	// resizeMu serializes direct Terminal.Resize calls so native PTY resize
+	// and geometry recording stay ordered even though ptmx.Resize runs outside
+	// screenBuf.deliverMu.
+	resizeMu sync.Mutex
 	// managedResizeMu serializes the manager's dimension comparison, native
 	// resize, and metadata commit for this instance. Other terminals stay independent.
 	managedResizeMu sync.Mutex
@@ -387,13 +435,27 @@ type Options struct {
 	Shell         string
 	WorkingDir    string
 	ShellStartDir string
+	Title         string
 	Cols          uint16
 	Rows          uint16
-	// ExtraEnv is appended verbatim to the spawned shell's environment
-	// after TERM is set. The service.Service populates this with
-	// LEAPMUX_CONTROL_* so scripts inside the shell can drive LeapMux
-	// via `leapmux control`.
+	// ExtraEnv holds the LEAPMUX_CONTROL_* variables of the spawn. The
+	// service.Service mints them so scripts inside the shell can drive LeapMux
+	// via `leapmux control`. spawnEnv applies them through controlenv.Apply:
+	// they land last, after TERM is set, and the directory of
+	// LEAPMUX_CONTROL_CLI goes first on PATH.
 	ExtraEnv []string
+	// InitialCommand is evaluated by the original shell after its startup
+	// files run. Empty starts an ordinary interactive shell.
+	//
+	// The service's RestartTerminal handler builds its Options from the
+	// terminal's row, which holds no command, so a restart that the user asks
+	// for does not run the command again.
+	InitialCommand string
+	// InitialCommandDir is the private Worker parent for launch files.
+	InitialCommandDir string
+	// ReleaseInitialCommand authorizes a durable launch and calls expose
+	// while the same Worker owner still controls it.
+	ReleaseInitialCommand func(context.Context, func() error) error
 }
 
 // spawnEnv builds the environment a terminal's login shell is started with,
@@ -414,21 +476,28 @@ type Options struct {
 // A named function rather than inline construction because it is the only part
 // of the spawn a test can assert on: `exec.Cmd` resolves duplicates last-wins,
 // so a layered pin is invisible to the child process and visible only here.
+//
+// The shell is a login shell, so its profile runs after it receives this
+// environment, and the profile can move the PATH entry of the Worker's CLI or
+// drop it (see controlenv.Apply). LEAPMUX_CONTROL_CLI still gives the exact
+// executable.
 func spawnEnv(environ, extraEnv []string) []string {
 	// The provider-helper variable points at one agent's helper spec (see
 	// agent.HelperFunc). A terminal that inherited it would run a plain
 	// `leapmux` as that agent's helper, so the spawn never passes it on.
-	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(envutil.FilterEnv(environ, contracts.EnvAgentHelper),
+	// Strip any inherited initial-command bootstrap variables too so a Worker
+	// started inside another terminal cannot pass stale handoff paths down.
+	cleaned := envutil.StripByPrefix(envutil.FilterEnv(environ, contracts.EnvAgentHelper), initialCommandEnvPrefix)
+	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(cleaned,
 		"TERM=xterm-256color",
 		gitutil.GitOptionalLocksOff,
 	))
-	if len(extraEnv) == 0 {
-		return env
-	}
-	// Strip any pre-existing LEAPMUX_CONTROL_* (defensive — leapmux worker
-	// doesn't normally set them, but a recursive launch would inherit) before
-	// injecting the canonical values.
-	return append(envutil.StripByPrefix(env, "LEAPMUX_CONTROL_"), extraEnv...)
+	// Apply strips the LEAPMUX_CONTROL_* context that a Worker started from a
+	// LeapMux tab inherits, also when extraEnv is empty because the spawn has
+	// no remote control: a shell that kept it would act as the tab of the
+	// parent Worker. It then appends extraEnv and puts the directory of the
+	// Worker's CLI first on PATH.
+	return controlenv.Apply(env, extraEnv)
 }
 
 // Start creates a new PTY terminal session. The supplied context
@@ -451,6 +520,42 @@ func startWithScreenBuffer(
 	screenBuf *ScreenBuffer,
 	outputFn OutputHandler,
 ) (*Terminal, error) {
+	launch, err := spawnTerminal(ctx, opts, clock, screenBuf, outputFn)
+	if err != nil {
+		return nil, err
+	}
+	defer launch.closeBootstrap()
+	if err := launch.awaitReady(ctx); err != nil {
+		launch.abort()
+		return nil, err
+	}
+	launch.activate()
+	if err := launch.releaseAndAck(ctx); err != nil {
+		launch.abort()
+		return nil, err
+	}
+	return launch.finish(), nil
+}
+
+// pendingTerminalLaunch separates PTY spawn and shell readiness from screen
+// activation, manager installation, and initial-command release so callers
+// install linearly without mutating a shared ScreenBuffer before readiness.
+type pendingTerminalLaunch struct {
+	opts      Options
+	shell     string
+	terminal  *Terminal
+	bootstrap *initialCommandBootstrap
+	cols      uint16
+	rows      uint16
+}
+
+func spawnTerminal(
+	ctx context.Context,
+	opts Options,
+	clock quartz.Clock,
+	screenBuf *ScreenBuffer,
+	outputFn OutputHandler,
+) (*pendingTerminalLaunch, error) {
 	if clock == nil {
 		panic("terminal: clock must not be nil")
 	}
@@ -464,15 +569,46 @@ func startWithScreenBuffer(
 	}
 
 	args := LoginShellArgs(shell)
+	program := shell
+	env := spawnEnv(os.Environ(), opts.ExtraEnv)
+	var bootstrap *initialCommandBootstrap
+	if opts.InitialCommand != "" {
+		if err := CheckInitialCommand(shell, opts.InitialCommand); err != nil {
+			return nil, err
+		}
+		if !strings.ContainsAny(shell, `/\`) {
+			resolved, err := exec.LookPath(shell)
+			if err != nil {
+				return nil, err
+			}
+			program = resolved
+		}
+		var err error
+		bootstrap, err = newInitialCommandBootstrap(opts.InitialCommandDir)
+		if err != nil {
+			return nil, err
+		}
+		program, args, env, err = bootstrap.launch(ctx, program, opts.WorkingDir, args, env)
+		if err != nil {
+			bootstrap.close()
+			return nil, err
+		}
+	}
 
 	ptmx, err := pty.New()
 	if err != nil {
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("new pty: %w", err)
 	}
 
-	owner, err := procutil.PreparePTYProcess(ctx, ptmx, procutil.PTYLaunch{Program: shell, Args: args, Dir: opts.WorkingDir, Env: spawnEnv(os.Environ(), opts.ExtraEnv)})
+	owner, err := procutil.PreparePTYProcess(ctx, ptmx, procutil.PTYLaunch{Program: program, Args: args, Dir: opts.WorkingDir, Env: env})
 	if err != nil {
 		_ = ptmx.Close()
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("prepare pty process: %w", err)
 	}
 	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
@@ -488,22 +624,18 @@ func startWithScreenBuffer(
 	}
 	if err := ptmx.Resize(int(cols), int(rows)); err != nil {
 		_ = ptmx.Close()
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("resize pty: %w", err)
 	}
 
 	if err := owner.Start(); err != nil {
 		_ = ptmx.Close()
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("start pty: %w", err)
-	}
-
-	// The buffer owns the serialization, not this closure: Respawn hands
-	// the same ScreenBuffer to the next incarnation, whose reader can
-	// start while the previous one still drains (an exited terminal is
-	// not a drained one — see readDoneCh). A mutex captured here would be
-	// a fresh one for each incarnation and would leave that overlap
-	// unserialized.
-	wrappedOutput := func(data []byte) {
-		screenBuf.WriteAndDeliver(data, outputFn)
 	}
 
 	t := &Terminal{
@@ -512,12 +644,13 @@ func startWithScreenBuffer(
 		clock:             clock,
 		owner:             owner,
 		ptmx:              ptmx,
-		outputFn:          wrappedOutput,
 		screenBuf:         screenBuf,
+		screenOutput:      outputFn,
 		exitCh:            make(chan struct{}),
 		readDoneCh:        make(chan struct{}),
 		childSideClosedCh: make(chan struct{}),
 	}
+	t.outputFn = t.deliverOutput
 
 	go func() {
 		t.readOutput()
@@ -525,14 +658,99 @@ func startWithScreenBuffer(
 	}()
 	go t.waitForExit()
 
-	slog.Info("terminal started",
-		"terminal_id", opts.ID,
-		"shell", shell,
-		"args", args,
-		"pid", owner.PID(),
-	)
+	return &pendingTerminalLaunch{
+		opts:      opts,
+		shell:     shell,
+		terminal:  t,
+		bootstrap: bootstrap,
+		cols:      cols,
+		rows:      rows,
+	}, nil
+}
 
-	return t, nil
+func (l *pendingTerminalLaunch) closeBootstrap() {
+	if l.bootstrap != nil {
+		l.bootstrap.close()
+		l.bootstrap = nil
+	}
+}
+
+func (l *pendingTerminalLaunch) awaitReady(ctx context.Context) error {
+	if l.bootstrap == nil {
+		return nil
+	}
+	return l.bootstrap.awaitReady(ctx, l.terminal, l.terminal.clock)
+}
+
+// activate claims screenBuf geometry ownership and flushes any startup output
+// buffered before activation, keeping output chronological and preventing a
+// failed spawn or restart from mutating a shared ScreenBuffer.
+func (l *pendingTerminalLaunch) activate() {
+	t := l.terminal
+	t.startupMu.Lock()
+	if t.activated {
+		t.startupMu.Unlock()
+		return
+	}
+	owner := t.screenBuf.beginGeometry(l.cols, l.rows, t.screenOutput)
+	t.screenOwner = owner
+	if len(t.startupBuf) > 0 {
+		t.screenBuf.WriteAndDeliver(owner, t.startupBuf, t.screenOutput)
+		t.startupBuf = nil
+	}
+	t.activated = true
+	t.startupMu.Unlock()
+}
+
+func (l *pendingTerminalLaunch) releaseAndAck(ctx context.Context) error {
+	if l.bootstrap == nil {
+		return nil
+	}
+	if err := l.bootstrap.release(ctx, l.terminal, l.opts); err != nil {
+		return err
+	}
+	return l.bootstrap.await(ctx, l.terminal, l.terminal.clock, l.bootstrap.ackPath(), errInitialCommandUnproved)
+}
+
+func (l *pendingTerminalLaunch) abort() {
+	l.closeBootstrap()
+	l.terminal.Stop()
+	l.terminal.Wait()
+	<-l.terminal.readDoneCh
+}
+
+func (l *pendingTerminalLaunch) finish() *Terminal {
+	slog.Info("terminal started",
+		"terminal_id", l.opts.ID,
+		"shell", l.shell,
+		"args", LoginShellArgs(l.shell),
+		"pid", l.terminal.shellPID,
+	)
+	return l.terminal
+}
+
+func (t *Terminal) deliverOutput(data []byte) {
+	t.startupMu.Lock()
+	if !t.activated {
+		t.appendStartupBytesLocked(data)
+		t.startupMu.Unlock()
+		return
+	}
+	owner := t.screenOwner
+	t.startupMu.Unlock()
+	t.screenBuf.WriteAndDeliver(owner, data, t.screenOutput)
+}
+
+func (t *Terminal) appendStartupBytesLocked(data []byte) {
+	if len(data) >= screenBufferSize {
+		t.startupBuf = append(t.startupBuf[:0], data[len(data)-screenBufferSize:]...)
+		return
+	}
+	if excess := len(t.startupBuf) + len(data) - screenBufferSize; excess > 0 {
+		copy(t.startupBuf, t.startupBuf[excess:])
+		t.startupBuf = t.startupBuf[:len(t.startupBuf)-excess]
+	}
+	t.startupBuf = append(t.startupBuf, data...)
 }
 
 // SendInput writes data to the PTY.
@@ -564,9 +782,18 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 	}
 	t.mu.Unlock()
 
-	t.ptyMu.RLock()
-	defer t.ptyMu.RUnlock()
-	return t.ptmx.Resize(int(cols), int(rows))
+	t.resizeMu.Lock()
+	defer t.resizeMu.Unlock()
+
+	t.startupMu.Lock()
+	owner := t.screenOwner
+	t.startupMu.Unlock()
+
+	return t.screenBuf.resizeWithGeometry(owner, cols, rows, func() error {
+		t.ptyMu.RLock()
+		defer t.ptyMu.RUnlock()
+		return t.ptmx.Resize(int(cols), int(rows))
+	}, t.screenOutput)
 }
 
 // Stop terminates the terminal session and every process spawned beneath
@@ -809,14 +1036,27 @@ func (t *Terminal) IsExited() bool {
 	}
 }
 
-// ExitCode returns the shell's exit code and true once the terminal has exited,
-// or (0, false) while it is still running. Reading exitCode after exitCh closes
-// is synchronized by the channel close in waitForExit.
+// ExitCode returns the exit code of the shell and true once the shell exited:
+// -1 for a shell that a signal ended. It returns false while the shell runs.
+//
+// waitForExit writes exitCode before it closes exitCh, so a read after the
+// close sees the final value.
 func (t *Terminal) ExitCode() (int, bool) {
-	if !t.IsExited() {
+	select {
+	case <-t.exitCh:
+		return t.exitCode, true
+	default:
 		return 0, false
 	}
-	return t.exitCode, true
+}
+
+// sendInput encodes in for the modes that the program in the terminal enabled,
+// and writes the result to the PTY in one write.
+func (t *Terminal) sendInput(in terminput.Input) error {
+	if t.IsExited() {
+		return fmt.Errorf("terminal exited: %s", t.id)
+	}
+	return t.SendInput(in.Encode(t.screenBuf.InputModes()))
 }
 
 // ID returns the terminal's ID.

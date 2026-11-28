@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A struct tag cannot hold a constant, and the reply envelope Droid reads is
-// written from these names. This test is the Go reader of the contract tables
-// that no production call site branches on: a rename in contracts/droid-protocol.json
-// moves it here and fails, instead of silently leaving the wire stale.
+// Droid owns these words. The worker writes the reply envelope through generated
+// structs, whose tags follow the contract, so this test pins each word to Droid's
+// spelling: a rename in contracts/droid-protocol.json fails here instead of
+// silently leaving the wire stale. It is also the Go reader of the contract
+// tables that no production call site branches on.
 func TestDroidContractVocabularyMatchesTheWire(t *testing.T) {
 	t.Parallel()
 
@@ -48,11 +49,12 @@ func jsonName(t *testing.T, structType reflect.Type, field string) string {
 	return name
 }
 
-// Droid reads and writes the question request and its reply through hand-written
-// struct tags, and a struct tag cannot hold a constant. Each tag below carries a word of
-// the `askUserFields` or `reply` table of contracts/droid-protocol.json. The browser reads
-// the same words through the generated constants, so a rename that moves the contract
-// and leaves a tag behind would break the question form with no failing test.
+// The worker reads Droid's question request, the questions of the request that it
+// published, and the answers of a decision through hand-written struct tags, and a
+// struct tag cannot hold a constant. Each tag below carries a word of the
+// `askUserFields` table of contracts/droid-protocol.json. The worker writes the same
+// words through the generated constants and structs, so a rename that moves the
+// contract and leaves a tag behind would break the question form with no failing test.
 func TestDroidStructTagsMatchTheContractWords(t *testing.T) {
 	t.Parallel()
 
@@ -67,11 +69,6 @@ func TestDroidStructTagsMatchTheContractWords(t *testing.T) {
 	assert.Equal(t, contracts.DroidAskUserFieldOptions, jsonName(t, asked, "Options"))
 	assert.Equal(t, contracts.DroidAskUserFieldMultiSelect, jsonName(t, asked, "MultiSelect"))
 
-	answer := reflect.TypeOf(droidAskUserAnswer{})
-	assert.Equal(t, contracts.DroidAskUserFieldIndex, jsonName(t, answer, "Index"))
-	assert.Equal(t, contracts.DroidAskUserFieldQuestion, jsonName(t, answer, "Question"))
-	assert.Equal(t, contracts.DroidAskUserFieldAnswer, jsonName(t, answer, "Answer"))
-
 	stored := reflect.TypeOf(droidStoredQuestion{})
 	assert.Equal(t, contracts.DroidAskUserFieldIndex, jsonName(t, stored, "Index"))
 	assert.Equal(t, contracts.DroidAskUserFieldQuestion, jsonName(t, stored, "Question"))
@@ -79,9 +76,4 @@ func TestDroidStructTagsMatchTheContractWords(t *testing.T) {
 	decided := reflect.TypeOf(droidDecidedAnswer{})
 	assert.Equal(t, contracts.DroidAskUserFieldIndex, jsonName(t, decided, "Index"))
 	assert.Equal(t, contracts.DroidAskUserFieldAnswer, jsonName(t, decided, "Answer"))
-
-	assert.Equal(t, contracts.DroidReplySelectedOption, jsonName(t, reflect.TypeOf(droidPermissionResult{}), "SelectedOption"))
-	reply := reflect.TypeOf(droidAskUserResult{})
-	assert.Equal(t, contracts.DroidReplyCancelled, jsonName(t, reply, "Cancelled"))
-	assert.Equal(t, contracts.DroidReplyAnswers, jsonName(t, reply, "Answers"))
 }

@@ -224,7 +224,7 @@ func readBatchBlob(r io.Reader, limit int64) (gitBlob, error) {
 // registerGitHandlers registers handlers for git operations on the local filesystem.
 func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitInfoRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -287,7 +287,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorkingTreeStateRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -308,7 +308,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitFileStatusRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -403,7 +403,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ReadGitFileRequest, sender channel.ResponseWriter) {
-		absPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		absPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -480,7 +480,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListGitBranchesRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -509,7 +509,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListGitWorktreesRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -526,6 +526,34 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, &leapmuxv1.ListGitWorktreesResponse{
 			Worktrees: worktrees,
 		})
+	})
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorktreeRequest, sender channel.ResponseWriter) {
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		selector := r.GetSelector()
+		if target, ok := r.GetTarget().(*leapmuxv1.GetGitWorktreeRequest_Self); ok {
+			if !target.Self || r.GetRepoDir() != "" {
+				sendInvalidArgument(sender, "self takes its repository from the calling tab")
+				return
+			}
+			var err error
+			selector, err = svc.resolveCallingWorktree(ctx, caller)
+			if err != nil {
+				sendValidationError(sender, err)
+				return
+			}
+		}
+		info, worktree, err := svc.resolveGitWorktree(ctx, r.GetRepoDir(), selector)
+		if err != nil {
+			var ambiguity *worktreeAmbiguity
+			if errors.As(err, &ambiguity) {
+				sendProtoResponse(sender, &leapmuxv1.GetGitWorktreeResponse{AmbiguousPaths: ambiguity.paths})
+				return
+			}
+			sendValidationError(sender, err)
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.GetGitWorktreeResponse{Worktree: gitWorktreeProto(worktree), RepoRoot: info.RepoRoot})
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, dispatchTracked, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectLastTabCloseRequest, sender channel.ResponseWriter) {
@@ -564,6 +592,18 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 		}
 		traceTabClosePhase("inspect", tab.GetTabId(), "handler_end")
+		sendProtoResponse(sender, resp)
+	})
+
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure, dispatchTracked, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectTabsCloseRequest, sender channel.ResponseWriter) {
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		resp, err := svc.inspectTabsClose(ctx, r.GetTabs(), caller.UserID.String())
+		if err != nil {
+			slog.Error("inspect tabs close failed", "tab_count", len(r.GetTabs()), "error", err)
+			sendInternalError(sender, err.Error())
+			return
+		}
 		sendProtoResponse(sender, resp)
 	})
 
@@ -609,7 +649,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectBranchDeletionProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectBranchDeletionRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -631,7 +671,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectWorktreeRemovalProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectWorktreeRemovalRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -651,7 +691,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectBranchChangeProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectBranchChangeRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -671,7 +711,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceCheckoutBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.CheckoutBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -701,7 +741,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceCreateBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.CreateBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -730,7 +770,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.DeleteBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -752,11 +792,13 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// One index-lock hold spans the whole switch-then-delete: releasing
 			// between them would let another command interleave into the window
 			// where HEAD has moved off the doomed branch but it is not yet gone.
-			return svc.withRepoIndexLockForDir(ctx, dirPath, func(_ *gitPathInfo) error {
-				return deleteBranchInDir(ctx, dirPath, r.GetBranchToDelete(), r.GetSwitchToBranch())
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func(current *gitPathInfo) error {
+				return deleteBranchInDirWithInfo(ctx, dirPath, current, r.GetBranchToDelete(), r.GetSwitchToBranch())
 			})
 		})
 	})
+
+	registerGitOpsHandlers(d, svc)
 }
 
 type tabGitContext struct {
@@ -972,6 +1014,277 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	}
 
 	return resp, nil
+}
+
+type tabTypeIDKey struct {
+	tabType leapmuxv1.TabType
+	tabID   string
+}
+
+type closeSnapshotKey struct {
+	commitDir string
+	branch    string
+}
+
+type cachedCloseSnapshot struct {
+	snap    branchSnapshot
+	pushErr error
+	err     error
+}
+
+type branchSiblingKey struct {
+	repoGitDir string
+	branch     string
+}
+
+type worktreeSiblingResult struct {
+	hasOther bool
+	err      error
+}
+
+// inspectTabsClose inspects a batch of tabs that are closing together. Every
+// tab in the request is excluded from sibling checks, so closing all tabs on a
+// shared worktree or branch still runs the git snapshot once per canonical
+// checkout and surfaces uncommitted changes, unpushed commits, or an unpushed
+// local branch.
+func (svc *Service) inspectTabsClose(ctx context.Context, tabs []*leapmuxv1.TabIdent, userID string) (*leapmuxv1.InspectTabsCloseResponse, error) {
+	if len(tabs) == 0 {
+		return &leapmuxv1.InspectTabsCloseResponse{}, nil
+	}
+
+	closingWorktreeKeys := make(map[ownedTabKey]struct{}, len(tabs))
+	closingBranchKeys := make(map[tabTypeIDKey]struct{}, len(tabs))
+	for _, tab := range tabs {
+		if tab == nil || tab.GetTabId() == "" || tab.GetTabType() == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+			continue
+		}
+		closingWorktreeKeys[newOwnedTabKey(tab.GetTabType(), tab.GetTabId(), userID)] = struct{}{}
+		closingBranchKeys[tabTypeIDKey{tabType: tab.GetTabType(), tabID: tab.GetTabId()}] = struct{}{}
+	}
+
+	var (
+		liveWTLoaded bool
+		liveWT       []liveWorktreeTab
+		liveWTErr    error
+
+		branchDirsLoaded bool
+		branchDirs       []string
+		branchDirsErr    error
+
+		pathProbe            = newBranchInfoProbe(branchProbeConcurrency)
+		pathErrCache         = make(map[string]error)
+		snapshotCache        = make(map[closeSnapshotKey]cachedCloseSnapshot)
+		branchSiblingCache   = make(map[branchSiblingKey]bool)
+		worktreeSiblingCache = make(map[string]worktreeSiblingResult)
+	)
+
+	lookupPathInfo := func(dir string) (*gitPathInfo, error) {
+		if cachedErr, failed := pathErrCache[dir]; failed {
+			return nil, cachedErr
+		}
+		info, err := pathProbe.lookup(ctx, dir)
+		if err != nil {
+			pathErrCache[dir] = err
+			return nil, err
+		}
+		return info, nil
+	}
+
+	loadLiveWorktrees := func() ([]liveWorktreeTab, error) {
+		if !liveWTLoaded {
+			liveWT, liveWTErr = svc.liveWorktreeTabs(ctx)
+			liveWTLoaded = true
+		}
+		return liveWT, liveWTErr
+	}
+
+	loadSurvivingBranchDirs := func() ([]string, error) {
+		if !branchDirsLoaded {
+			branchDirsLoaded = true
+			owner, ok := userid.New(userID)
+			if !ok {
+				branchDirsErr = errors.New("branch sibling scan: owner required to scope the payload-backed scan")
+			} else {
+				branchDirs, branchDirsErr = svc.collectTabDirsExcluding(ctx, `
+					SELECT tab_type, tab_id, working_dir
+					FROM tab_locations
+					WHERE working_dir <> '' AND (user_id = '' OR user_id = ?)`,
+					[]any{owner.String()}, closingBranchKeys)
+			}
+		}
+		return branchDirs, branchDirsErr
+	}
+
+	items := make([]*leapmuxv1.TabCloseInspection, 0, len(tabs))
+	for _, tab := range tabs {
+		item := &leapmuxv1.TabCloseInspection{Tab: tab}
+		items = append(items, item)
+
+		if tab == nil || tab.GetTabId() == "" || tab.GetTabType() == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+			continue
+		}
+
+		workingDir, err := svc.getTabWorkingDir(ctx, tab.GetTabType(), tab.GetTabId(), userID)
+		if err != nil {
+			if errors.Is(err, errNoTabWorkingDir) || errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			item.ErrorHint = "working directory could not be resolved" + truncateGitHint(err.Error(), maxDegradedHintDetail)
+			continue
+		}
+		item.WorkingDir = workingDir
+
+		info, err := lookupPathInfo(workingDir)
+		if err != nil {
+			if errors.Is(err, errNotGitRepo) {
+				continue
+			}
+			item.ErrorHint = "working directory is not readable as a git repository; uncommitted or unpushed changes were not verified" +
+				truncateGitHint(err.Error(), maxDegradedHintDetail)
+			continue
+		}
+		item.BranchName = branchOrShortSHA(info)
+
+		if !isGitTopLevel(workingDir, info) {
+			continue
+		}
+
+		if info.IsWorktree {
+			item.IsWorktree = true
+			item.WorktreePath = info.TopLevel
+			sibRes, cached := worktreeSiblingCache[info.TopLevel]
+			if !cached {
+				wtTabs, wtErr := loadLiveWorktrees()
+				if wtErr != nil {
+					sibRes = worktreeSiblingResult{err: wtErr}
+				} else {
+					other, checkErr := hasOtherLiveWorktreeTabExcluding(info.TopLevel, wtTabs, closingWorktreeKeys)
+					sibRes = worktreeSiblingResult{hasOther: other, err: checkErr}
+				}
+				worktreeSiblingCache[info.TopLevel] = sibRes
+			}
+			if sibRes.err != nil {
+				item.ErrorHint = "could not check live worktree references" + truncateGitHint(sibRes.err.Error(), maxDegradedHintDetail)
+				continue
+			}
+			if sibRes.hasOther {
+				continue
+			}
+		} else {
+			dirs, dirErr := loadSurvivingBranchDirs()
+			if dirErr != nil {
+				slog.Warn("inspectTabsClose: sibling-count scan failed; falling through to snapshot",
+					"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(), "repo_root", info.RepoRoot, "branch", info.BranchName, "error", dirErr)
+			} else if len(dirs) > 0 {
+				bkey := branchSiblingKey{repoGitDir: pathutil.Canonicalize(info.CommonDir), branch: info.BranchName}
+				hasOther, cached := branchSiblingCache[bkey]
+				if !cached {
+					hasOther = hasOtherNonWorktreeTabInDirs(ctx, dirs, pathProbe, info.CommonDir, info.BranchName)
+					branchSiblingCache[bkey] = hasOther
+				}
+				if hasOther {
+					continue
+				}
+			}
+		}
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			slog.Warn("inspectTabsClose: ctx cancelled before snapshot",
+				"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(), "error", ctxErr)
+			item.ErrorHint = "close request was cancelled; uncommitted or unpushed changes were not verified"
+			continue
+		}
+
+		commitDir := info.TopLevel
+		if commitDir == "" {
+			commitDir = workingDir
+		}
+		skey := closeSnapshotKey{commitDir: pathutil.Canonicalize(commitDir), branch: info.BranchName}
+		snapRes, cached := snapshotCache[skey]
+		if !cached {
+			snap, pushErr, snapErr := gatherCloseSnapshot(ctx, commitDir, info.BranchName)
+			snapRes = cachedCloseSnapshot{snap: snap, pushErr: pushErr, err: snapErr}
+			snapshotCache[skey] = snapRes
+		}
+		if snapRes.err != nil {
+			slog.Warn("inspectTabsClose: git snapshot failed",
+				"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(),
+				"commit_dir", commitDir, "branch", info.BranchName, "error", snapRes.err)
+			item.ErrorHint = "git state unavailable; uncommitted or unpushed changes were not verified" +
+				truncateGitHint(snapRes.err.Error(), maxDegradedHintDetail)
+			continue
+		}
+		if snapRes.pushErr != nil {
+			slog.Warn("inspectTabsClose: push-status probe failed; keeping diff-driven snapshot",
+				"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(),
+				"commit_dir", commitDir, "branch", info.BranchName, "error", snapRes.pushErr)
+		}
+		item.GitState = snapRes.snap.toProto(info.BranchName)
+		if snapRes.snap.hasChanges || snapRes.snap.push.Unpushed > 0 || snapRes.snap.push.RemoteMissing {
+			item.ShouldPrompt = true
+		}
+	}
+
+	return &leapmuxv1.InspectTabsCloseResponse{Items: items}, nil
+}
+
+// hasOtherLiveWorktreeTabExcluding reports whether any live tab outside
+// closing holds target open.
+func hasOtherLiveWorktreeTabExcluding(target string, tabs []liveWorktreeTab, closing map[ownedTabKey]struct{}) (bool, error) {
+	top, err := canonicalGitDirectory(target)
+	if err != nil {
+		return false, err
+	}
+	var dirs []string
+	for _, tab := range tabs {
+		if _, isClosing := closing[tab.key]; isClosing {
+			continue
+		}
+		if tab.err != nil {
+			return false, tab.err
+		}
+		dirs = append(dirs, tab.workingDir, tab.linkDir)
+	}
+	seen := make(map[string]struct{}, len(dirs))
+	for _, dir := range dirs {
+		if _, duplicate := seen[dir]; duplicate {
+			continue
+		}
+		seen[dir] = struct{}{}
+		canonical, err := worktreeDirectoryCandidate(dir, top)
+		if err != nil || canonical != "" {
+			return canonical != "", err
+		}
+	}
+	return false, nil
+}
+
+// hasOtherNonWorktreeTabInDirs reports whether any working directory in dirs
+// belongs to a non-worktree checkout of repoGitDir on branchName.
+func hasOtherNonWorktreeTabInDirs(ctx context.Context, dirs []string, probe *branchInfoProbe, repoGitDir, branchName string) bool {
+	gctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	probeG, probeCtx := errgroup.WithContext(gctx)
+	probeG.SetLimit(branchProbeConcurrency)
+	var hit atomic.Bool
+	for _, dir := range dirs {
+		if hit.Load() {
+			break
+		}
+		probeG.Go(func() error {
+			if hit.Load() {
+				return nil
+			}
+			matches, err := probe.matches(probeCtx, dir, repoGitDir, branchName)
+			if err == nil && matches {
+				hit.Store(true)
+				cancel()
+			}
+			return nil
+		})
+	}
+	_ = probeG.Wait()
+	return hit.Load()
 }
 
 // inspectBranchDeletion gathers the git state needed to render the Delete
@@ -1682,12 +1995,16 @@ func switchToResolvesTo(parent context.Context, workingDir, switchTo, target str
 	return found[remoteRef] && found[localRef], nil
 }
 
-// deleteBranchInDir checks out switchTo in workingDir and then force-deletes
-// branchToDelete. If checkout succeeds but deletion fails, it keeps the
-// requested checkout and returns the deletion error. It rejects invalid
-// argument combinations before touching git. Invalid-argument returns wrap
-// gitutil.ErrInvalidArgument so runBranchMutation surfaces them as
-// InvalidArgument.
+// deleteBranchInDir force-deletes branchToDelete in workingDir. When switchTo
+// is non-empty, it checks out switchTo first. When switchTo is empty and
+// workingDir is not currently on branchToDelete (including detached HEAD), it
+// deletes branchToDelete directly without changing HEAD. When switchTo is empty
+// and workingDir is currently on branchToDelete, it switches to a local fallback
+// branch (main, master, or the sole remaining local branch) before deleting.
+//
+// If checkout succeeds but deletion fails, it keeps the checkout and returns
+// the deletion error. Invalid-argument returns wrap gitutil.ErrInvalidArgument
+// so runBranchMutation surfaces them as InvalidArgument.
 //
 // `parent` is expected to be a generous outer ctx (e.g. 2*branchMutationTimeout)
 // rather than a single branchMutationTimeout-limited ctx: each phase
@@ -1695,37 +2012,63 @@ func switchToResolvesTo(parent context.Context, workingDir, switchTo, target str
 // across checkout + delete would let a slow first phase starve the
 // second.
 func deleteBranchInDir(parent context.Context, workingDir, branchToDelete, switchTo string) error {
+	return deleteBranchInDirWithInfo(parent, workingDir, nil, branchToDelete, switchTo)
+}
+
+func deleteBranchInDirWithInfo(parent context.Context, workingDir string, current *gitPathInfo, branchToDelete, switchTo string) error {
 	branchToDelete = strings.TrimSpace(branchToDelete)
 	switchTo = strings.TrimSpace(switchTo)
 	if err := gitutil.ValidateBranchName(branchToDelete); err != nil {
 		return err
 	}
+
 	if switchTo == "" {
-		return fmt.Errorf("switch_to_branch is required: %w", gitutil.ErrInvalidArgument)
-	}
-	// Plain string equality is insufficient: checkoutBranchInDir
-	// transparently resolves a remote ref like `origin/main` to the
-	// local `main` when both refs exist, so picking `origin/main` while
-	// on `main` would slip past the guard, the checkout below would be
-	// a no-op, and `git branch -D main` would then fail with "cannot
-	// delete branch checked out at ...". Reject the resolved-collision
-	// case up front with the same InvalidArgument shape so the dialog
-	// surfaces a clear message instead of a downstream git error.
-	//
-	// Fail-CLOSED on probe error: a transient `git show-ref` failure
-	// (index.lock contention, slow disk, dubious-ownership) must NOT
-	// silently let the destructive op proceed. Returning the probe
-	// error here parks HEAD on its current branch and lets the user
-	// retry once the underlying issue clears.
-	if branchToDelete == switchTo {
-		return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
-	}
-	collides, probeErr := switchToResolvesTo(parent, workingDir, switchTo, branchToDelete)
-	if probeErr != nil {
-		return fmt.Errorf("failed to validate switch_to_branch: %w", probeErr)
-	}
-	if collides {
-		return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
+		if current == nil {
+			probeCtx, cancel := context.WithTimeout(parent, gitReadTimeout)
+			info, err := queryGitPathInfo(probeCtx, workingDir)
+			cancel()
+			if err != nil {
+				return err
+			}
+			current = info
+		}
+		if current.BranchName != branchToDelete {
+			deleteCtx, cancelDelete := context.WithTimeout(parent, branchMutationTimeout)
+			defer cancelDelete()
+			return gitutil.DeleteBranch(deleteCtx, workingDir, branchToDelete)
+		}
+		probeCtx, cancel := context.WithTimeout(parent, gitReadTimeout)
+		chosen, err := pickDefaultSwitchBranch(probeCtx, gitutil.Repository{GitDir: current.CommonDir}, branchToDelete)
+		cancel()
+		if err != nil {
+			return err
+		}
+		switchTo = chosen
+	} else {
+		// Plain string equality is insufficient: checkoutBranchInDir
+		// transparently resolves a remote ref like `origin/main` to the
+		// local `main` when both refs exist, so picking `origin/main` while
+		// on `main` would slip past the guard, the checkout below would be
+		// a no-op, and `git branch -D main` would then fail with "cannot
+		// delete branch checked out at ...". Reject the resolved-collision
+		// case up front with the same InvalidArgument shape so the dialog
+		// surfaces a clear message instead of a downstream git error.
+		//
+		// Fail-CLOSED on probe error: a transient `git show-ref` failure
+		// (index.lock contention, slow disk, dubious-ownership) must NOT
+		// silently let the destructive op proceed. Returning the probe
+		// error here parks HEAD on its current branch and lets the user
+		// retry once the underlying issue clears.
+		if branchToDelete == switchTo {
+			return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
+		}
+		collides, probeErr := switchToResolvesTo(parent, workingDir, switchTo, branchToDelete)
+		if probeErr != nil {
+			return fmt.Errorf("failed to validate switch_to_branch: %w", probeErr)
+		}
+		if collides {
+			return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
+		}
 	}
 
 	checkoutCtx, cancelCheckout := context.WithTimeout(parent, branchMutationTimeout)
@@ -1738,19 +2081,58 @@ func deleteBranchInDir(parent context.Context, workingDir, branchToDelete, switc
 	defer cancelDelete()
 	if delErr := gitutil.DeleteBranch(deleteCtx, workingDir, branchToDelete); delErr != nil {
 		// Do NOT roll back the checkout: the user explicitly picked
-		// `switch_to` as their destination, so leaving HEAD on it is
-		// the least-surprising outcome on partial failure. An earlier
-		// revision tried to restore HEAD to `branchToDelete`, but that
-		// assumed the user was originally on `branchToDelete` — which
-		// only holds when DeleteBranch was invoked from a current-
-		// branch context. From the sidebar context menu the user can
-		// pick any branch, so restoring to `branchToDelete` parks
-		// them on a branch they may have never been on. Surface the
-		// delete error verbatim and let the dialog tell the user the
-		// switch succeeded but the delete didn't.
+		// `switch_to` (or a fallback branch) as their destination, so
+		// leaving HEAD on it is the least-surprising outcome on partial
+		// failure. An earlier revision tried to restore HEAD to
+		// `branchToDelete`, but that assumed the user was originally on
+		// `branchToDelete` — which only holds when DeleteBranch was
+		// invoked from a current-branch context. From the sidebar context
+		// menu the user can pick any branch, so restoring to
+		// `branchToDelete` parks them on a branch they may have never been
+		// on. Surface the delete error verbatim and let the dialog tell the
+		// user the switch succeeded but the delete didn't.
 		return delErr
 	}
 	return nil
+}
+
+// pickDefaultSwitchBranch chooses a local fallback branch to check out before
+// deleting the currently checked-out branch when switch_to_branch is omitted:
+// prefer main, else master, else the sole remaining local branch.
+func pickDefaultSwitchBranch(ctx context.Context, repository gitutil.Repository, branchToDelete string) (string, error) {
+	out, err := repository.Output(ctx, "for-each-ref", "--format=%(refname)", "refs/heads")
+	if err != nil {
+		return "", fmt.Errorf("failed to list local branches: %w", err)
+	}
+	const headsPrefix = "refs/heads/"
+	var (
+		hasMain     bool
+		hasMaster   bool
+		otherLocals []string
+	)
+	for _, ref := range gitutil.ParseLines(out) {
+		name, ok := strings.CutPrefix(ref, headsPrefix)
+		if !ok || name == "" || name == branchToDelete {
+			continue
+		}
+		switch name {
+		case "main":
+			hasMain = true
+		case "master":
+			hasMaster = true
+		}
+		otherLocals = append(otherLocals, name)
+	}
+	switch {
+	case hasMain:
+		return "main", nil
+	case hasMaster:
+		return "master", nil
+	case len(otherLocals) == 1:
+		return otherLocals[0], nil
+	default:
+		return "", fmt.Errorf("cannot choose a branch to switch to before deleting current branch %q; specify switch_to_branch: %w", branchToDelete, gitutil.ErrInvalidArgument)
+	}
 }
 
 // createBranchInDir runs `git checkout -b <newBranch> [<baseBranch>]` in
@@ -2144,6 +2526,12 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 // could drop a DIFFERENT tab that happens to share the string -- counting one
 // fewer sibling and prompting to delete a branch someone is still on.
 func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any, selfType leapmuxv1.TabType, selfID string) ([]string, error) {
+	return svc.collectTabDirsExcluding(ctx, query, args, map[tabTypeIDKey]struct{}{
+		{tabType: selfType, tabID: selfID}: {},
+	})
+}
+
+func (svc *Service) collectTabDirsExcluding(ctx context.Context, query string, args []any, closing map[tabTypeIDKey]struct{}) ([]string, error) {
 	rows, err := svc.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -2163,7 +2551,7 @@ func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any
 		if err := rows.Scan(&tabType, &id, &workingDir); err != nil {
 			return nil, err
 		}
-		if leapmuxv1.TabType(tabType) == selfType && id == selfID {
+		if _, isClosing := closing[tabTypeIDKey{tabType: leapmuxv1.TabType(tabType), tabID: id}]; isClosing {
 			continue
 		}
 		dirs = append(dirs, workingDir)
@@ -3238,8 +3626,11 @@ func listRepositoryWorktrees(ctx context.Context, repository gitutil.Repository)
 	}
 	worktrees := make([]*leapmuxv1.GitWorktreeEntry, 0, len(entries))
 	for _, entry := range entries {
-		worktrees = append(worktrees, &leapmuxv1.GitWorktreeEntry{Path: entry.Path, Branch: entry.Branch,
-			IsMain: entry.IsMain, Locked: entry.Locked, LockReason: entry.LockReason})
+		worktrees = append(worktrees, gitWorktreeProto(entry))
 	}
 	return worktrees, nil
+}
+
+func gitWorktreeProto(entry gitutil.WorktreeEntry) *leapmuxv1.GitWorktreeEntry {
+	return &leapmuxv1.GitWorktreeEntry{Path: entry.Path, Branch: entry.Branch, IsMain: entry.IsMain, Locked: entry.Locked, LockReason: entry.LockReason}
 }

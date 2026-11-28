@@ -43,3 +43,17 @@ UPDATE workspaces SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE o
 -- cutoff (same canonical layout). Sargable for idx_workspaces_deleted_at
 -- (SEARCH deleted_at<?, not SCAN-with-residual under datetime()).
 DELETE FROM workspaces WHERE rowid IN (SELECT w.rowid FROM workspaces w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < sqlc.arg(cutoff) LIMIT 1000);
+
+-- name: ListAccessibleWorkspacesByIDExact :many
+SELECT w.* FROM workspaces w
+WHERE w.id = sqlc.arg(id)
+  AND w.deleted_at IS NULL
+  AND w.owner_user_id = sqlc.arg(user_id);
+
+-- name: ListAccessibleWorkspacesByIDPrefix :many
+SELECT w.* FROM workspaces w
+WHERE w.id >= sqlc.arg(id_lo)
+  AND w.id < sqlc.arg(id_hi)
+  AND w.deleted_at IS NULL
+  AND w.owner_user_id = sqlc.arg(user_id)
+ORDER BY w.id ASC;

@@ -352,6 +352,7 @@ describe('useTabCreation canonical ordering', () => {
       })
       await settle()
       const creation = sentCreation(kind)
+      expect(creation.tabId).toMatch(/^[a-z0-9]{48}$/i)
       const publish = () => s.publisher.publish(typeFor(kind), creation.tabId, { workerId: 'worker' })
       if (order === 'event-first')
         publish()
@@ -443,6 +444,8 @@ describe('useTabCreation retry identity', () => {
       },
     })).toBe(true)
     const second = sentAgent(1)
+    expect(first.creation!.tabId).toMatch(/^[a-z0-9]{48}$/i)
+    expect(second.creation!.tabId).toMatch(/^[a-z0-9]{48}$/i)
     if (failure === 'transport')
       expect(second).toEqual(first)
     else

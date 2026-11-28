@@ -1,7 +1,6 @@
 package ohmypi
 
 import (
-	"bytes"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -17,8 +16,9 @@ import (
 const maxAskFormDepth = 128
 
 type askHTMLOption struct {
-	label, value, markup string
-	checked, disabled    bool
+	label, value      string
+	presentation      choicePresentation
+	checked, disabled bool
 }
 
 type askHTMLField struct {
@@ -79,8 +79,8 @@ func askOneLine(value string) string {
 }
 
 // askHTMLLabelText interprets the label string needed to match the native RPC
-// dialog. The unchanged markup, rather than presentation derived here, reaches
-// the browser for descriptions and previews.
+// dialog. Structured presentation (display label, description, and code
+// preview) is extracted separately via readChoicePresentation.
 func askHTMLLabelText(node *html.Node) string {
 	return askOneLine(askHTMLSpansText(node))
 }
@@ -302,7 +302,7 @@ func (reader *askHTMLReader) walk(node *html.Node, style string) {
 
 func (reader *askHTMLReader) control(node, labelNode *html.Node) {
 	reader.flush()
-	label, markup := "", ""
+	label := ""
 	if labelNode != nil {
 		label = askHTMLLabelText(labelNode)
 	}
@@ -385,20 +385,16 @@ func (reader *askHTMLReader) control(node, labelNode *html.Node) {
 			label = name
 		}
 	}
+	var presentation choicePresentation
 	if labelNode != nil {
-		var encoded bytes.Buffer
-		if err := html.Render(&encoded, labelNode); err != nil {
-			reader.err = err
-			return
-		}
-		markup = encoded.String()
+		presentation = readChoicePresentation(labelNode, "", "")
 	}
-	if !reader.retainMetadata(label, markup) {
+	if !reader.retainMetadata(label, presentation.label, presentation.description, presentation.preview) {
 		return
 	}
 	_, checked := askHTMLAttr(node, "checked")
 	_, disabled := askHTMLAttr(node, "disabled")
-	option := askHTMLOption{label: label, value: value, markup: markup, checked: checked, disabled: disabled}
+	option := askHTMLOption{label: label, value: value, presentation: presentation, checked: checked, disabled: disabled}
 	key := typeName + "\x00" + name
 	if group := reader.groups[key]; group != nil {
 		group.field.options = append(group.field.options, option)
@@ -459,15 +455,29 @@ func (field *askHTMLField) nativeQuestion(caption, section string) (contracts.Oh
 			return contracts.OhMyPiAskQuestion{}, fmt.Errorf("the ask form has an empty native choice label")
 		}
 		base := label
+		disambiguationSuffix := ""
 		for suffix := 2; ; suffix++ {
 			if _, exists := taken[label]; !exists {
 				break
 			}
-			label = base + " (" + strconv.Itoa(suffix) + ")"
+			disambiguationSuffix = " (" + strconv.Itoa(suffix) + ")"
+			label = base + disambiguationSuffix
 		}
 		taken[label] = struct{}{}
 		value := strconv.Itoa(index)
-		converted.Options = append(converted.Options, contracts.OhMyPiAskOption{Value: value, Label: label, Markup: option.markup})
+		displayLabel := ""
+		if option.presentation.label != "" {
+			if candidate := option.presentation.label + disambiguationSuffix; candidate != label {
+				displayLabel = candidate
+			}
+		}
+		converted.Options = append(converted.Options, contracts.OhMyPiAskOption{
+			Value:        value,
+			Label:        label,
+			DisplayLabel: displayLabel,
+			Description:  option.presentation.description,
+			Preview:      option.presentation.preview,
+		})
 	}
 	converted.AllowCustomText = other
 	return converted, nil

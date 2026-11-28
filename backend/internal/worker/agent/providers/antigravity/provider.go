@@ -3,11 +3,13 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type antigravityProvider struct {
@@ -50,20 +52,81 @@ func (antigravityProvider) PlanApprovalOptions(permissionMode string) map[string
 	return map[string]string{agent.OptionIDPermissionMode: permissionMode}
 }
 
-func (antigravityProvider) ControlResponseRequestID(content []byte) string {
-	var response struct {
-		CascadeID   string `json:"cascadeId"`
-		Interaction struct {
-			TrajectoryID string `json:"trajectoryId"`
-			StepIndex    int    `json:"stepIndex"`
-		} `json:"interaction"`
+type antigravityControlReply struct {
+	cascadeID      string
+	interactionRaw json.RawMessage
+	address        antigravityAddress
+}
+
+func decodeAntigravityControlReply(data []byte) (antigravityControlReply, error) {
+	var envelope struct {
+		CascadeID   string          `json:"cascadeId"`
+		Interaction json.RawMessage `json:"interaction"`
 	}
-	if err := json.Unmarshal(content, &response); err == nil && response.CascadeID != "" && response.Interaction.TrajectoryID != "" && response.Interaction.StepIndex >= 0 {
-		return fmt.Sprintf("antigravity:%s:%s:%d", response.CascadeID, response.Interaction.TrajectoryID, response.Interaction.StepIndex)
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.CascadeID == "" {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer is malformed")
+	}
+	if _, ok := providerkit.RawObject(envelope.Interaction); !ok {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer has no interaction object")
+	}
+	var address struct {
+		TrajectoryID string `json:"trajectoryId"`
+		StepIndex    *int   `json:"stepIndex"`
+	}
+	if err := json.Unmarshal(envelope.Interaction, &address); err != nil || address.StepIndex == nil {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer has a malformed interaction address")
+	}
+	parsed := antigravityAddress{
+		cascadeID:    envelope.CascadeID,
+		trajectoryID: address.TrajectoryID,
+		stepIndex:    *address.StepIndex,
+	}
+	if !parsed.valid() {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer states no valid step address")
+	}
+	return antigravityControlReply{
+		cascadeID:      envelope.CascadeID,
+		interactionRaw: envelope.Interaction,
+		address:        parsed,
+	}, nil
+}
+
+func (antigravityProvider) ControlResponseRequestID(content []byte) string {
+	if reply, err := decodeAntigravityControlReply(content); err == nil {
+		return reply.address.requestID()
 	}
 	return agent.ProviderDefaults{}.ControlResponseRequestID(content)
 }
 
+// ControlRequestKey reads the key that the agent publishes a control under.
+// An interaction states the address of its step (antigravityAddress), as its
+// cascadeId, trajectoryId and stepIndex, and the address gives the key. The
+// plan review that the Worker raises itself has a key of its own, which its
+// payload states as its request_id (maybePublishPlan).
+func (antigravityProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	if agent.ControlToolName(payload) == contracts.AntigravityControlToolPlanReview {
+		return agent.EnvelopeControlRequestKey(payload)
+	}
+	var stored struct {
+		CascadeID    string `json:"cascadeId"`
+		TrajectoryID string `json:"trajectoryId"`
+		StepIndex    *int   `json:"stepIndex"`
+	}
+	if json.Unmarshal(payload, &stored) != nil || stored.StepIndex == nil {
+		return "", false
+	}
+	address := antigravityAddress{cascadeID: stored.CascadeID, trajectoryID: stored.TrajectoryID, stepIndex: *stored.StepIndex}
+	if !address.valid() {
+		return "", false
+	}
+	return address.requestID(), true
+}
+
+// ResolveControlResponse forwards the language server's own answer that
+// AnswerControlRequest built. The Worker resolves only a stored request whose
+// address is its key (ControlRequestKey), and the answer echoes the address
+// of that key (antigravityAddress.answer), so the answer reaches the step of
+// the stored request.
 func (p antigravityProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	res := agent.DefaultControlResponseResolution(ctx)
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
@@ -71,23 +134,16 @@ func (p antigravityProvider) ResolveControlResponse(ctx agent.ControlResponseCon
 		res.LeapMuxOwned = true
 		return res
 	}
-	var request struct {
-		CascadeID string `json:"cascadeId"`
-	}
-	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil || request.CascadeID == "" {
+	if _, ok := providerkit.RawObject(ctx.RequestPayload); !ok {
 		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
-	var response struct {
-		CascadeID   string         `json:"cascadeId"`
-		Interaction map[string]any `json:"interaction"`
-	}
-	if err := json.Unmarshal(ctx.ResponseContent, &response); err != nil || response.CascadeID == "" || response.Interaction == nil {
-		res.Refuse("the Antigravity control answer is malformed")
-		return res
-	}
-	if request.CascadeID != response.CascadeID {
-		res.Refuse(fmt.Sprintf("%s: request cascade %q, response cascade %q", agent.RefusalOtherRequest, request.CascadeID, response.CascadeID))
+	if _, err := decodeAntigravityControlReply(ctx.ResponseContent); err != nil {
+		// AnswerControlRequest answers each request of the language server
+		// natively. So this guard refuses only an answer that it did not
+		// build, such as the shared envelope, which the language server
+		// cannot read.
+		res.Refuse(agent.RefusalUnreadableAnswer)
 		return res
 	}
 	return res

@@ -9,7 +9,7 @@ import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
-import { leapmuxUserRow } from './leapmuxRows'
+import { leapmuxUserRow, withAgentMessageSender } from './leapmuxRows'
 import { dividerMetaFromMessage } from './model/divider'
 import { approvedReviewIdsOf, withApprovedReviews } from './model/notification'
 import { normalizeOutputFilePaths } from './model/outputFilePaths'
@@ -105,11 +105,12 @@ export function extractChatRow(
     // The Worker stores control responses in its own metadata.
     // Resolve them before parsing the provider frame, which can be unreadable.
     // The shared row model keeps this answer available to every reader.
-    // Run the provider's display hook here once.
+    // The answer's words come from the prompt and the decision in that metadata,
+    // so no provider reads its own answer here.
     if (category.kind === 'control_response') {
       return row({
         kind: 'control-response',
-        display: resolveControlResponseSummary(category.response, plugin?.controls?.controlResponseDisplay),
+        display: resolveControlResponseSummary(category.response, agentProvider),
       })
     }
 
@@ -184,7 +185,7 @@ export function extractChatRow(
     if (category.kind === 'user_content' && !plugin) {
       const userRow = leapmuxUserRow(parsed.parentObject)
       return userRow
-        ? row(userRow)
+        ? row(withAgentMessageSender(userRow, rowMetadata(parsed)))
         : unsupported()
     }
     const extract = plugin?.transcript.extractRow
@@ -219,6 +220,10 @@ export function extractChatRow(
     const extracted = extract(input)
     if (!extracted)
       return unsupported()
+    // The Worker states the sender of a message that another agent sent in the
+    // row's metadata, which no provider reads.
+    if (extracted.kind === 'user')
+      return row(withAgentMessageSender(extracted, rowMetadata(parsed)))
     const outputFilePaths = plugin?.transcript.outputFilePaths
     if (extracted.kind !== 'tool' || !outputFilePaths)
       return row(extracted)

@@ -174,9 +174,21 @@ const stdinQueueDepth = 256
 // errStdinClosed refuses a frame for a process whose stdin is gone.
 var errStdinClosed = errors.New("agent stdin is closed")
 
+// stdinWriteClaim tracks whether runStdinWriter already started writing a frame
+// before closeStdin raced with writeStdin.
+const (
+	stdinWriteQueued int32 = iota
+	stdinWriteStarted
+	stdinWriteCanceled
+)
+
 // stdinFrame is one outbound write waiting for the process's stdin.
 type stdinFrame struct {
-	data []byte
+	data        []byte
+	beforeWrite func()
+	// claim coordinates cancellation with runStdinWriter so closeStdin cannot
+	// report errStdinClosed for a frame whose observer or write already started.
+	claim *atomic.Int32
 	// done carries the write error to a caller that waits.
 	// With nil done, the writer logs a failure because the caller does not wait.
 	done chan error
@@ -217,12 +229,21 @@ func (p *Process) runStdinWriter(queue chan stdinFrame, closed chan struct{}) {
 	for {
 		select {
 		case frame := <-queue:
+			if frame.claim != nil && !frame.claim.CompareAndSwap(stdinWriteQueued, stdinWriteStarted) {
+				continue
+			}
+			if frame.beforeWrite != nil {
+				frame.beforeWrite()
+			}
 			deliver(frame, p.writeStdinNow(frame.data))
 		case <-closed:
 			// Answer each queued frame so that no caller waits for an absent result.
 			for {
 				select {
 				case frame := <-queue:
+					if frame.claim != nil && !frame.claim.CompareAndSwap(stdinWriteQueued, stdinWriteCanceled) {
+						continue
+					}
 					deliver(frame, errStdinClosed)
 				default:
 					return
@@ -257,6 +278,18 @@ func (p *Process) writeStdinNow(data []byte) error {
 // It never acquires p.Mu, so a slow write does not block state operations or Stop.
 // Callers must check stopped when they need an error for a stopped process.
 func (p *Process) WriteStdin(data []byte) error {
+	return p.writeStdin(data, nil)
+}
+
+func (p *Process) writeStdin(data []byte, beforeWrite func()) error {
+	if beforeWrite != nil {
+		var admission sync.Once
+		observe := beforeWrite
+		beforeWrite = func() { admission.Do(observe) }
+		// Close can release the caller after the writer claimed the frame.
+		// Revoke an unstarted observer or let one in progress finish first.
+		defer admission.Do(func() {})
+	}
 	p.stdinMu.Lock()
 	queue, closed := p.stdinWriterLocked()
 	p.stdinMu.Unlock()
@@ -268,8 +301,9 @@ func (p *Process) WriteStdin(data []byte) error {
 	default:
 	}
 	done := make(chan error, 1)
+	claim := &atomic.Int32{}
 	select {
-	case queue <- stdinFrame{data: data, done: done}:
+	case queue <- stdinFrame{data: data, beforeWrite: beforeWrite, claim: claim, done: done}:
 	case <-closed:
 		return p.writeStdinNow(data)
 	}
@@ -277,7 +311,17 @@ func (p *Process) WriteStdin(data []byte) error {
 	case err := <-done:
 		return err
 	case <-closed:
-		return errStdinClosed
+		// If the writer already claimed the frame, wait for its real write result
+		// rather than falsely reporting errStdinClosed after bytes may have gone out.
+		select {
+		case err := <-done:
+			return err
+		default:
+		}
+		if claim.CompareAndSwap(stdinWriteQueued, stdinWriteCanceled) {
+			return errStdinClosed
+		}
+		return <-done
 	}
 }
 

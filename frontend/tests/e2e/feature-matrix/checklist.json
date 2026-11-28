@@ -3648,6 +3648,287 @@
         "testStatus": "passed"
       }
     },
+    "session-fork": {
+      "claude-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/claude-code/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "codex": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/codex/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "cursor": {
+        "support": "agent-limit",
+        "userNote": "Cursor 2026.11.11 does not offer session forking over its Agent Client Protocol (ACP) interface or command-line interface (CLI) flags.",
+        "detailNote": "Verified against cursor-agent 2026.11.11-b912975 on 2026-11-28. Live ACP initialize advertises sessionCapabilities: {\"list\": {}} with no fork capability, and session/fork returns -32601 Method not found. Bundle inspection confirms no unstable_forkSession or vendor fork extension method exists, and cursor-agent --help / acp --help expose no fork flag.",
+        "spec": "frontend/tests/e2e/cursor/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "github-copilot": {
+        "support": "leapmux-limit",
+        "userNote": "GitHub Copilot CLI supports forking sessions over its native protocol, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against GitHub Copilot CLI 1.0.105 on 2026-11-28. The native JSON-RPC v3 stdio server (`copilot --server --stdio --sync-session=off`) registers the experimental `sessions.fork` method (`{sessionId, toEventId?, name?}` -> `{sessionId, name?}`), verified live by invoking `sessions.fork` rather than receiving `-32601 Unhandled method`. LeapMux does not wire `sessions.fork` yet.",
+        "spec": "frontend/tests/e2e/github-copilot/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "kilo": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/kilo/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "opencode": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/opencode/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "goose": {
+        "support": "leapmux-limit",
+        "userNote": "Goose 1.61.1 implements ACP session forking (without advertising it during initialization) and CLI session forking, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against goose 1.61.1 on 2026-11-28. Although `goose acp` initialize advertises `sessionCapabilities: {\"list\": {}, \"delete\": {}, \"close\": {}}` without `fork`, live RPC probing confirms `goose acp` actively handles `session/fork` (returning `-32603 Session not found` rather than `-32601`), and `goose session --resume --fork` forks persisted SQLite sessions. LeapMux requires advertised `sessionCapabilities.fork` and does not opt Goose into unadvertised `session/fork` yet.",
+        "spec": "frontend/tests/e2e/goose/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "pi": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/pi/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "reasonix": {
+        "support": "agent-limit",
+        "userNote": "Reasonix v2.61.0 exposes session forking only in its interactive UI and provides no fork method over ACP or CLI flags.",
+        "detailNote": "Verified against reasonix v2.61.0 on 2026-11-28. Live `reasonix acp` initialize advertises `sessionCapabilities` without `fork`, `session/fork` returns `-32601 method not found`, and none of the `_reasonix.io/session/*` extension methods forks a session. Binary inspection shows `/fork` and `ForkSessionTail` exist only for interactive TUI branching with no ACP RPC or CLI fork flag.",
+        "spec": "frontend/tests/e2e/reasonix/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "zcode": {
+        "support": "leapmux-limit",
+        "userNote": "ZCode supports forking sessions through its app-server protocol, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against ZCode 3.18.2 (build 3.18.2.10443) on 2026-11-28. The bundled `app-server --stdio` server registers `session/fork` accepting `{sessionId, target?, expectedRevision?}` (defaulting to the latest checkpoint) and returning `{forkedSessionId, parentSessionId?, targetMessageId?, targetCheckpointId?, response, snapshot}`. LeapMux does not invoke ZCode `session/fork` yet.",
+        "spec": "frontend/tests/e2e/zcode/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "codewhale": {
+        "support": "leapmux-limit",
+        "userNote": "Codewhale supports forking threads through its HTTP runtime API, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against codewhale 0.10.3 (bc58781ba10c) on 2026-11-28. Live probes against `codewhale app-server --http` confirm both `POST /v1/threads/{id}/fork` (returns structured 404 Thread not found) and `POST /v1/threads/{id}/fork-at-turn` (returns 422 missing field turn_id) are active, emitting `thread.forked` SSE events. LeapMux does not wire `/v1/threads/{id}/fork` yet.",
+        "spec": "frontend/tests/e2e/codewhale/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "kimi-code": {
+        "support": "leapmux-limit",
+        "userNote": "Kimi Code supports forking sessions through its local server API, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against @moonshot-ai/kimi-code 2.7.3 on 2026-11-28. The `kimi web` server (`kap-server`) registers `POST /api/v1/sessions/{session_id}:fork` accepting `{title?, metadata?, turn_index?}` on the baseline gate, alongside `kimi fork` on the CLI and ACP `session/fork`. LeapMux does not invoke the `:fork` endpoint yet.",
+        "spec": "frontend/tests/e2e/kimi-code/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "mimo-code": {
+        "support": "leapmux-limit",
+        "userNote": "MiMo Code supports forking sessions through its local HTTP server, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against mimo-code 0.1.17 on 2026-11-28. Live probes against `mimo serve` confirm `POST /session/{sessionID}/fork` (`operationId: session.fork`) is active (returning structured `404 NotFoundError` for an unknown session ID rather than an unmounted route error). LeapMux does not wire `/session/{sessionID}/fork` for MiMo Code yet.",
+        "spec": "frontend/tests/e2e/mimo-code/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "qwen-code": {
+        "support": "leapmux-limit",
+        "userNote": "Qwen Code 0.28.4 supports session forking through a custom ACP branch request and CLI flags, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against @qwen-code/qwen-code 0.28.4 on 2026-11-28. Live `qwen --acp` rejects standard `session/fork` with `-32601` but actively routes the vendor extension `qwen/control/session/branch` (`{sessionId, name?, atRecordId?, targetSessionId?}`, returning `-32602` on missing sessionId), and the CLI also supports `--resume <id> --fork-session`. LeapMux does not wire Qwen session branching yet.",
+        "spec": "frontend/tests/e2e/qwen-code/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "oh-my-pi": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/oh-my-pi/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "grok-build": {
+        "support": "leapmux-limit",
+        "userNote": "Grok Build 1.0.92 supports session forking through a custom ACP request and CLI flags, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against grok 1.0.92 (b06756fd6256) on 2026-11-28. Live `grok agent --no-leader stdio` rejects standard `session/fork` with `-32601` but actively handles the unadvertised vendor extension `_x.ai/session/fork` (`{sourceSessionId, sourceCwd, newCwd}` -> `newSessionId`, verified live returning `-32602` on missing params and `-32603 not_found` on a nonexistent source), and the CLI also offers `--fork-session`. LeapMux does not wire `_x.ai/session/fork` yet.",
+        "spec": "frontend/tests/e2e/grok-build/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "kiro": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/kiro/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "amp": {
+        "support": "agent-limit",
+        "userNote": "Amp deprecated thread forking and removed handoff, so its CLI and stream protocol have no way to fork a thread.",
+        "detailNote": "Verified against amp 0.0.1795708844-gca33db on 2026-11-28. Running `amp threads fork` exits 1 with \"The fork command has been deprecated. Use thread mentions to continue work from another thread.\" and `amp threads handoff` exits 1 as removed. Neither `--help` nor the `--execute --stream-json --stream-json-input` protocol exposes a fork command, and threads are stored server-side.",
+        "spec": "frontend/tests/e2e/amp/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "cline": {
+        "support": "agent-limit",
+        "userNote": "Cline 3.0.75 has no native session-fork command in its hub WebSocket protocol or CLI.",
+        "detailNote": "Verified against @cline/cli-darwin-arm64 3.0.75 on 2026-11-28. Neither `cline --help` nor `cline history --help` exposes a fork command or flag, and the hub WebSocket v1 command dispatcher implements no `session.fork` handler (the string appears only in the `hub_draining` denylist). ACP mode also lacks `unstable_forkSession`.",
+        "spec": "frontend/tests/e2e/cline/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "codebuddy-code": {
+        "support": "leapmux-limit",
+        "userNote": "CodeBuddy Code supports forking a resumed session with `--fork-session`, and LeapMux does not pass it yet.",
+        "detailNote": "Verified against @tencent-ai/codebuddy-code 2.185.0 on 2026-11-28. The headless stream-json path that LeapMux launches (`codebuddy -p --input-format stream-json --output-format stream-json`) implements `--resume <sourceId> --fork-session` (with optional `--session-id <newId>` and `--resume-session-at <messageId>`), cloning history and recording `meta.forkedFrom`. LeapMux currently passes only `--session-id` or `--resume`.",
+        "spec": "frontend/tests/e2e/codebuddy-code/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "junie": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/junie/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "letta-code": {
+        "support": "leapmux-limit",
+        "userNote": "Letta Code supports forking conversations through its App Server protocol (`conversation_fork`), and LeapMux does not send it yet.",
+        "detailNote": "Verified against @letta-ai/letta-code 0.34.54 on 2026-11-28. The App Server WebSocket `protocol_v2` (`letta server --listen`) defines and dispatches `ConversationForkCommand` (`type: \"conversation_fork\"`, `conversation_id`, optional `body: {agent_id, hidden, message_id}`) returning `conversation_fork_response` for both Cloud and local backends. LeapMux currently sends `runtime_start` only.",
+        "spec": "frontend/tests/e2e/letta-code/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "dirac": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/dirac/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "qoder-cli": {
+        "support": "leapmux-limit",
+        "userNote": "Qoder CLI supports forking a resumed session with `--fork-session` during session open, and LeapMux does not pass it yet.",
+        "detailNote": "Verified against @qoder-ai/qodercli 1.1.96 on 2026-11-28. On the SDK daemon path (`qodercli --sdk`, protocol v2 `multi_session_v2`), `daemon.open_session` parses `worker_args` and supports `--resume <sourceId> --fork-session` (with optional `--session-id <targetUUID>` and `--resume-session-at`), classifying the open as `fork` and copying the transcript and plan artifacts. LeapMux currently sends only `--session-id` or `--resume`.",
+        "spec": "frontend/tests/e2e/qoder-cli/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "factory-droid": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/factory-droid/session-fork.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "fast-agent": {
+        "support": "leapmux-limit",
+        "userNote": "Fast Agent 0.10.65 does not implement ACP session forking, but its CLI provides a native session fork command that LeapMux does not wire yet.",
+        "detailNote": "Verified against fast-agent-mcp 0.10.65 on 2026-11-28. Live `fast-agent acp` advertises `sessionCapabilities: {\"list\": {}, \"resume\": {}}` and explicitly raises `-32601 Method not found` for `session/fork`. However, the native CLI command `fast-agent session fork <session_id>` atomically clones a persisted session on disk into a new session ID that ACP `session/load` or `session/resume` can open. LeapMux does not invoke `fast-agent session fork` yet.",
+        "spec": "frontend/tests/e2e/fast-agent/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "command-code": {
+        "support": "leapmux-limit",
+        "userNote": "Command Code 1.93.2 supports session forking via launch flags in RPC mode, and LeapMux does not wire it yet.",
+        "detailNote": "Verified against command-code 1.93.2 on 2026-11-28. `--help` documents `--fork-session` with `--resume`/`--continue`, and `--experimental --rpc` forwards `--fork-session` into `rpcMode` -> `resolvePrintSession` -> `forkResolvedPrintSession`, copying the resumed session files to a new session ID before starting the JSON-RPC dispatcher. LeapMux passes `--resume` only for resume and does not wire `--fork-session` yet.",
+        "spec": "frontend/tests/e2e/command-code/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "deepseek-harness": {
+        "support": "leapmux-limit",
+        "userNote": "DeepSeek Harness exposes native session forking through `session/fork` on its Web Remote API, and LeapMux does not call it yet.",
+        "detailNote": "Verified against @deepseek-ai/dsh 0.2.2-rc.5 on 2026-11-28. The Web Remote API (`dsh --profile web`, `POST /api/<method>`) registers `session/fork` accepting `{sessionId, atSeq?, allowMigration?}` and returning `{sessionId}`, backed by `buildForkSeed` with `forkLineage.origin = \"fork\"`. LeapMux currently invokes `session/create` only.",
+        "spec": "frontend/tests/e2e/deepseek-harness/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "gemini-cli": {
+        "support": "agent-limit",
+        "userNote": "Gemini CLI 0.70.0 does not offer session forking over its ACP protocol or CLI flags.",
+        "detailNote": "Verified against @google/gemini-cli 0.70.0 on 2026-11-28. Live `gemini --acp` initialize omits `sessionCapabilities` entirely (advertising only `loadSession: true`), and `session/fork` returns `-32601 Method not found`. Bundle inspection confirms no `unstable_forkSession` or vendor fork method exists, and `gemini --help` exposes no `--fork` or `--fork-session` flag.",
+        "spec": "frontend/tests/e2e/gemini-cli/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "muse-code": {
+        "support": "leapmux-limit",
+        "userNote": "Muse Code supports native session forking through its stable `session/fork` protocol method, and LeapMux does not call it yet.",
+        "detailNote": "Verified against Muse Code 1.4.25 (1.4.25-R9361.1) on 2026-11-28. The embedded stable Muse Session Protocol schema (`muse schema generate-json-schema`, compatibilityEpoch 0) defines `session/fork` accepting `{commandId, sessionId, cutPoint?, excludeItems?}` and returning `{session, history, pendingRequests, viewCursor}` with durable `ForkProvenance`. LeapMux currently invokes only `session/start` and `session/resume`.",
+        "spec": "frontend/tests/e2e/muse-code/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "antigravity-cli": {
+        "support": "leapmux-limit",
+        "userNote": "Antigravity CLI supports native conversation forking through its language server `ForkConversation` RPC, and LeapMux does not call it yet.",
+        "detailNote": "Verified against agy 1.5.14 on 2026-11-28. The installed binary registers `/exa.language_server_pb.LanguageServerService/ForkConversation` on the Connect HTTP RPC service that LeapMux drives, accepting `source_cascade_id`, `fork_at_step_index`, and `target_fork_workspace` and returning `new_cascade_id` and `forked_at_step_index`. LeapMux currently calls `StartCascade` only.",
+        "spec": "frontend/tests/e2e/antigravity-cli/session-fork.spec.ts",
+        "audit": "refusal-covered",
+        "verified": true,
+        "testStatus": "passed"
+      }
+    },
     "permission-prompts": {
       "claude-code": {
         "support": "supported",
@@ -3660,8 +3941,8 @@
       },
       "codex": {
         "support": "supported",
-        "userNote": "Codex's **Allow as** menu offers **Once**, **Session**, **Command rule** and **Host rule**.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow as** offers **Once**, **Session**, **Command rule**, or **Host rule**. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "userNote": "Codex's **Allow scope** pills offer **Once**, **Session**, **Command rule** and **Host rule**, as each request allows. Codex keeps a command rule or a host rule in its own configuration.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/codex/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3679,7 +3960,7 @@
       "github-copilot": {
         "support": "supported",
         "userNote": "If the Copilot CLI refuses LeapMux's default permission mode, LeapMux opens the session in Manual mode.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow as** offers **Once**, **Session**, **Command rule**, or **Host rule**. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.\n\nThe Copilot fallback report states that a default-sourced refusal sends a Manual request, and that a mode the user chose fails startup with an error.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.\n\nThe Copilot fallback report states that a default-sourced refusal sends a Manual request, and that a mode the user chose fails startup with an error.",
         "spec": "frontend/tests/e2e/github-copilot/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3733,7 +4014,7 @@
       "zcode": {
         "support": "supported",
         "userNote": "The Always choice in a ZCode permission prompt saves a permission rule for the project.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow as** offers **Once**, **Session**, **Command rule**, or **Host rule**. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/zcode/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3742,7 +4023,7 @@
       "codewhale": {
         "support": "supported",
         "userNote": "CodeWhale denies an approval request that nobody answers within 300 seconds.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow as** offers **Once**, **Session**, **Command rule**, or **Host rule**. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/codewhale/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3796,7 +4077,7 @@
       "kiro": {
         "support": "supported",
         "userNote": "Kiro follows its own permission rules. **Always** with **Deny** at the everywhere scope refuses the same call in every workspace until you remove the rule in Kiro's settings. Kiro runs project hooks without asking. In Supervised mode, a turn ends with a review of its file changes. Its **Content Collection** setting decides whether Kiro may use your session content to improve its service.",
-        "detailNote": "Kiro's prompts follow its own rules. Its scope applies to **Deny** as well: **Always** with **Deny** refuses the same call in every workspace until you remove the rule in Kiro's settings. Kiro runs the working directory's hooks (`.kiro/hooks/`) without asking. In Supervised Autopilot, a turn ends with a review of its file changes: **Allow** keeps them, **Deny** restores each file. Its **Content Collection** setting decides whether Kiro may use your session content to improve its service.\n\nAlways with Deny refuses the call in every workspace only for the user scope (Always deny everywhere). LeapMux also offers Always deny for this session and Always deny in this workspace (extractControl.ts kiroAlwaysRejectRules) (checked 2026-10-05).",
+        "detailNote": "Kiro's prompts follow its own rules. Its scope applies to **Deny** as well: **Always** with **Deny** refuses the same call in every workspace until you remove the rule in Kiro's settings. Kiro runs the working directory's hooks (`.kiro/hooks/`) without asking. In Supervised Autopilot, a turn ends with a review of its file changes: **Allow** keeps them, **Deny** restores each file. Its **Content Collection** setting decides whether Kiro may use your session content to improve its service.\n\nAlways with Deny refuses the call in every workspace only for the user scope (Always deny everywhere). LeapMux also offers Always deny for this session and Always deny in this workspace (kiroAlwaysDenyRules in backend/internal/worker/agent/providers/kiro/control_prompt.go) (checked 2026-10-05).",
         "spec": "frontend/tests/e2e/kiro/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3805,7 +4086,7 @@
       "amp": {
         "support": "supported",
         "userNote": "In Ask mode, LeapMux asks before each tool that Amp runs on your machine. Amp runs some tools on its own server, and those tools never ask. Text that you type before Deny reaches Amp as the reason.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow as** offers **Once**, **Session**, **Command rule**, or **Host rule**. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/amp/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",

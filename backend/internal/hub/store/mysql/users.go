@@ -271,9 +271,48 @@ func (c *mysqlConn) fromDBUserListRow(u gendb.ListAllUsersRow) (store.UserListIt
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.UserListItem], error) {
-	return store.QueryPageErr(ctx, p.Limit,
-		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
-		s.conn.q.ListAllUsers, s.conn.fromDBUserListRow, s.conn.queryError)
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.UserListItem]{}, err
+	}
+	if !hasPrefix {
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
+			s.conn.q.ListAllUsers, s.conn.fromDBUserListRow, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.UserListItem]{}, err
+	}
+	if filter.Exact {
+		rows, err := s.conn.q.GetAllUsersByExactID(ctx, filter.Lower)
+		if err != nil {
+			return store.Page[store.UserListItem]{}, s.conn.queryError(err)
+		}
+		mapped, err := store.MapSliceErr(rows, func(r gendb.GetAllUsersByExactIDRow) (store.UserListItem, error) {
+			return s.conn.fromDBUserListRow(gendb.ListAllUsersRow(r))
+		})
+		if err != nil {
+			return store.Page[store.UserListItem]{}, err
+		}
+		return store.NewPage(mapped, p.Limit), nil
+	}
+	rows, err := s.conn.q.ListAllUsersByIDPrefix(ctx, gendb.ListAllUsersByIDPrefixParams{
+		IDLo:  filter.Lower,
+		IDHi:  filter.Upper,
+		IDGt:  idGt,
+		Limit: fetchLimit,
+	})
+	if err != nil {
+		return store.Page[store.UserListItem]{}, s.conn.queryError(err)
+	}
+	mapped, err := store.MapSliceErr(rows, func(r gendb.ListAllUsersByIDPrefixRow) (store.UserListItem, error) {
+		return s.conn.fromDBUserListRow(gendb.ListAllUsersRow(r))
+	})
+	if err != nil {
+		return store.Page[store.UserListItem]{}, err
+	}
+	return store.NewPage(mapped, p.Limit), nil
 }
 
 func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (store.Page[store.UserListItem], error) {

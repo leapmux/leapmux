@@ -506,7 +506,7 @@ func (a *Agent) fetchGooseSubagentReport(sessionID, reportID string) {
 	if err != nil {
 		return
 	}
-	if err := a.SendDetachedRequest(gooseSessionExportMethod, params, func(result json.RawMessage, err error) {
+	if err := a.SendDetachedRequest(gooseSessionExportMethod, params, providerkit.DetachedRequestOptions{}, func(result json.RawMessage, err error) {
 		if err != nil {
 			slog.Debug("goose subagent export failed", "agent_id", a.AgentID(), "session_id", sessionID, "error", err)
 			return

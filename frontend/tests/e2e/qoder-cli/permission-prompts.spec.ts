@@ -33,7 +33,7 @@ qoderTest.describe('Qoder CLI control requests', () => {
       },
       viewProof: async () => {
         await expectNoControlBanner(page)
-        await expect(savedControlAnswer(page)).toHaveText('Allow')
+        await expect(savedControlAnswer(page)).toHaveText('Allow once')
       },
     })
   })
@@ -154,7 +154,7 @@ qoderTest.describe('Qoder CLI control answers', () => {
       beforeDecision: () => expect(existsSync(proof)).toBe(false),
       firstProof: () => expect(readFileSync(proof, 'utf8')).toBe('qoder-session'),
       secondProof: () => expect(readFileSync(proof, 'utf8')).toBe('qoder-sessionqoder-session'),
-      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allow'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allow for this session'),
     })
   })
 })

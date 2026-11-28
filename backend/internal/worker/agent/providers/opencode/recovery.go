@@ -52,7 +52,21 @@ func (a *Agent) restoreStream(ctx context.Context) error {
 	return a.restoreGlobalFormsLocked(ctx)
 }
 
+const openCodeForkBaselineSentinel = "opencode:fork-baseline"
+
+func openCodeForkBaselineKey(messageID string) string {
+	return "opencode:fork-baseline:" + messageID
+}
+
+func (a *Agent) restoreForkBaselineLocked(ctx context.Context, run *openCodeRun) error {
+	return a.restoreRunWithModeLocked(ctx, run, true)
+}
+
 func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
+	return a.restoreRunWithModeLocked(ctx, run, false)
+}
+
+func (a *Agent) restoreRunWithModeLocked(ctx context.Context, run *openCodeRun, seedBaseline bool) error {
 	if run.restoring {
 		return nil
 	}
@@ -74,7 +88,39 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 	run.mu.Lock()
 	wasActive := run.active || run.compacting
 	run.mu.Unlock()
+	var (
+		captured           agent.MessageContent
+		hasDurableBaseline bool
+		baselineKeys       []string
+	)
+	if run.parentID == "" {
+		captured = run.sink.CaptureMessage(agent.MessageContent{AgentSessionID: run.id}, agent.SpanInfo{})
+		if !seedBaseline {
+			hasDurableBaseline, err = run.sink.IsMessageRetracted(captured, openCodeForkBaselineSentinel)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	recordBaseline := func(message openCodeStoredMessage) error {
+		if run.suppressedBaselineIDs == nil {
+			run.suppressedBaselineIDs = make(map[string]struct{})
+		}
+		run.suppressedBaselineIDs[message.ID] = struct{}{}
+		switch message.Type {
+		case "assistant":
+			snapshot, err := readOpenCodeAssistantSnapshot(message)
+			if err != nil {
+				return err
+			}
+			run.publishNativeUsage(snapshot.Tokens, snapshot.Model)
+		case contracts.OpenCodeNativeMessageTypeIdle:
+			run.ended[message.ID] = true
+		}
+		return nil
+	}
 	var pending *openCodeStoredMessage
+	var replyProjection openCodeReplyProjection
 	pendingCount := 0
 	persistHistorical := func(message openCodeStoredMessage, count int) error {
 		if run.ended[message.ID] {
@@ -90,6 +136,33 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 		return nil
 	}
 	err = a.rpc.visitMessages(ctx, run.id, func(message openCodeStoredMessage) error {
+		if seedBaseline {
+			if run.parentID == "" {
+				if len(baselineKeys) == 0 {
+					baselineKeys = append(baselineKeys, openCodeForkBaselineSentinel)
+				}
+				baselineKeys = append(baselineKeys, openCodeForkBaselineKey(message.ID))
+			}
+			return recordBaseline(message)
+		}
+		_, suppressed := run.suppressedBaselineIDs[message.ID]
+		if !suppressed && hasDurableBaseline {
+			suppressed, err = run.sink.IsMessageRetracted(captured, openCodeForkBaselineKey(message.ID))
+			if err != nil {
+				return err
+			}
+		}
+		if suppressed {
+			return recordBaseline(message)
+		}
+		if message.Type == contracts.OpenCodeNativeMessageTypeUser {
+			if err := run.confirmProjectedInput(message.ID); err != nil {
+				return err
+			}
+		}
+		if message.Type != contracts.OpenCodeNativeMessageTypeIdle {
+			replyProjection.observe(message, run.replyReceipt(message))
+		}
 		if pending != nil && message.Type != contracts.OpenCodeNativeMessageTypeIdle {
 			if err := persistHistorical(*pending, pendingCount); err != nil {
 				return err
@@ -108,6 +181,11 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 			run.publishNativeUsage(snapshot.Tokens, snapshot.Model)
 			return nil
 		case contracts.OpenCodeNativeMessageTypeIdle:
+			replyProjection.ending = message
+			if err := run.publishInputReply(replyProjection); err != nil {
+				return err
+			}
+			replyProjection = openCodeReplyProjection{}
 			if pending != nil {
 				if err := persistHistorical(*pending, pendingCount); err != nil {
 					return err
@@ -121,13 +199,18 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 			if strings.HasPrefix(message.ID, openCodeInputIDPrefix) {
 				return nil
 			}
-			return run.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: message.Raw, AgentSessionID: run.id, IdempotencyKey: "input:" + message.ID}, agent.SpanInfo{})
+			return run.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: message.Raw, AgentSessionID: run.id, IdempotencyKey: "opencode-user:" + message.ID}, agent.SpanInfo{})
 		default:
 			return run.persistNativeRecord(agent.MessageContent{Original: message.Raw, AgentSessionID: run.id, IdempotencyKey: "record:" + message.ID})
 		}
 	})
 	if err != nil {
 		return err
+	}
+	if seedBaseline && len(baselineKeys) > 0 {
+		if err := run.sink.RetractMessagesByIdempotencyKey(captured, baselineKeys); err != nil {
+			return err
+		}
 	}
 	active, err := a.rpc.activeSessions(ctx)
 	if err != nil {
@@ -147,6 +230,9 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 			return err
 		}
 		if err := run.tools.finish(agent.MessageCompletionInterrupted); err != nil {
+			return err
+		}
+		if err := run.retireSettledPendingInputReplies(); err != nil {
 			return err
 		}
 		if pending == nil && run.childAgentID != "" {
@@ -218,6 +304,7 @@ func (a *Agent) restoreGlobalFormsLocked(ctx context.Context) error {
 	}
 	owner := a.controlOwner(root)
 	owner.nativeSessionID = "global"
+	owner.replyInputs = nil
 	for _, raw := range forms {
 		form, err := readOpenCodeForm(raw)
 		if err != nil {

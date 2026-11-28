@@ -4,25 +4,26 @@ import (
 	"encoding/json"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// Pi reads its own dialog answer, so the resolution forwards the answer that
+// AnswerControlRequest builds as it is.
 func TestResolveControlResponse_PiPreservesTheResponse(t *testing.T) {
 	t.Parallel()
 
-	confirmed := true
-	response, err := json.Marshal(map[string]interface{}{"confirmed": confirmed})
+	payload := []byte(`{"type":"extension_ui_request","id":"dlg-1","method":"confirm","title":"Continue?"}`)
+	answer, err := agenttest.AnswerControl(piProvider{}, payload, "dlg-1", agenttest.DialogDecision(leapmuxv1.DialogAction_DIALOG_ACTION_CONFIRM, ""))
 	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"extension_ui_response","id":"dlg-1","confirmed":true}`, string(answer.Content))
 
-	res := piProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload:  []byte(`{"method":"confirm"}`),
-		ResponseContent: response,
-	})
+	res := agenttest.ResolveAnswer(piProvider{}, payload, "dlg-1", answer)
 
-	assert.Equal(t, response, res.Content)
+	assert.Equal(t, answer.Content, res.Content)
 }
 
 func TestPiResolveControlResponse_PreservesButWithholdsTheResponseForAMalformedRequest(t *testing.T) {
@@ -46,9 +47,7 @@ func TestPiNativeExtensionResponseDoesNotInferAdapterApprovalFromTheTitle(t *tes
 			})
 			require.NoError(t, err)
 			response := []byte(`{"type":"extension_ui_response","id":"native-permission","value":"Deny"}`)
-			result := (piProvider{}).ResolveControlResponse(agent.ControlResponseContext{
-				RequestID: "native-permission", RequestPayload: request, ResponseContent: response,
-			})
+			result := agenttest.ResolveAnswer(piProvider{}, request, "native-permission", agent.ControlAnswer{Content: response})
 			assert.False(t, result.Withhold)
 			assert.Equal(t, response, result.Content)
 		})

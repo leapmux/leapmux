@@ -1,6 +1,2 @@
-{{- $checklist := index hugo.Data "feature_matrix" "checklist" -}}
-{{- $count := 0 -}}
-{{- range $group := $checklist.providerGroups -}}
-  {{- $count = add $count (len $group) -}}
-{{- end -}}
-<span data-agent-provider-count>{{ $count }}</span>
+{{- $providers := partialCached "agent-providers.html" . -}}
+<span data-agent-provider-count>{{ len $providers }}</span>

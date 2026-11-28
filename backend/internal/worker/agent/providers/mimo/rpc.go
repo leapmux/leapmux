@@ -232,13 +232,58 @@ func (r mimoRPC) getSession(ctx context.Context, sessionID string) (mimoSession,
 }
 
 // promptAsync sends a prompt and returns when the server accepted it. The turn
-// runs afterwards, and its events arrive on the event stream.
-func (r mimoRPC) promptAsync(ctx context.Context, sessionID string, request mimoPromptRequest) error {
+// reports its delivery and outcome through events for the returned receipt.
+func (r mimoRPC) promptAsync(ctx context.Context, sessionID string, request mimoPromptRequest) (string, error) {
 	path, err := sessionPath(sessionID, "prompt_async")
 	if err != nil {
-		return err
+		return "", err
 	}
-	return r.do(ctx, http.MethodPost, path, request, nil)
+	var raw json.RawMessage
+	if err := r.do(ctx, http.MethodPost, path, request, &raw); err != nil {
+		return "", err
+	}
+	// MiMo sends 204 when it creates no native turn.
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var reply struct {
+		ReceiptID string `json:"receiptId"`
+	}
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return "", fmt.Errorf("decode the MiMo prompt receipt: %w", err)
+	}
+	if !idPattern.MatchString(reply.ReceiptID) {
+		return "", fmt.Errorf("the MiMo prompt acknowledgment has no valid receipt ID")
+	}
+	return reply.ReceiptID, nil
+}
+
+func (r mimoRPC) readInputReceipt(ctx context.Context, sessionID, receiptID string) (mimoReceiptUpdate, error) {
+	segment, err := pathSegment("receipt", receiptID)
+	if err != nil {
+		return mimoReceiptUpdate{}, err
+	}
+	path, err := sessionPath(sessionID, "receipt", segment)
+	if err != nil {
+		return mimoReceiptUpdate{}, err
+	}
+	var response struct {
+		mimoReceiptUpdate
+		ID   string `json:"id"`
+		Lane struct {
+			SessionID string `json:"sessionID"`
+			ActorID   string `json:"agentID"`
+		} `json:"lane"`
+	}
+	if err := r.do(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return mimoReceiptUpdate{}, err
+	}
+	if response.ID != receiptID || response.Lane.SessionID != sessionID || response.Lane.ActorID == "" || response.InputID == "" {
+		return mimoReceiptUpdate{}, fmt.Errorf("MiMo returned a receipt for a different input")
+	}
+	update := response.mimoReceiptUpdate
+	update.ID, update.SessionID, update.ActorID = response.ID, response.Lane.SessionID, response.Lane.ActorID
+	return update, nil
 }
 
 func (r mimoRPC) abort(ctx context.Context, sessionID string) error {

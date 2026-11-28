@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -209,7 +210,7 @@ func TestAnInterruptBeforeTheRunStartsAbortsItWhenItStarts(t *testing.T) {
 		return fakeReply{Hold: true}
 	})
 	sendErr := make(chan error, 1)
-	go func() { sendErr <- r.agent.SendInput("Hello.", nil) }()
+	go func() { sendErr <- agenttest.SendInput(r.agent, "Hello.", nil) }()
 	requestID := <-sent
 	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	assert.Empty(t, r.hub.commandsNamed(commandRunAbort), "no run exists to abort yet")
@@ -264,7 +265,7 @@ func TestADeferredAbortThatFailsLeavesTheTurnAsItWas(t *testing.T) {
 	})
 	r.hub.handle(commandRunAbort, func(fakeCommand) fakeReply { return fakeReply{Code: "busy", Message: "no"} })
 	sendErr := make(chan error, 1)
-	go func() { sendErr <- r.agent.SendInput("Hello.", nil) }()
+	go func() { sendErr <- agenttest.SendInput(r.agent, "Hello.", nil) }()
 	requestID := <-sent
 	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	r.emit(eventRunStarted, map[string]any{"requestId": requestID, "clientId": r.agent.clientID})

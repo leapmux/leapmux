@@ -351,13 +351,13 @@ describe('PreferencesContext — revealAfterDownload (default-on)', () => {
     expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
   })
 
-  it('round-trips terminalOsNotifications in browser prefs', () => {
+  it('round-trips desktopNotifications in browser prefs', () => {
     const ctx = captureContext()
-    expect(ctx.get().terminalOsNotifications()).toBe(false)
-    ctx.get().setTerminalOsNotifications(true)
-    expect(loadBrowserPrefs().terminalOsNotifications).toBe(true)
-    ctx.get().setTerminalOsNotifications(false)
-    expect('terminalOsNotifications' in loadBrowserPrefs()).toBe(false)
+    expect(ctx.get().desktopNotifications()).toBe(false)
+    ctx.get().setDesktopNotifications(true)
+    expect(loadBrowserPrefs().desktopNotifications).toBe(true)
+    ctx.get().setDesktopNotifications(false)
+    expect('desktopNotifications' in loadBrowserPrefs()).toBe(false)
   })
 
   it('defaults showComposerStatusBar to true and round-trips it through browser prefs', () => {

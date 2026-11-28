@@ -717,6 +717,68 @@ describe('TabBar terminal status', () => {
   })
 })
 
+// The status a process reported (`leapmux control tab status set`), beside
+// the tab's title.
+describe('TabBar tab status', () => {
+  function renderTabs(tabs: () => Tab[]) {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar {...defaultProps} tabs={tabs()} />
+      </PreferencesProvider>
+    ))
+  }
+
+  it('shows the status of the tab that has one, and only there', () => {
+    renderTabs(() => [
+      {
+        ...makeTab(TabType.AGENT, 'a1', 'Builder'),
+        tabStatus: { text: 'Running the tests', progressPercent: 40, tone: 'warning' },
+      } as Tab,
+      makeTab(TabType.TERMINAL, 't1', 'Shell'),
+    ])
+
+    const [builder, shell] = screen.getAllByTestId('tab')
+    if (builder === undefined || shell === undefined)
+      throw new Error('expected two tab rows')
+    const status = within(builder).getByTestId('tab-status')
+    expect(status).toHaveAttribute('data-tone', 'warning')
+    expect(within(status).getByTestId('tab-status-text')).toHaveTextContent('Running the tests')
+    expect(within(status).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40')
+    expect(within(shell).queryByTestId('tab-status')).toBeNull()
+  })
+
+  it('follows a status that is set, replaced and cleared on a live row', () => {
+    const [status, setStatus] = createSignal<Tab['tabStatus']>(undefined)
+    // Rendered here rather than through renderTabs: solid/reactivity rejects an
+    // accessor handed to a plain helper.
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={[
+            {
+              ...makeTab(TabType.AGENT, 'a1', 'Builder'),
+              tabStatus: status(),
+            } as Tab,
+          ]}
+        />
+      </PreferencesProvider>
+    ))
+    const row = () => screen.getByTestId('tab')
+    expect(within(row()).queryByTestId('tab-status')).toBeNull()
+
+    setStatus({ text: 'Building', progressPercent: undefined, tone: 'neutral' })
+    expect(within(row()).getByTestId('tab-status-text')).toHaveTextContent('Building')
+    expect(within(row()).queryByRole('progressbar')).toBeNull()
+
+    setStatus({ text: 'Build failed', progressPercent: undefined, tone: 'error' })
+    expect(within(row()).getByTestId('tab-status')).toHaveAttribute('data-tone', 'error')
+
+    setStatus(undefined)
+    expect(within(row()).queryByTestId('tab-status')).toBeNull()
+  })
+})
+
 describe('tabBar tooltip mode', () => {
   beforeEach(() => {
     vi.useFakeTimers()

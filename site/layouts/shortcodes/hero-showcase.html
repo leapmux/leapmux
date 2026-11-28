@@ -1,0 +1,110 @@
+{{- /*
+  hero-showcase renders an interactive 4-tab media showcase for the landing page hero:
+    1. Workspace Overview (light/dark active-theme eager PNG)
+    2. Parallel Worktrees & Diffs (light/dark looping MP4, loaded and played on demand)
+    3. Tiling & Floating (light/dark looping MP4, loaded and played on demand)
+    4. Input Queue & Steering (light/dark looping MP4, loaded and played on demand)
+
+  Videos hydrate and play only when their tab is active, in viewport, and
+  prefers-reduced-motion is unset (controlled by assets/js/site-media.js).
+*/ -}}
+{{- $prefix := printf "lm-hero-%d" .Ordinal -}}
+{{- $tabs := slice
+  (dict
+    "key" "overview"
+    "label" "Workspace Overview"
+    "kind" "image"
+    "src" "hero-workspace"
+    "width" "1440"
+    "height" "900"
+    "alt" "LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated pseudo-terminal (PTY) across isolated git worktrees"
+    "caption" "Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live pseudo-terminal (PTY) running side by side in isolated git worktrees."
+  )
+  (dict
+    "key" "worktrees"
+    "label" "Parallel Worktrees & Diffs"
+    "kind" "video"
+    "src" "parallel-worktrees"
+    "poster" "tabs-tiling-layout"
+    "width" "1280"
+    "height" "800"
+    "alt" "Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
+    "caption" "Switch between isolated worktrees, toggle split diffs, and pop down a Quake terminal without losing focus."
+  )
+  (dict
+    "key" "tiling"
+    "label" "Tiling & Floating"
+    "kind" "video"
+    "src" "tiling-floating-layout"
+    "poster" "floating-window"
+    "width" "1280"
+    "height" "800"
+    "alt" "Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, popping the agent tab out into a translucent floating window, and dragging it back into the grid"
+    "caption" "Split panes side by side, create a 2×2 tile grid, pop an agent tab into a translucent floating window, and drag it right back into the grid."
+  )
+  (dict
+    "key" "queue"
+    "label" "Input Queue & Steering"
+    "kind" "video"
+    "src" "input-queue-steering"
+    "poster" "input-queue"
+    "width" "1280"
+    "height" "800"
+    "alt" "Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
+    "caption" "Queue follow-up prompts, steer active turns mid-flight, or preempt long-running work from the Worker-backed input queue."
+  )
+-}}
+<div class="lm-hero-showcase" id="{{ $prefix }}-showcase">
+  <div class="lm-hero-tabs" role="tablist" aria-label="LeapMux workspace previews">
+    {{- range $idx, $tab := $tabs -}}
+    {{- $active := eq $idx 0 -}}
+    <button
+      type="button"
+      class="lm-hero-tab"
+      id="{{ $prefix }}-tab-{{ $tab.key }}"
+      role="tab"
+      aria-selected="{{ cond $active "true" "false" }}"
+      aria-controls="{{ $prefix }}-panel-{{ $tab.key }}"
+      tabindex="{{ cond $active "0" "-1" }}"
+    >{{ $tab.label }}</button>
+    {{- end -}}
+  </div>
+
+  <div class="lm-hero-stage">
+    {{- range $idx, $tab := $tabs -}}
+    {{- $active := eq $idx 0 -}}
+    <div
+      class="lm-hero-panel{{ if $active }} is-active{{ end }}"
+      id="{{ $prefix }}-panel-{{ $tab.key }}"
+      role="tabpanel"
+      aria-labelledby="{{ $prefix }}-tab-{{ $tab.key }}"
+      {{- if not $active }} aria-hidden="true" inert{{ end }}
+    >
+      {{- if eq $tab.kind "image" -}}
+        {{- partial "theme-screenshot.html" (dict
+          "page" $.Page
+          "src" $tab.src
+          "alt" $tab.alt
+          "caption" $tab.caption
+          "width" $tab.width
+          "height" $tab.height
+          "eager" true
+          "pos" $.Position
+        ) -}}
+      {{- else -}}
+        {{- partial "theme-video.html" (dict
+          "page" $.Page
+          "src" $tab.src
+          "poster" $tab.poster
+          "alt" $tab.alt
+          "caption" $tab.caption
+          "width" $tab.width
+          "height" $tab.height
+          "role" "hero"
+          "pos" $.Position
+        ) -}}
+      {{- end -}}
+    </div>
+    {{- end -}}
+  </div>
+</div>

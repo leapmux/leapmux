@@ -1,13 +1,13 @@
 package zcode
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -43,8 +43,7 @@ var (
 const (
 	// zcodeDeliveryGuide asks the runtime to inject the input into the running turn.
 	zcodeDeliveryGuide = "guide"
-	// zcodeDeliveryStartNow is the delivery the inbox admitted when no turn
-	// ran: the input started a turn of its own.
+	// zcodeDeliveryStartNow is the inbox admission that starts a separate turn.
 	zcodeDeliveryStartNow = "startNow"
 	// zcodeCommandResultInputAccepted is the result of an admitted input.
 	zcodeCommandResultInputAccepted = "inputAccepted"
@@ -69,13 +68,18 @@ type zcodeDeleteQueueItemPayload struct {
 
 // zcodeSteer is one steer that ZCode accepted and has not resolved.
 type zcodeSteer struct {
-	ticket providerkit.SteerTicket
+	queueInputID string
+	attemptID    string
+	order        uint64
 	// inputID is the input id that the acknowledgement stated. ZCode uses the
 	// command id, and a turn that runs the input states it.
 	inputID string
 	// pendingInputID is the id of the queued input, from turn.steerQueued: the
 	// queue item a withdrawal deletes and the key of a discard update.
 	pendingInputID string
+	// awaitingTurnStart records admission to a separate turn. The previous
+	// turn's cleanup leaves this input to its native start event.
+	awaitingTurnStart bool
 }
 
 // SupportsSteering reports the current app-server's command-inbox capability.
@@ -96,18 +100,19 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 // A steer carries text only: the inbox takes uploaded attachment references,
 // not the inline data that session/send carries. Text attachments inline into
 // the text, as a send inlines them, and anything else goes in the next turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	content, attachments := request.Content, request.Attachments
 	var blocks []string
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText {
-			return fmt.Errorf("%w: a ZCode steer carries text only, so %q goes in the next turn",
+			return agent.NativeInputReceipt{}, fmt.Errorf("%w: a ZCode steer carries text only, so %q goes in the next turn",
 				agent.ErrSteeringUnsupported, attachment.Filename)
 		}
 		blocks = append(blocks, providerkit.BuildInlineTextAttachmentBlock(attachment))
 	}
 	text := zcodeJoinPrompt(content, blocks)
 	if len(text) > zcodeSteerInputMaxBytes {
-		return fmt.Errorf("%w: the input is %d bytes, and ZCode steers at most %d, so it goes in the next turn",
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: the input is %d bytes, and ZCode steers at most %d, so it goes in the next turn",
 			agent.ErrSteeringUnsupported, len(text), zcodeSteerInputMaxBytes)
 	}
 
@@ -118,22 +123,27 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	switch {
 	case a.StoppedLocked():
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	case !a.turnActive:
 		// A compaction alone is not a turn to steer: its summary query is not
 		// the user's conversation, and the queued input takes the next turn.
 		a.Mu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	sessionID := a.sessionID
 	commandID := zcodeSteerCommandPrefix + id.Short()
 	// The steer is registered before the command, because its events can
-	// arrive before the acknowledgement.
-	steer := &zcodeSteer{ticket: a.steerLedger.Add(commandID), inputID: commandID}
-	if a.steers == nil {
-		a.steers = map[string]*zcodeSteer{}
+	// arrive before the acknowledgement. Steered control replies carry an empty
+	// AttemptID and are accepted immediately without steer resolution tracking.
+	var steer *zcodeSteer
+	if request.AttemptID != "" {
+		a.nextSteerOrder++
+		steer = &zcodeSteer{queueInputID: request.InputID, attemptID: request.AttemptID, order: a.nextSteerOrder, inputID: commandID}
+		if a.steers == nil {
+			a.steers = map[string]*zcodeSteer{}
+		}
+		a.steers[commandID] = steer
 	}
-	a.steers[commandID] = steer
 	a.Mu.Unlock()
 
 	ack, err := a.sendZCodeCommand(zcodeCommandEnvelope{
@@ -143,66 +153,71 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		Payload:   zcodeSendTextPayload{Text: text, RequestedDelivery: zcodeDeliveryGuide},
 	})
 	if err != nil {
-		a.forgetZCodeSteer(commandID)
-		return classifyZCodeDeliveryError(MethodCommand, err)
+		if steer != nil {
+			a.forgetZCodeSteer(commandID)
+		}
+		return agent.NativeInputReceipt{}, classifyZCodeDeliveryError(MethodCommand, err)
 	}
 	if ack.Status != zcodeCommandAccepted || ack.Result == nil || ack.Result.Type != zcodeCommandResultInputAccepted {
-		a.forgetZCodeSteer(commandID)
-		return fmt.Errorf("ZCode did not accept the steer: %s", zcodeCommandRefusal(ack))
+		if steer != nil {
+			a.forgetZCodeSteer(commandID)
+		}
+		return agent.NativeInputReceipt{}, fmt.Errorf("ZCode did not accept the steer: %s", zcodeCommandRefusal(ack))
 	}
-	if ack.Result.InputID != "" {
-		a.Mu.Lock()
-		steer.inputID = ack.Result.InputID
-		a.Mu.Unlock()
+	if steer == nil {
+		return agent.NativeInputReceipt{}, nil
 	}
-	if ack.Result.Delivery == zcodeDeliveryStartNow {
-		// The turn ended before ZCode admitted the input, so the input started a
-		// turn of its own, whose prompt the model reads.
-		a.resolveZCodeSteers(func(candidate string, _ *zcodeSteer) bool { return candidate == commandID }, agent.SteerOutcomeEchoed)
+	var echoedReceipt agent.NativeInputReceipt
+	a.Mu.Lock()
+	// The native start or drain may have already resolved this steer.
+	if a.steers[commandID] == steer {
+		if ack.Result.InputID != "" {
+			steer.inputID = ack.Result.InputID
+		}
+		if turnID := a.seenInputTurns.inputs[steer.inputID]; turnID != "" {
+			delete(a.steers, commandID)
+			echoedReceipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: steer.inputID, TurnID: turnID}
+		} else {
+			steer.awaitingTurnStart = steer.awaitingTurnStart || ack.Result.Delivery == zcodeDeliveryStartNow
+		}
 	}
-	return nil
+	a.Mu.Unlock()
+	if echoedReceipt.TurnID != "" {
+		a.reportZCodeSteer(steer, agent.SteerOutcomeEchoed, echoedReceipt)
+	}
+	return agent.NativeInputReceipt{}, nil
 }
 
-// forgetZCodeSteer removes a steer whose command failed. The queue already
-// knows the failure from SteerInput's error.
 func (a *Agent) forgetZCodeSteer(commandID string) {
 	a.Mu.Lock()
-	steer, ok := a.steers[commandID]
 	delete(a.steers, commandID)
 	a.Mu.Unlock()
-	if ok {
-		a.steerLedger.Forget(steer.ticket)
-		a.steerLedger.Settle(a.sink)
-	}
 }
 
-// resolveZCodeSteers resolves every unresolved steer that match selects with
-// outcome, settles the ledger, and reports whether one matched.
-func (a *Agent) resolveZCodeSteers(match func(commandID string, steer *zcodeSteer) bool, outcome agent.SteerOutcome) bool {
+// takeZCodeSteers gives one caller ownership of each matching dispatch.
+func (a *Agent) takeZCodeSteers(match func(commandID string, steer *zcodeSteer) bool) []*zcodeSteer {
 	a.Mu.Lock()
-	var tickets []providerkit.SteerTicket
+	defer a.Mu.Unlock()
+	var matched []*zcodeSteer
 	for commandID, steer := range a.steers {
 		if match(commandID, steer) {
-			tickets = append(tickets, steer.ticket)
+			matched = append(matched, steer)
 			delete(a.steers, commandID)
 		}
 	}
-	a.Mu.Unlock()
-	if len(tickets) == 0 {
-		return false
+	slices.SortFunc(matched, func(left, right *zcodeSteer) int {
+		return cmp.Compare(left.order, right.order)
+	})
+	return matched
+}
+
+func (a *Agent) reportZCodeSteer(steer *zcodeSteer, outcome agent.SteerOutcome, receipt agent.NativeInputReceipt) {
+	err := agent.RetainSteerResolution(a.sink, agent.SteerResolution{
+		InputID: steer.queueInputID, AttemptID: steer.attemptID, Outcome: outcome, Receipt: receipt,
+	})
+	if !agent.OutputRetained(err) {
+		slog.Error("zcode record steer resolution", "agent_id", a.AgentID(), "input_id", steer.queueInputID, "error", err)
 	}
-	for _, ticket := range tickets {
-		switch outcome {
-		case agent.SteerOutcomeEchoed:
-			a.steerLedger.Echo(ticket)
-		case agent.SteerOutcomeDropped:
-			a.steerLedger.Drop(ticket)
-		default:
-			a.steerLedger.Uncertain(ticket)
-		}
-	}
-	a.steerLedger.Settle(a.sink)
-	return true
 }
 
 // zcodeSteerEventPayload holds the fields of the three steer events that
@@ -217,6 +232,7 @@ type zcodeSteerEventPayload struct {
 	// injected into the turn.
 	QueryIDs        []string `json:"queryIds"`
 	PendingInputIDs []string `json:"pendingInputIds"`
+	TargetTurnID    string   `json:"targetTurnId"`
 	// Intent states the command of a turn.steerDeliveryChanged input.
 	Intent struct {
 		SourceCommandID string `json:"sourceCommandId"`
@@ -247,11 +263,7 @@ func (a *Agent) observeZCodeSteerEvent(event zcodeEventEnvelope) bool {
 		}
 		return ours
 	case contracts.ZCodeEventTurnSteerDrained:
-		commands := zcodeStringSet(payload.QueryIDs)
-		inputs := zcodeStringSet(payload.PendingInputIDs)
-		return a.resolveZCodeSteers(func(commandID string, steer *zcodeSteer) bool {
-			return commands[commandID] || commands[steer.inputID] || (steer.pendingInputID != "" && inputs[steer.pendingInputID])
-		}, agent.SteerOutcomeEchoed)
+		return a.observeZCodeSteerDrain(event, payload)
 	case contracts.ZCodeEventTurnSteerDeliveryChanged:
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -266,22 +278,82 @@ func (a *Agent) observeZCodeSteerEvent(event zcodeEventEnvelope) bool {
 	}
 }
 
+func (a *Agent) observeZCodeSteerDrain(event zcodeEventEnvelope, payload zcodeSteerEventPayload) bool {
+	// The native event gives queued IDs in read order. Use command IDs when
+	// the queue ID was never observed.
+	positions := make(map[string]int, len(payload.PendingInputIDs)+len(payload.QueryIDs))
+	for _, ids := range [][]string{payload.PendingInputIDs, payload.QueryIDs} {
+		for _, nativeID := range ids {
+			if nativeID != "" && positions[nativeID] == 0 {
+				positions[nativeID] = len(positions) + 1
+			}
+		}
+	}
+	order := make(map[*zcodeSteer]int)
+	steers := a.takeZCodeSteers(func(commandID string, steer *zcodeSteer) bool {
+		for _, nativeID := range []string{steer.pendingInputID, steer.inputID, commandID} {
+			if pos := positions[nativeID]; pos > 0 {
+				order[steer] = pos
+				return true
+			}
+		}
+		return false
+	})
+	if len(steers) == 0 {
+		return false
+	}
+	slices.SortFunc(steers, func(left, right *zcodeSteer) int { return cmp.Compare(order[left], order[right]) })
+	owner := a.zcodeSteerReplyOwner(event, payload.TargetTurnID)
+	// Retain the lead's buffered text before the first steer row. The reply
+	// query starts at the steer row, so this order also identifies its reply.
+	if owner != nil && !a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete) {
+		owner = nil
+	}
+	for _, steer := range steers {
+		var receipt agent.NativeInputReceipt
+		if owner != nil {
+			receipt = agent.NativeInputReceipt{SessionID: event.SessionID, InputID: steer.inputID, TurnID: owner.id}
+			a.Mu.Lock()
+			owner.steerReceipts = append(owner.steerReceipts, receipt)
+			a.Mu.Unlock()
+		}
+		a.reportZCodeSteer(steer, agent.SteerOutcomeEchoed, receipt)
+	}
+	return true
+}
+
+func (a *Agent) zcodeSteerReplyOwner(event zcodeEventEnvelope, targetTurnID string) *zcodeTurnState {
+	if targetTurnID == "" || event.SessionID == "" || event.TurnID != "" && event.TurnID != targetTurnID || event.archive || event.replayUncertain {
+		return nil
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	owner := a.turns[targetTurnID]
+	if owner == nil || owner.inputSessionID != event.SessionID || !owner.inputConfirmed || owner.replyUnproved ||
+		owner.steerReplyUnproved || owner.canonicalRequired || owner.settled || owner.pendingNative != nil {
+		return nil
+	}
+	return owner
+}
+
 // observeZCodeSteerTurnStart echoes the steer that a turn runs as its prompt:
 // one that ZCode moved to the ordinary queue and then ran by itself.
-func (a *Agent) observeZCodeSteerTurnStart(inputID string) {
+func (a *Agent) observeZCodeSteerTurnStart(inputID string, receipt agent.NativeInputReceipt) {
 	if inputID == "" {
 		return
 	}
-	a.resolveZCodeSteers(func(commandID string, steer *zcodeSteer) bool {
+	for _, steer := range a.takeZCodeSteers(func(commandID string, steer *zcodeSteer) bool {
 		return commandID == inputID || steer.inputID == inputID
-	}, agent.SteerOutcomeEchoed)
+	}) {
+		a.reportZCodeSteer(steer, agent.SteerOutcomeEchoed, receipt)
+	}
 }
 
 // observeZCodeSteerDiscard settles the steers that ZCode removed from its
 // queue, and reports whether the update belongs to LeapMux's own steers.
 //
-// `promoted` is not a loss: ZCode moved the input into a turn of its own, so
-// the model reads it there, and the steer counts as echoed. Any other reason
+// `promoted` moves the input into a turn of its own. The native start
+// identifies that turn and determines the steer row's position. Any other reason
 // removed the input unread, and the queue runs it again as the next turn. A
 // withdrawal that already settled its steer still owns the update.
 func (a *Agent) observeZCodeSteerDiscard(payload zcodeSessionUpdatedPayload) bool {
@@ -298,15 +370,24 @@ func (a *Agent) observeZCodeSteerDiscard(payload zcodeSessionUpdatedPayload) boo
 			withdrawn = true
 		}
 	}
-	a.Mu.Unlock()
-	outcome := agent.SteerOutcomeDropped
 	if reason, _ := providerkit.RawString(payload.Reason); reason == zcodeSteerDiscardReasonPromoted {
-		outcome = agent.SteerOutcomeEchoed
+		for _, steer := range a.steers {
+			if discarded[steer.pendingInputID] {
+				steer.awaitingTurnStart = true
+				withdrawn = true
+			}
+		}
+		a.Mu.Unlock()
+		return withdrawn
 	}
-	resolved := a.resolveZCodeSteers(func(_ string, steer *zcodeSteer) bool {
+	a.Mu.Unlock()
+	steers := a.takeZCodeSteers(func(_ string, steer *zcodeSteer) bool {
 		return steer.pendingInputID != "" && discarded[steer.pendingInputID]
-	}, outcome)
-	return resolved || withdrawn
+	})
+	for _, steer := range steers {
+		a.reportZCodeSteer(steer, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})
+	}
+	return len(steers) > 0 || withdrawn
 }
 
 // zcodeStringSet is the set of values.
@@ -325,27 +406,53 @@ func (a *Agent) hasPendingZCodeSteers() bool {
 	return len(a.steers) > 0
 }
 
-// withdrawZCodeSteersLocked takes every unresolved steer back from ZCode's
+// withdrawZCodeSteersLocked takes unresolved queued steers back from ZCode's
 // queue. A deleted steer is dropped, so the queue runs it as the next turn.
 // Any other answer leaves its delivery unknown: an input that the model read
 // was echoed by its drain event, which precedes the answer on the wire, so the
 // remaining case is an input that ZCode removed without a word. A steer whose
 // queued input ZCode has not stated cannot be addressed, and is uncertain too.
 // The caller holds steerMu.
-func (a *Agent) withdrawZCodeSteersLocked() {
+func (a *Agent) withdrawZCodeSteersLocked(includeAwaitingStart bool) {
+	type pendingSteer struct {
+		commandID      string
+		pendingInputID string
+		order          uint64
+	}
 	a.Mu.Lock()
 	sessionID := a.sessionID
-	pending := make(map[string]string, len(a.steers))
+	var pending []pendingSteer
 	for commandID, steer := range a.steers {
-		pending[commandID] = steer.pendingInputID
+		if includeAwaitingStart || !steer.awaitingTurnStart {
+			pending = append(pending, pendingSteer{
+				commandID:      commandID,
+				pendingInputID: steer.pendingInputID,
+				order:          steer.order,
+			})
+		}
 	}
 	a.Mu.Unlock()
-	for commandID, pendingInputID := range pending {
+	slices.SortFunc(pending, func(left, right pendingSteer) int {
+		return cmp.Compare(left.order, right.order)
+	})
+	for _, entry := range pending {
 		outcome := agent.SteerOutcomeUncertain
-		if pendingInputID != "" && a.deleteZCodeQueuedInput(sessionID, pendingInputID) {
+		if entry.pendingInputID != "" && a.deleteZCodeQueuedInput(sessionID, entry.pendingInputID) {
 			outcome = agent.SteerOutcomeDropped
 		}
-		a.resolveZCodeSteers(func(candidate string, _ *zcodeSteer) bool { return candidate == commandID }, outcome)
+		a.Mu.Lock()
+		steer := a.steers[entry.commandID]
+		// A native promotion can arrive during the withdrawal RPC.
+		if !includeAwaitingStart && steer != nil && steer.awaitingTurnStart {
+			steer = nil
+		}
+		if steer != nil {
+			delete(a.steers, entry.commandID)
+		}
+		a.Mu.Unlock()
+		if steer != nil {
+			a.reportZCodeSteer(steer, outcome, agent.NativeInputReceipt{})
+		}
 	}
 }
 
@@ -393,7 +500,7 @@ func (a *Agent) withdrawZCodeSteersAfterTurnEnd() {
 	if active || stopped {
 		return
 	}
-	a.withdrawZCodeSteersLocked()
+	a.withdrawZCodeSteersLocked(false)
 }
 
 // dropZCodeSteersOfReplacedSession drops the steers of a session that a new
@@ -403,16 +510,16 @@ func (a *Agent) dropZCodeSteersOfReplacedSession() {
 	a.Mu.Lock()
 	a.withdrawnSteerInputs = nil
 	a.Mu.Unlock()
-	a.resolveZCodeSteers(func(string, *zcodeSteer) bool { return true }, agent.SteerOutcomeDropped)
+	for _, steer := range a.takeZCodeSteers(func(string, *zcodeSteer) bool { return true }) {
+		a.reportZCodeSteer(steer, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})
+	}
 }
 
-// resetZCodeSteers forgets every steer when the process ends. The ledger is
-// reset rather than settled: the process exit owns the queue's recovery of
-// inputs still awaiting their echo.
+// resetZCodeSteers forgets every steer when the process ends. The process
+// exit owns the queue's recovery of inputs still awaiting their echo.
 func (a *Agent) resetZCodeSteers() {
 	a.Mu.Lock()
 	a.steers = nil
 	a.withdrawnSteerInputs = nil
 	a.Mu.Unlock()
-	a.steerLedger.Reset()
 }

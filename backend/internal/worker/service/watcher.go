@@ -17,10 +17,12 @@ import (
 // registration is one channel's live subscription to one entity.
 // The manager stores registrations by value. Each entity keeps its own generation even when several entities share a sender.
 type registration struct {
-	channelID string
-	sender    channel.ResponseWriter
-	mode      leapmuxv1.WatchMode
-	replay    agentReplayTuple
+	channelID        string
+	sender           channel.ResponseWriter
+	mode             leapmuxv1.WatchMode
+	geometry         bool
+	includeReplyText bool
+	replay           agentReplayTuple
 
 	// gen identifies this registration. Each registration receives a new generation, including registrations for a previously removed channel.
 	// broadcast copies the sender and generation before it sends outside the lock.
@@ -40,9 +42,11 @@ type agentReplayTuple struct {
 
 // watchEntry states one entity's mode and its fixed replay request.
 type watchEntry struct {
-	id     string
-	mode   leapmuxv1.WatchMode
-	replay agentReplayTuple
+	id               string
+	mode             leapmuxv1.WatchMode
+	geometry         bool
+	includeReplyText bool
+	replay           agentReplayTuple
 }
 
 // watcherRegistry stores entity ID -> channel ID -> registration for one entity kind.
@@ -92,11 +96,13 @@ func (r *watcherRegistry) replaceWatchesLocked(channelID string, entries []watch
 		}
 		r.nextGen++
 		byChannel[channelID] = registration{
-			channelID: channelID,
-			sender:    sender,
-			mode:      entry.mode,
-			replay:    entry.replay,
-			gen:       r.nextGen,
+			channelID:        channelID,
+			sender:           sender,
+			mode:             entry.mode,
+			geometry:         entry.geometry,
+			includeReplyText: entry.includeReplyText,
+			replay:           entry.replay,
+			gen:              r.nextGen,
 		}
 	}
 }
@@ -105,7 +111,13 @@ func (r *watcherRegistry) entriesForChannelLocked(channelID string) map[string]w
 	entries := make(map[string]watchEntry)
 	for entityID, byChannel := range r.byEntity {
 		if registration, exists := byChannel[channelID]; exists {
-			entries[entityID] = watchEntry{id: entityID, mode: registration.mode, replay: registration.replay}
+			entries[entityID] = watchEntry{
+				id:               entityID,
+				mode:             registration.mode,
+				replay:           registration.replay,
+				geometry:         registration.geometry,
+				includeReplyText: registration.includeReplyText,
+			}
 		}
 	}
 	return entries
@@ -162,20 +174,6 @@ func (r *watcherRegistry) hasFullWatcher(entityID string) bool {
 		}
 	}
 	return false
-}
-
-// modesForChannel returns entity ID -> mode for this channel's registrations.
-// watchSession uses the registry to detect promotions without a separate copy of the modes.
-func (r *watcherRegistry) modesForChannel(channelID string) map[string]leapmuxv1.WatchMode {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make(map[string]leapmuxv1.WatchMode)
-	for entityID, byChannel := range r.byEntity {
-		if reg, ok := byChannel[channelID]; ok {
-			out[entityID] = reg.mode
-		}
-	}
-	return out
 }
 
 // snapshot copies out entityID's registrations under the read lock.
@@ -251,6 +249,7 @@ type eventClass uint8
 const (
 	classContent eventClass = iota
 	classNotify
+	classGeometry
 )
 
 func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
@@ -262,6 +261,9 @@ func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
 		*leapmuxv1.AgentEvent_TurnEnd,
 		*leapmuxv1.AgentEvent_TodosChanged,
 		*leapmuxv1.AgentEvent_BackgroundTasksChanged,
+		*leapmuxv1.AgentEvent_GoalChanged,
+		*leapmuxv1.AgentEvent_InputQueueRevision,
+		*leapmuxv1.AgentEvent_InputReplyChanged,
 		*leapmuxv1.AgentEvent_ActivityChanged:
 		return classNotify
 	// Queue snapshots contain text previews for the composer. A NOTIFY subscription does not display them.
@@ -289,6 +291,8 @@ func terminalEventClass(e *leapmuxv1.TerminalEvent) eventClass {
 		return classNotify
 	case *leapmuxv1.TerminalEvent_Data:
 		return classContent
+	case *leapmuxv1.TerminalEvent_ScreenGeometry:
+		return classGeometry
 	default:
 		return classContent
 	}
@@ -300,9 +304,16 @@ func modeIsFull(mode leapmuxv1.WatchMode) bool {
 
 // broadcast sends resp to each subscription whose mode permits this event class.
 // Content events skip the snapshot and serialization when no FULL subscription exists.
-// Callers use this shared mode check. Serialization runs once, when the first eligible subscription needs the payload.
-func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEventsResponse, class eventClass) {
-	if class == classContent && !r.hasFullWatcher(entityID) {
+// Callers use this shared mode check. Serialization runs lazily at most once per
+// variant (without reply_text and, when opted-in watchers exist, with reply_text on
+// a cloned message so resp is never mutated).
+func (r *watcherRegistry) broadcast(
+	entityID string,
+	resp *leapmuxv1.WatchEventsResponse,
+	class eventClass,
+	resolveReplyText func(*leapmuxv1.AgentChatMessage) *string,
+) {
+	if class != classNotify && !r.hasFullWatcher(entityID) {
 		return
 	}
 	watchers := r.snapshot(entityID)
@@ -311,22 +322,44 @@ func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEvents
 	}
 
 	var (
-		payload []byte
-		err     error
-		dead    []registration
+		payload          []byte
+		replyTextPayload []byte
+		replyTextChecked bool
+		err              error
+		dead             []registration
 	)
 	for _, w := range watchers {
-		if class == classContent && !modeIsFull(w.mode) {
+		if class != classNotify && !modeIsFull(w.mode) || class == classGeometry && !w.geometry {
 			continue
 		}
-		if payload == nil {
-			payload, err = marshalWatchEvent(resp, entityID)
-			if err != nil {
-				return
+		var wire []byte
+		if w.includeReplyText && resolveReplyText != nil {
+			if msg := resp.GetAgentEvent().GetAgentMessage(); msg != nil && msg.ReplyText == nil {
+				if !replyTextChecked {
+					replyTextChecked = true
+					if text := resolveReplyText(msg); text != nil {
+						cloned := proto.CloneOf(resp)
+						cloned.GetAgentEvent().GetAgentMessage().ReplyText = text
+						replyTextPayload, err = marshalWatchEvent(cloned, entityID)
+						if err != nil {
+							return
+						}
+					}
+				}
+				wire = replyTextPayload
 			}
 		}
+		if wire == nil {
+			if payload == nil {
+				payload, err = marshalWatchEvent(resp, entityID)
+				if err != nil {
+					return
+				}
+			}
+			wire = payload
+		}
 		sendErr := w.sender.SendStream(&leapmuxv1.InnerStreamMessage{
-			Payload: payload,
+			Payload: wire,
 		})
 		if sendErr == nil {
 			continue
@@ -359,11 +392,14 @@ type WatcherManager struct {
 	channelOwners map[string]uint64 // channelID -> sessionID
 	nextSession   uint64
 	// agentEvents queues immutable events. Its lock protects no agent activity.
-	agentEvents publicationQueues[*leapmuxv1.AgentEvent]
+	agentEvents      publicationQueues[*leapmuxv1.AgentEvent]
+	recordAgentFact  func(string, *leapmuxv1.AgentEvent)
+	resolveReplyText func(*leapmuxv1.AgentChatMessage) *string
 	// terminalStatuses orders every status change and closed event of a terminal,
 	// live or replayed. Screen data and the other terminal events stay outside
 	// it: they go through BroadcastTerminalEvent.
-	terminalStatuses publicationQueues[terminalStatusItem]
+	terminalStatuses   publicationQueues[terminalStatusItem]
+	recordTerminalFact func(string, *leapmuxv1.TerminalEvent)
 }
 
 // terminalStatusItem is one entry of a terminal's status queue. A live status has
@@ -435,12 +471,21 @@ func (m *WatcherManager) SetTerminalWatchesForSession(channelID string, sessionI
 
 // AgentModesForChannel returns the current agent watch modes for channelID.
 func (m *WatcherManager) AgentModesForChannel(channelID string) map[string]leapmuxv1.WatchMode {
-	return m.agents.modesForChannel(channelID)
+	m.agents.mu.RLock()
+	entries := m.agents.entriesForChannelLocked(channelID)
+	m.agents.mu.RUnlock()
+	out := make(map[string]leapmuxv1.WatchMode, len(entries))
+	for entityID, entry := range entries {
+		out[entityID] = entry.mode
+	}
+	return out
 }
 
-// TerminalModesForChannel returns the current terminal watch modes for channelID.
-func (m *WatcherManager) TerminalModesForChannel(channelID string) map[string]leapmuxv1.WatchMode {
-	return m.terminals.modesForChannel(channelID)
+// TerminalWatchesForChannel returns the current terminal interests.
+func (m *WatcherManager) TerminalWatchesForChannel(channelID string) map[string]watchEntry {
+	m.terminals.mu.RLock()
+	defer m.terminals.mu.RUnlock()
+	return m.terminals.entriesForChannelLocked(channelID)
 }
 
 // UnwatchAll clears channel ownership and every subscription when the channel closes or releases its local stream.
@@ -473,11 +518,26 @@ func (m *WatcherManager) BroadcastAgentEvent(agentID string, event *leapmuxv1.Ag
 
 // EnqueueAgentEvent copies one event without calling a watcher.
 func (m *WatcherManager) EnqueueAgentEvent(agentID string, event *leapmuxv1.AgentEvent) {
+	m.enqueueAgentEvent(agentID, event, true)
+}
+
+// EnqueueAgentEventLiveOnly copies one event for live watchers without
+// recording a semantic event fact.
+func (m *WatcherManager) EnqueueAgentEventLiveOnly(agentID string, event *leapmuxv1.AgentEvent) {
+	m.enqueueAgentEvent(agentID, event, false)
+}
+
+func (m *WatcherManager) enqueueAgentEvent(agentID string, event *leapmuxv1.AgentEvent, recordFact bool) {
 	if event == nil {
 		return
 	}
 	snapshot := proto.Clone(event).(*leapmuxv1.AgentEvent)
-	m.agentEvents.enqueue(agentID, func() *leapmuxv1.AgentEvent { return snapshot })
+	m.agentEvents.enqueue(agentID, func() *leapmuxv1.AgentEvent {
+		if recordFact && m.recordAgentFact != nil && agentEventClass(snapshot) == classNotify {
+			m.recordAgentFact(agentID, snapshot)
+		}
+		return snapshot
+	})
 }
 
 // DrainAgentEvents sends queued events outside every publication lock.
@@ -486,7 +546,7 @@ func (m *WatcherManager) DrainAgentEvents(agentID string) {
 	m.agentEvents.drain(agentID, func(event *leapmuxv1.AgentEvent) {
 		m.agents.broadcast(agentID, &leapmuxv1.WatchEventsResponse{
 			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: event},
-		}, agentEventClass(event))
+		}, agentEventClass(event), m.resolveReplyText)
 	})
 }
 
@@ -510,7 +570,20 @@ func (m *WatcherManager) PublishTerminalStatus(terminalID string, event *leapmux
 // therefore lands behind this status, or derive sees the change.
 func (m *WatcherManager) PublishDerivedTerminalStatus(terminalID string, derive func() *leapmuxv1.TerminalEvent) {
 	m.terminalStatuses.enqueue(terminalID, func() terminalStatusItem {
-		return terminalStatusItem{event: derive()}
+		event := derive()
+		if m.recordTerminalFact != nil {
+			m.recordTerminalFact(terminalID, event)
+		}
+		return terminalStatusItem{event: event}
+	})
+	m.drainTerminalStatuses(terminalID)
+}
+
+// PublishTerminalStatusSnapshot sends a state reminder to existing watchers.
+// A reminder has no new occurrence to record in event history.
+func (m *WatcherManager) PublishTerminalStatusSnapshot(terminalID string, event *leapmuxv1.TerminalEvent) {
+	m.terminalStatuses.enqueue(terminalID, func() terminalStatusItem {
+		return terminalStatusItem{event: event}
 	})
 	m.drainTerminalStatuses(terminalID)
 }
@@ -553,7 +626,7 @@ func (m *WatcherManager) drainTerminalStatuses(terminalID string) {
 			item.sink.send(resp)
 			return
 		}
-		m.terminals.broadcast(terminalID, resp, terminalEventClass(item.event))
+		m.terminals.broadcast(terminalID, resp, terminalEventClass(item.event), nil)
 	})
 }
 
@@ -561,9 +634,13 @@ func (m *WatcherManager) drainTerminalStatuses(terminalID string) {
 // terminal. A status change or a closed event goes through PublishTerminalStatus
 // instead, so that it keeps its order against the replay of a new subscriber.
 func (m *WatcherManager) BroadcastTerminalEvent(terminalID string, event *leapmuxv1.TerminalEvent) {
+	class := terminalEventClass(event)
+	if class == classNotify && m.recordTerminalFact != nil {
+		m.recordTerminalFact(terminalID, event)
+	}
 	m.terminals.broadcast(terminalID, &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
 			TerminalEvent: event,
 		},
-	}, terminalEventClass(event))
+	}, class, nil)
 }

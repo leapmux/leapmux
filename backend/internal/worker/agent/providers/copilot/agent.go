@@ -28,7 +28,6 @@ type Agent struct {
 	samplingOnce   sync.Once
 	samplingCtx    context.Context
 	samplingCancel context.CancelFunc
-	steers         providerkit.SteerLedger
 
 	sessionMu sync.RWMutex
 	stateMu   sync.Mutex
@@ -42,14 +41,21 @@ type Agent struct {
 	turnOrder          providerkit.TurnSeq
 	activityRevision   uint64
 
-	// outputMu serializes the reader goroutine against every caller that replaces
-	// or ends the session. It also guards the maps and closedSpans below, which
-	// only those two paths touch.
+	// outputMu serializes the native reader with send acknowledgments, session
+	// replacement, and shutdown. It guards the session's output state below.
 	outputMu    sync.Mutex
 	closing     bool
 	children    map[string]*copilotNativeChild
 	openTools   map[string]*copilotOpenTool
 	closedSpans providerkit.ClosedSpanSet
+	// replyCaptures owns the submitted inputs still awaiting native proof.
+	// outputMu orders the reader, acknowledgement, and session retirement.
+	replyCaptures         map[*copilotReplyCapture]struct{}
+	nextReplyCaptureOrder uint64
+	// An echo can arrive before its command reply supplies the native ID.
+	// Keep the echo and the following events in transcript order until then.
+	deferredSteerEvents []copilotDeferredSteerEvent
+	deferredSteerBytes  int
 	// nextNativeToolOrder numbers the open calls, so a turn that ends with several
 	// of them closes each one in the order the runtime opened it.
 	nextNativeToolOrder uint64
@@ -75,8 +81,9 @@ type Agent struct {
 	reasoningSeen  map[string]struct{}
 	reasoningOrder []string
 
-	controlMu sync.Mutex
-	controls  map[string]*copilotPendingControl
+	controlMu        sync.Mutex
+	controls         map[string]*copilotPendingControl
+	nextControlOrder uint64
 	// workspaceTrust holds the folder-trust question that LeapMux asks for
 	// Copilot (folder_trust.go).
 	workspaceTrust providerkit.WorkspaceTrust
@@ -139,15 +146,21 @@ func (a *Agent) offReader(key string, work func()) {
 // roll back to. An agent that kept its process alive there would accept input that can
 // never arrive anywhere.
 func (a *Agent) stopNativeConnection() {
+	a.finishNativeOutput(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
+	a.copilotConnection.Stop()
+}
+
+func (a *Agent) finishNativeOutput(completion agent.MessageCompletion, taskStatus bgtask.Status) {
 	a.outputMu.Lock()
 	a.closing = true
-	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
+	a.finishDeferredSteerEvents()
+	a.clearNativeChildren(completion, taskStatus)
 	a.clearNativeControls()
+	a.discardNativeReplyCaptures()
 	a.outputMu.Unlock()
 	providerkit.ResetSpansAndProgress(a.sink)
 	a.forgetNativeControlEvents()
 	a.clearNativeCompaction()
-	a.copilotConnection.Stop()
 }
 
 func (a *Agent) nativeTurnActive() bool {
@@ -240,8 +253,8 @@ func copilotBlobAttachments(attachments []*leapmuxv1.Attachment) []map[string]st
 	return blobs
 }
 
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments)
 }
 
 // CompactContext asks the native runtime to summarize the current session.
@@ -275,7 +288,7 @@ func (a *Agent) CompactContext() error {
 		a.finishNativeCompaction(revision)
 		return fmt.Errorf("encode Copilot compaction request: %w", err)
 	}
-	err = a.SendDetachedRequest("session.history.compact", params, func(raw json.RawMessage, requestErr error) {
+	err = a.SendDetachedRequest("session.history.compact", params, providerkit.DetachedRequestOptions{}, func(raw json.RawMessage, requestErr error) {
 		a.sessionMu.RLock()
 		defer a.sessionMu.RUnlock()
 		defer a.finishNativeCompaction(revision)
@@ -313,29 +326,30 @@ func (a *Agent) reportNativeCompactionError(err error) {
 	})
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (receipt agent.NativeInputReceipt, sendErr error) {
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
 	if a.IsStopped() {
-		return fmt.Errorf("the Copilot process is stopped")
+		return receipt, fmt.Errorf("the Copilot process is stopped")
 	}
 	a.stateMu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.stateMu.Unlock()
-		return err
+		return receipt, err
 	}
 	if a.active || a.compactingRevision != 0 {
 		a.stateMu.Unlock()
-		return agent.ErrAgentBusy
+		return receipt, agent.ErrAgentBusy
 	}
 	if a.sessionID == "" {
 		a.stateMu.Unlock()
-		return fmt.Errorf("the Copilot session is unavailable")
+		return receipt, fmt.Errorf("the Copilot session is unavailable")
 	}
 	a.active = true
 	a.activityRevision++
 	revision := a.activityRevision
 	fleet := a.fleetOnLocked()
+	sessionID := a.sessionID
 	a.stateMu.Unlock()
 	a.PublishTurnActive()
 	values := map[string]any{"prompt": content}
@@ -343,23 +357,29 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		values["attachments"] = copilotBlobAttachments(attachments)
 	}
 	if fleet {
-		return a.startFleetTurn(values, revision)
+		return receipt, a.startFleetTurn(values, revision)
 	}
+	capture := a.beginNativeReplyCapture(sessionID)
+	defer func() {
+		if sendErr != nil {
+			a.discardNativeReplyCapture(capture)
+		}
+	}()
 	raw, err := a.requestNativeSession("send", values)
 	if err != nil {
 		var rejection *providerkit.JSONRPCResponseError
 		if errors.As(err, &rejection) {
 			a.rejectNativeInput(revision)
 		}
-		return providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
+		return receipt, providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
 	}
 	var response struct {
 		MessageID string `json:"messageId"`
 	}
 	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
-		return fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
+		return receipt, fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
 	}
-	return nil
+	return a.acceptNativeReplyCapture(capture, response.MessageID), nil
 }
 
 // startFleetTurn starts a new turn as a fleet request, which tells the model to
@@ -407,53 +427,62 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 //
 // The turn's activity bookkeeping is NOT touched: the turn this steers is the
 // one already recorded active, and a rejected steer must not read as the turn
-// ending. Contrast sendInputForSession, which owns the idle->active transition
+// ending. Contrast sendNativeInput, which owns the idle->active transition
 // and therefore owns the revision it can roll back.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	var receipt agent.NativeInputReceipt
+	content, attachments := request.Content, request.Attachments
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
 	if a.IsStopped() {
-		return fmt.Errorf("agent is stopped")
+		return receipt, fmt.Errorf("agent is stopped")
 	}
 	a.stateMu.Lock()
-	if a.sessionID == "" {
+	sessionID := a.sessionID
+	if sessionID == "" {
 		a.stateMu.Unlock()
-		return fmt.Errorf("the Copilot session is unavailable")
+		return receipt, fmt.Errorf("the Copilot session is unavailable")
 	}
 	active := a.active
 	compacting := a.compactingRevision != 0
 	a.stateMu.Unlock()
 	if compacting {
-		return agent.ErrAgentBusy
+		return receipt, agent.ErrAgentBusy
 	}
 	if !active {
-		return agent.ErrNoActiveTurn
+		return receipt, agent.ErrNoActiveTurn
 	}
 	values := map[string]any{"prompt": content, "mode": "immediate"}
 	if len(attachments) > 0 {
 		values["attachments"] = copilotBlobAttachments(attachments)
 	}
-	ticket := a.steers.Add(content)
+	var capture *copilotReplyCapture
+	if request.InputID != "" && request.AttemptID != "" {
+		capture = a.beginNativeSteerCapture(sessionID, request)
+	}
 	accepted := false
 	defer func() {
-		if !accepted {
-			a.steers.Forget(ticket)
-			a.steers.Settle(a.sink)
+		if !accepted && capture != nil {
+			a.discardNativeReplyCapture(capture)
 		}
 	}()
 	raw, err := a.requestNativeSession("send", values)
 	if err != nil {
-		return providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
+		return receipt, providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
 	}
 	var response struct {
 		MessageID string `json:"messageId"`
 	}
 	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
-		return fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
+		return receipt, fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
 	}
-	a.steers.SetID(ticket, response.MessageID)
 	accepted = true
-	return nil
+	if capture != nil {
+		a.acceptNativeReplyCapture(capture, response.MessageID)
+	}
+	// SteerRowAtEcho is true: return an empty receipt so the input queue holds
+	// the row until the echo resolves it with its native receipt.
+	return agent.NativeInputReceipt{}, nil
 }
 
 // Interrupt aborts the running turn with Copilot's own `session.abort`.
@@ -468,29 +497,11 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if a.IsStopped() {
 		return fmt.Errorf("agent is stopped")
 	}
-	for _, pending := range a.steers.PendingEntries() {
-		if pending.ID == "" {
-			continue
-		}
-		raw, err := a.requestNativeSession("queue.withdrawMessage", map[string]any{
-			"messageId": pending.ID, "expectedPrompt": pending.Key,
-		})
-		if err != nil {
-			slog.Warn("withdraw a Copilot steer before the stop", "agent_id", a.AgentID(), "error", err)
-			continue
-		}
-		var response struct {
-			Removed *bool `json:"removed"`
-		}
-		if json.Unmarshal(raw, &response) != nil || response.Removed == nil {
-			slog.Warn("Copilot returned no steer withdrawal result", "agent_id", a.AgentID())
-			continue
-		}
-		if *response.Removed {
-			a.steers.Drop(pending.Ticket)
+	for _, pending := range a.pendingNativeSteerWithdrawals() {
+		if a.withdrawNativeSteer(pending.messageID, pending.prompt) {
+			a.dropUnreadNativeSteer(pending.capture)
 		}
 	}
-	a.steers.Settle(a.sink)
 	_, err := a.requestNativeSession("abort", nil)
 	if err != nil {
 		return err
@@ -504,6 +515,24 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		a.outputMu.Unlock()
 	}
 	return nil
+}
+
+func (a *Agent) withdrawNativeSteer(messageID, prompt string) bool {
+	raw, err := a.requestNativeSession("queue.withdrawMessage", map[string]any{
+		"messageId": messageID, "expectedPrompt": prompt,
+	})
+	if err != nil {
+		slog.Warn("withdraw a Copilot steer before the stop", "agent_id", a.AgentID(), "error", err)
+		return false
+	}
+	var response struct {
+		Removed *bool `json:"removed"`
+	}
+	if json.Unmarshal(raw, &response) != nil || response.Removed == nil {
+		slog.Warn("Copilot returned no steer withdrawal result", "agent_id", a.AgentID())
+		return false
+	}
+	return *response.Removed
 }
 
 func (a *Agent) Stop() {
@@ -530,32 +559,20 @@ func (a *Agent) Stop() {
 	}
 	a.copilotConnection.Stop()
 	completion := a.ProcessExitCompletion()
-	a.outputMu.Lock()
-	a.clearNativeChildren(completion, agent.IncompleteTaskStatus(completion))
-	a.clearNativeControls()
-	a.outputMu.Unlock()
-	providerkit.ResetSpansAndProgress(a.sink)
-	a.clearNativeCompaction()
+	a.finishNativeOutput(completion, agent.IncompleteTaskStatus(completion))
 	a.setNativeTurnActive(false)
 }
 
 func (a *Agent) Wait() error {
 	err := a.copilotConnection.Wait()
 	completion := a.ProcessExitCompletion()
-	a.outputMu.Lock()
-	a.closing = true
-	a.clearNativeChildren(completion, agent.IncompleteTaskStatus(completion))
-	a.clearNativeControls()
-	a.outputMu.Unlock()
-	providerkit.ResetSpansAndProgress(a.sink)
-	a.forgetNativeControlEvents()
-	a.clearNativeCompaction()
+	a.finishNativeOutput(completion, agent.IncompleteTaskStatus(completion))
 	a.setNativeTurnActive(false)
 	return err
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(&sessionID, content, attachments)
 }
 
 // samplingContext supplies one cancellation scope for sampling on this process.

@@ -68,7 +68,7 @@ func (a *Agent) clearReasoningStateForThread(threadID string) {
 
 // bufferCodexModelText routes one model delta to its counter and buffer.
 func (a *Agent) bufferCodexModelText(
-	scopeID, threadID, text string,
+	scopeID, threadID, turnID, text string,
 	kind agent.AssembledMessageKind,
 	join providerkit.TextJoin,
 	reportProgress bool,
@@ -76,6 +76,7 @@ func (a *Agent) bufferCodexModelText(
 	sink := a.sink
 	buffer := &a.generationBuffer
 	if !a.isMainThreadID(threadID) {
+		turnID = ""
 		route, routed := a.ensureCodexChildRoute(threadID)
 		buffer = a.codexChildGenerationBuffer(threadID)
 		if !routed {
@@ -89,7 +90,7 @@ func (a *Agent) bufferCodexModelText(
 	if reportProgress {
 		sink.ReportProgress(agent.ModelTextProgress(scopeID, text))
 	}
-	buffer.Append(scopeID, kind, text, join)
+	buffer.AppendForNativeTurn(scopeID, kind, text, join, providerkit.NativeTurnRef{SessionID: threadID, TurnID: turnID})
 }
 
 func (a *Agent) reportCodexModelProgress(scopeID, threadID, text string) {
@@ -302,7 +303,7 @@ func (a *Agent) observeReasoningText(itemID, kind, threadID, text string, summar
 		a.discardCodexModelText(itemID, threadID)
 	}
 	if retainText {
-		a.bufferCodexModelText(itemID, threadID, text, agent.AssembledMessageKindReasoning, join, countKind == kind)
+		a.bufferCodexModelText(itemID, threadID, "", text, agent.AssembledMessageKindReasoning, join, countKind == kind)
 	} else if countKind == kind {
 		a.reportCodexModelProgress(itemID, threadID, text)
 	}
@@ -316,6 +317,7 @@ type codexModelDelta struct {
 	ItemID       string `json:"itemId"`
 	Delta        string `json:"delta"`
 	ThreadID     string `json:"threadId"`
+	TurnID       string `json:"turnId"`
 	SummaryIndex *int   `json:"summaryIndex"`
 }
 
@@ -418,7 +420,7 @@ func (a *Agent) handleAgentMessageDelta(params json.RawMessage) {
 		if delta.ItemID == "" {
 			delta.ItemID = codexAssistantFallbackScope
 		}
-		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, agent.AssembledMessageKindText, providerkit.JoinVerbatim, true)
+		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.TurnID, delta.Delta, agent.AssembledMessageKindText, providerkit.JoinVerbatim, true)
 	}
 }
 
@@ -428,7 +430,7 @@ func (a *Agent) handlePlanDelta(params json.RawMessage) {
 		if delta.ItemID == "" {
 			delta.ItemID = codexPlanFallbackScope
 		}
-		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, delta.Delta, agent.AssembledMessageKindPlan, providerkit.JoinVerbatim, true)
+		a.bufferCodexModelText(delta.ItemID, delta.ThreadID, "", delta.Delta, agent.AssembledMessageKindPlan, providerkit.JoinVerbatim, true)
 	}
 }
 

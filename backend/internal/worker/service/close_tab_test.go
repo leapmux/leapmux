@@ -359,7 +359,7 @@ func closeAgentRemoveDirect(svc *Service, agentID string) *leapmuxv1.CloseTabRes
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		agentID,
-		"",
+		svc.RegisteredBy().String(),
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 		dropWorktreeLink,
 		func() {},
@@ -1458,7 +1458,7 @@ func TestCloseTabCommon_RemoveOnAlreadyClosedTabDoesNotDiscardUnsavedWork(t *tes
 	// exactly what a stale client produces.
 	require.NoError(t, closeErr(fx.svc.Queries.CloseAgent(ctx, fx.tabID)))
 
-	result := fx.svc.closeAgentTabCommon("", fx.tabID,
+	result := fx.svc.closeAgentTabCommon(fx.svc.RegisteredBy().String(), fx.tabID,
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED,
@@ -1489,7 +1489,7 @@ func TestCloseTabCommon_RemoveOnLiveTabStillHonoursTheUsersDelete(t *testing.T) 
 	require.NoError(t, os.WriteFile(filepath.Join(wt.WorktreePath, "dirty.txt"), []byte("unsaved\n"), 0o644))
 
 	// Row is LIVE, so this close retires it: a user-confirmed delete.
-	result := fx.svc.closeAgentTabCommon("", fx.tabID,
+	result := fx.svc.closeAgentTabCommon(fx.svc.RegisteredBy().String(), fx.tabID,
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED,

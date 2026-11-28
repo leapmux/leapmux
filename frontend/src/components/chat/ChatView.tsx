@@ -280,6 +280,12 @@ interface ChatViewProps {
   messageContext?: MessageContextResolver
   /** Agent status / startup / thinking telemetry (see AgentLifecycleProps). */
   agentLifecycle?: AgentLifecycleProps
+  /**
+   * The title of a tab that the browser holds, by its id. A message from another
+   * agent states its sender by the title of the sender's tab, which may live in
+   * another workspace.
+   */
+  tabTitle?: (tabId: string) => string | undefined
 }
 
 /**
@@ -374,6 +380,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       : {}),
     ...(props.agentLifecycle?.onApproveAutoReviewDenial !== undefined
       ? { onApproveAutoReviewDenial: props.agentLifecycle.onApproveAutoReviewDenial }
+      : {}),
+    ...(props.tabTitle !== undefined
+      ? { tabTitle: props.tabTitle }
       : {}),
   }))
 

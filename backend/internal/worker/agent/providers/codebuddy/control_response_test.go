@@ -7,10 +7,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-// browserAnswer is the neutral envelope the browser sends.
+// browserAnswer is the neutral envelope that AnswerControlRequest builds.
 func browserAnswer(t *testing.T, requestID, behavior, message string, updatedInput map[string]any) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior}
@@ -61,18 +64,19 @@ func TestCodebuddyTranslateAllowOmitsAnEmptyUpdate(t *testing.T) {
 func TestCodebuddyResolveControlResponseClassifiesPlanExit(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		tool string
-		want agent.PlanModeControlKind
+		tool     string
+		decision *leapmuxv1.ControlDecision
+		want     agent.PlanModeControlKind
 	}{
-		{tool: "ExitPlanMode", want: agent.PlanModeControlExit},
-		{tool: "Bash", want: agent.PlanModeControlNone},
+		{tool: "ExitPlanMode", decision: agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true}), want: agent.PlanModeControlExit},
+		{tool: "Bash", decision: agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""), want: agent.PlanModeControlNone},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			t.Parallel()
-			resolution := (codebuddyProvider{}).ResolveControlResponse(agent.ControlResponseContext{
-				RequestID: "approval:plan-1", ToolName: tc.tool,
-				ResponseContent: browserAnswer(t, "approval:plan-1", agent.ControlBehaviorAllow, "", nil),
-			})
+			payload := codebuddyToolPayload(t, tc.tool, map[string]any{})
+			answer, err := agenttest.AnswerControl(codebuddyProvider{}, payload, codebuddyTestRequestID, tc.decision)
+			require.NoError(t, err)
+			resolution := agenttest.ResolveAnswer(codebuddyProvider{}, payload, codebuddyTestRequestID, answer)
 			assert.False(t, resolution.Withhold)
 			assert.Equal(t, tc.want, resolution.PlanModeControl)
 			assert.Equal(t, true, nativeAnswer(t, resolution.Content)["allowed"])
@@ -80,7 +84,7 @@ func TestCodebuddyResolveControlResponseClassifiesPlanExit(t *testing.T) {
 	}
 }
 
-// An allow carries the input the browser folded its answer into. An
+// An allow carries the input that AnswerControlRequest folded the answers into. An
 // AskUserQuestion reply is the whole tool input with `answers` added, and
 // CodeBuddy merges that object into the tool call.
 func TestCodebuddyTranslateAllowForwardsUpdatedInput(t *testing.T) {
@@ -114,7 +118,7 @@ func TestCodebuddyTranslateBareDenyFillsThePlaceholder(t *testing.T) {
 	t.Parallel()
 	translated, ok := translateCanUseToolAnswer(browserAnswer(t, "approval:1", "deny", "", nil))
 	require.True(t, ok)
-	assert.Equal(t, map[string]any{"allowed": false, "reason": agent.ControlRejectedByUserMessage}, nativeAnswer(t, translated))
+	assert.Equal(t, map[string]any{"allowed": false, "reason": contracts.ControlAnswerMessageRejectedByUser}, nativeAnswer(t, translated))
 }
 
 func TestCodebuddyTranslateIgnoresAPayloadThatStatesNoDecision(t *testing.T) {

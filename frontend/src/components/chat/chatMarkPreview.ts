@@ -2,7 +2,9 @@ import type { MessageContextResolver } from './messageContextResolver'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageRevision } from '~/lib/messageSpan'
+import type { SettingsLabelRead } from '~/lib/settingsLabelCache'
 import { createSignal } from 'solid-js'
+import { isSettingsLabelReadCurrent, refreshSettingsLabelRead, settingsLabelCacheRevision } from '~/lib/settingsLabelCache'
 import { truncatePreview } from '~/lib/textTruncate'
 import { appendCompletionMarker } from './assembledMessage'
 import { rowRevisionKey } from './chatRevisionKey'
@@ -121,9 +123,21 @@ const MAX_PREVIEW_CACHE_ENTRIES_PER_AGENT = 500
  * land, and no other agent's rail re-renders.
  */
 interface MarkPreviewBucket {
-  entries: Map<string, { revisionKey: string, text: string }>
+  entries: Map<string, MarkPreviewEntry>
   readVersion: () => number
-  bump: (value?: number) => number
+  /** Increment the version, so each write notifies the readers. */
+  bump: () => void
+}
+
+/**
+ * One resolved preview: the revision of the message that it previews, and its text with
+ * the settings label groups that the text read. The text can word a value by its label
+ * (the mode of a plan approval, the model of a Codex spawn), and the labels often arrive
+ * after the rail resolved the preview, so the entry answers only while both hold.
+ */
+interface MarkPreviewEntry {
+  revisionKey: string
+  preview: SettingsLabelRead<string>
 }
 
 const buckets = new Map<string, MarkPreviewBucket>()
@@ -132,18 +146,20 @@ function bucketFor(agentId: string): MarkPreviewBucket {
   const existing = buckets.get(agentId)
   if (existing)
     return existing
-  const [readVersion, bump] = createSignal(0)
+  const [readVersion, setVersion] = createSignal(0)
   const bucket: MarkPreviewBucket = {
     entries: new Map(),
     readVersion,
-    bump,
+    // Solid's setter called with no argument stores `undefined`, and a second such write
+    // equals the first, so it notifies no reader. Only an increment notifies on each write.
+    bump: () => setVersion(version => version + 1),
   }
   buckets.set(agentId, bucket)
   return bucket
 }
 
 /** The bucket's entry for one seq, without tracking the version signal. */
-function peekBucketEntry(agentId: string, seq: bigint): { revisionKey: string, text: string } | undefined {
+function peekBucketEntry(agentId: string, seq: bigint): MarkPreviewEntry | undefined {
   return buckets.get(agentId)?.entries.get(seq.toString())
 }
 
@@ -153,7 +169,7 @@ function previewRevisionKey(revision: MessageRevision | undefined): string {
     : rowRevisionKey({ own: revision })
 }
 
-function setCachedMarkPreview(agentId: string, seq: bigint, revision: MessageRevision | undefined, preview: string): void {
+function setCachedMarkPreview(agentId: string, seq: bigint, revision: MessageRevision | undefined, preview: SettingsLabelRead<string>): void {
   const key = seq.toString()
   const bucket = bucketFor(agentId)
   if (!bucket.entries.has(key)) {
@@ -170,15 +186,26 @@ function setCachedMarkPreview(agentId: string, seq: bigint, revision: MessageRev
   }
   bucket.entries.set(key, {
     revisionKey: previewRevisionKey(revision),
-    text: preview,
+    preview,
   })
   bucket.bump()
+}
+
+/** The preview text of a message, read with the label groups that it consulted. */
+function readMarkPreview(message: AgentChatMessage | undefined): SettingsLabelRead<string> {
+  return refreshSettingsLabelRead(undefined, () => message === undefined
+    ? ''
+    : (messageMarkPreviewText(message) ?? ''))
 }
 
 /**
  * Reactive read of a resolved preview: `undefined` until resolved, `''` when resolved
  * with no previewable text, otherwise the snippet. Tracks the agent's bucket, so the
  * tooltip re-renders when a pending fetch lands.
+ *
+ * A preview whose settings labels changed since it was resolved answers `undefined`
+ * too, as one of another message revision does, until a warm resolves it again. The
+ * read tracks the label catalog for that check.
  */
 export function getCachedMarkPreview(agentId: string, seq: bigint, revision?: MessageRevision): string | undefined {
   // Allocate the bucket before the first read. The open preview must subscribe to
@@ -186,10 +213,10 @@ export function getCachedMarkPreview(agentId: string, seq: bigint, revision?: Me
   const bucket = bucketFor(agentId)
   bucket.readVersion()
   const entry = bucket.entries.get(seq.toString())
-  if (entry === undefined)
+  if (entry === undefined || !isSettingsLabelReadCurrent(entry.preview))
     return undefined
   return revision === undefined || entry.revisionKey === previewRevisionKey(revision)
-    ? entry.text
+    ? entry.preview.value
     : undefined
 }
 
@@ -210,7 +237,10 @@ function cachePrefix(agentId: string): string {
 
 /**
  * Ensure the preview for (agentId, seq) is resolved into the cache. Idempotent and
- * deduped: a cached key or an in-flight fetch is a no-op. Resolves synchronously from
+ * deduped: a current cached key or an in-flight fetch is a no-op. A cached key is current
+ * while the message revision and the settings labels that its text read hold, and a
+ * caller in a computation runs again when the labels change, so an open card shows a new
+ * label without another hover. Resolves synchronously from
  * the loaded window when the message is present (no fetch); otherwise fetches the single
  * message and caches its extracted preview. A DEFINITIVE miss -- the fetch resolves with
  * no row (deleted/reseq'd since the mark was recorded) -- caches `''` so the rail falls
@@ -221,14 +251,21 @@ function cachePrefix(agentId: string): string {
 export async function warmMarkPreview(agentId: string, seq: bigint, messages: Pick<MessageContextResolver, 'peek' | 'message'>): Promise<void> {
   if (seq <= 0n)
     return
+  // Track the label catalog, so a caller in a computation warms again when it changes: a
+  // preview that a changed label words is stale then. Read it here, before any branch, so a
+  // first warm whose preview a fetch resolves later subscribes too.
+  settingsLabelCacheRevision()
   const k = cacheKey(agentId, seq)
   const local = messages.peek(seq)
   const cached = peekBucketEntry(agentId, seq)
-  if (cached !== undefined && (local === undefined || cached.revisionKey === previewRevisionKey(local.revision)))
+  if (cached !== undefined
+    && isSettingsLabelReadCurrent(cached.preview)
+    && (local === undefined || cached.revisionKey === previewRevisionKey(local.revision))) {
     return
+  }
   if (local) {
     inflight.delete(k)
-    setCachedMarkPreview(agentId, seq, local.revision, messageMarkPreviewText(local.message) ?? '')
+    setCachedMarkPreview(agentId, seq, local.revision, readMarkPreview(local.message))
     return
   }
   if (inflight.has(k))
@@ -245,11 +282,8 @@ export async function warmMarkPreview(agentId: string, seq: bigint, messages: Pi
       // A resolved-undefined message is a DEFINITIVE absence (no row at this seq) --
       // cache '' so the rail shows a label without re-fetching. A REJECTION lands in
       // .catch below and is NOT cached, so a transient failure can be retried.
-      if (isCurrent()) {
-        setCachedMarkPreview(agentId, seq, msg?.revision, msg
-          ? (messageMarkPreviewText(msg.message) ?? '')
-          : '')
-      }
+      if (isCurrent())
+        setCachedMarkPreview(agentId, seq, msg?.revision, readMarkPreview(msg?.message))
     })
     .catch(() => {
       // Transient fetch failure: leave the key UNRESOLVED (the finally drops the

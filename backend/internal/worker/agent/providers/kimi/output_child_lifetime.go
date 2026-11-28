@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -112,6 +113,27 @@ func (s *kimiLeasedChildServices) CaptureMessage(content agent.MessageContent, s
 	return s.capture(content, span)
 }
 
+func (s *kimiLeasedChildServices) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if content.Publication == nil {
+		content = s.capture(content, span)
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func (s *kimiLeasedChildServices) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	if content.Publication == nil {
+		content = s.capture(content, agent.SpanInfo{})
+	}
+	return s.ProviderServices.PersistNotification(source, content)
+}
+
+func (s *kimiLeasedChildServices) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	if content.Publication == nil {
+		content = s.capture(content, span)
+	}
+	return s.ProviderServices.PersistTurnEnd(content, span)
+}
+
 // installChildLifetime installs the writer before activation can publish progress.
 // The caller holds dispatchMu.
 func (a *Agent) installChildLifetime(run, parentRun *kimiRun, parent agent.ProviderServices, lease agent.ChildSinkLease) error {
@@ -121,12 +143,14 @@ func (a *Agent) installChildLifetime(run, parentRun *kimiRun, parent agent.Provi
 	if lease.Sink == nil || lease.CaptureMessage == nil || lease.Activate == nil || lease.Cleanup == nil {
 		return errors.New("the Kimi child services supplied an incomplete lifetime")
 	}
-	direct, valid := agent.DirectTranscript(lease.Sink).(agent.ProviderServices)
-	if !valid {
+	if _, valid := agent.DirectTranscript(lease.Sink).(agent.ProviderServices); !valid {
 		return errors.New("the Kimi child writer does not preserve its provider services")
 	}
-	writer := agent.NewOrderedProviderServices(agent.OutputQueueFor(lease.Sink), &kimiLeasedChildServices{
-		ProviderServices: direct, capture: lease.CaptureMessage,
+	// Apply NewModelProgressResetSink before decorating with kimiLeasedChildServices
+	// so its idempotency check recognizes an already-wrapped child lease instead of
+	// stacking duplicate progress-reset wrappers on nested children.
+	writer := agent.DecorateProviderServices(agent.NewModelProgressResetSink(lease.Sink), func(direct agent.ProviderServices) agent.ProviderServices {
+		return &kimiLeasedChildServices{ProviderServices: direct, capture: lease.CaptureMessage}
 	})
 	queue := agent.OutputQueueFor(writer)
 	if queue == nil {
@@ -142,7 +166,7 @@ func (a *Agent) installChildLifetime(run, parentRun *kimiRun, parent agent.Provi
 		parentRun.childGraph = &kimiChildLifetimeGraph{nodes: make(map[*kimiChildLifetime]struct{})}
 	}
 	run.childGraph = parentRun.childGraph
-	lifetime := &kimiChildLifetime{parent: parent, writer: agent.NewModelProgressResetSink(writer), lease: lease,
+	lifetime := &kimiChildLifetime{parent: parent, writer: writer, lease: lease,
 		queue: queue, owner: agent.NewOutputOwner(), host: run.childHost, parentHost: parentRun.childHost, graph: run.childGraph}
 	lifetime.graph.mu.Lock()
 	lifetime.graph.nodes[lifetime] = struct{}{}
@@ -201,7 +225,7 @@ func (a *Agent) queueChildCleanup(run *kimiRun) {
 	a.Mu.Lock()
 	active := a.inputStateLocked(run.agentID).Active
 	a.Mu.Unlock()
-	if active || len(run.readyPromptSubmissions) != 0 {
+	if active || len(run.readyPromptSubmissions) != 0 || run.conversation != nil && run.conversation.replyPublications != 0 {
 		return
 	}
 	// A native turn can finish while an unrelated input still awaits admission.

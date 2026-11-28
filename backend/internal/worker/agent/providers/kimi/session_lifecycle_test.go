@@ -139,8 +139,8 @@ func TestKimiResumeSession(t *testing.T) {
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-text", Thinking: "", Permission: "yolo"})
 		rig := connectKimiTestRig(t, fake, server.URL, agent.Options{
-			ResumeSessionID: "session_stored",
-			Options:         options(agent.OptionIDPermissionMode, contracts.KimiModeAuto),
+			Session: agent.ResumeSession("session_stored"),
+			Options: options(agent.OptionIDPermissionMode, contracts.KimiModeAuto),
 		})
 		assert.Equal(t, "session_stored", rig.sessionID())
 		assert.Empty(t, fake.requestsTo("POST "+kimiRouteSessions), "a resume creates no session")
@@ -161,7 +161,7 @@ func TestKimiResumeSession(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-text", Permission: "manual"})
-		connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored"})
+		connectKimiTestRig(t, fake, server.URL, agent.Options{Session: agent.ResumeSession("session_stored")})
 		assert.Empty(t, fake.requestsTo("POST "+kimiSessionPath("session_stored", "/profile")))
 	})
 
@@ -192,8 +192,8 @@ func TestKimiResumeSession(t *testing.T) {
 				fake, server := newFakeKap(t)
 				fake.store("session_stored", tc.stored)
 				connectKimiTestRig(t, fake, server.URL, agent.Options{
-					ResumeSessionID: "session_stored",
-					Options:         options(agent.OptionIDModel, tc.target),
+					Session: agent.ResumeSession("session_stored"),
+					Options: options(agent.OptionIDModel, tc.target),
 				})
 				profiles := fake.requestsTo("POST " + kimiSessionPath("session_stored", "/profile"))
 				require.Len(t, profiles, 1)
@@ -209,7 +209,7 @@ func TestKimiResumeSession(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Thinking: "high", Permission: "manual"})
-		connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored", Options: options(agent.OptionIDModel, "kimi-k2")})
+		connectKimiTestRig(t, fake, server.URL, agent.Options{Session: agent.ResumeSession("session_stored"), Options: options(agent.OptionIDModel, "kimi-k2")})
 		assert.Empty(t, fake.requestsTo("POST "+kimiSessionPath("session_stored", "/profile")), "no model moved, so nothing needs restating")
 	})
 
@@ -217,7 +217,7 @@ func TestKimiResumeSession(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Thinking: "high", Permission: "manual"})
-		connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored", Options: options(agent.OptionIDEffort, "low")})
+		connectKimiTestRig(t, fake, server.URL, agent.Options{Session: agent.ResumeSession("session_stored"), Options: options(agent.OptionIDEffort, "low")})
 		profiles := fake.requestsTo("POST " + kimiSessionPath("session_stored", "/profile"))
 		require.Len(t, profiles, 1)
 		assert.JSONEq(t, `{"agent_config":{"thinking":"low"}}`, string(profiles[0].Body))
@@ -227,14 +227,14 @@ func TestKimiResumeSession(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-text", Permission: "manual"})
-		connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored", Options: options(agent.OptionIDModel, "gone")})
+		connectKimiTestRig(t, fake, server.URL, agent.Options{Session: agent.ResumeSession("session_stored"), Options: options(agent.OptionIDModel, "gone")})
 		assert.Empty(t, fake.requestsTo("POST "+kimiSessionPath("session_stored", "/profile")))
 	})
 
 	t.Run("a session the server does not know fails the resume", func(t *testing.T) {
 		t.Parallel()
 		_, server := newFakeKap(t)
-		a, _, opts := newConnectedKimiAgent(t, server.URL, agent.Options{ResumeSessionID: "session_gone"})
+		a, _, opts := newConnectedKimiAgent(t, server.URL, agent.Options{Session: agent.ResumeSession("session_gone")})
 		err := a.openStartupSession(opts, 30*time.Second)
 		require.ErrorIs(t, err, errKimiSessionUnavailable)
 		a.Mu.Lock()
@@ -248,7 +248,7 @@ func TestKimiResumeSession(t *testing.T) {
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Permission: "manual"})
 		fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int { return kimiCodeSessionNotFound })
-		a, _, opts := newConnectedKimiAgent(t, server.URL, agent.Options{ResumeSessionID: "session_stored"})
+		a, _, opts := newConnectedKimiAgent(t, server.URL, agent.Options{Session: agent.ResumeSession("session_stored")})
 		require.ErrorIs(t, a.openStartupSession(opts, 30*time.Second), errKimiSessionUnavailable)
 	})
 
@@ -445,7 +445,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		assert.Equal(t, "session_1", byID["approval_9"]["session_id"])
 		assert.Equal(t, contracts.KimiFrameInteraction, byID["question_9"]["type"])
 		assert.Equal(t, "agent-0", byID["question_9"]["agent_id"])
-		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_9", "allow", nil, nil), agent.StopContext{}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_9", answerFor(t, rig, "approval_9", "allow", nil, nil))))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "interactions", "approval_9", "")), 1)
 	})
 	t.Run("withdraws only controls absent from the confirmed native replay", func(t *testing.T) {
@@ -469,8 +469,8 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		_, stale := rig.agent.controls["approval_1"]
 		rig.agent.Mu.Unlock()
 		assert.False(t, stale)
-		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{}), errKimiControlGone)
-		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_2", "allow", nil, nil), agent.StopContext{}))
+		require.ErrorIs(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", nil, nil))), errKimiControlGone)
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_2", answerFor(t, rig, "approval_2", "allow", nil, nil))))
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_2", "")), 1)
 	})
@@ -506,7 +506,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		require.NotEmpty(t, messages)
 		assert.True(t, messages[len(messages)-1].TurnEnd)
 		rig.fake.setBusy("session_1", false)
-		require.NoError(t, rig.agent.SendInput("Next.", nil))
+		require.NoError(t, agenttest.SendInput(rig.agent, "Next.", nil))
 	})
 	t.Run("starts a main turn that started during the gap", func(t *testing.T) {
 		t.Parallel()
@@ -517,7 +517,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		waitFor(t, finished, "the recovered native running turn completes replay")
 		assert.Equal(t, agent.TurnState{Active: true}, rig.agent.PublishTurnActive(), "a turn without a steerable user item takes no steer")
 		var busy *agent.AgentBusyError
-		require.ErrorAs(t, rig.agent.SendInput("Next.", nil), &busy)
+		require.ErrorAs(t, agenttest.SendInput(rig.agent, "Next.", nil), &busy)
 		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
 		native.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t3","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 		last, _ := rig.sink.LastTurnActive()
@@ -1182,7 +1182,7 @@ func TestKimiResumeSessionReportsAProfileWriteThatFails(t *testing.T) {
 	fake.store("session_stored", fakeKapSession{Model: "kimi-text", Permission: "manual"})
 	fake.reply("POST "+kimiSessionPath("session_stored", "/profile"), fakeKapReply{Code: 50000, Msg: "profile locked"})
 	a, _, opts := newConnectedKimiAgent(t, server.URL, agent.Options{
-		ResumeSessionID: "session_stored", Options: options(agent.OptionIDPermissionMode, contracts.KimiModeAuto),
+		Session: agent.ResumeSession("session_stored"), Options: options(agent.OptionIDPermissionMode, contracts.KimiModeAuto),
 	})
 	err := a.openStartupSession(opts, 30*time.Second)
 	require.ErrorContains(t, err, "configure the resumed Kimi Code session")

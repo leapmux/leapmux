@@ -127,7 +127,7 @@ func TestRegistrationFlagValueDoesNotOverridePendingHub(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "worker.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("hub: http://127.0.0.1:1\n"), 0o600))
 	err = runWorkerRegister([]string{"--config", configPath, "--registration-key", "--hub", "--data-dir", root})
-	require.ErrorContains(t, err, "--hub is required")
+	require.ErrorContains(t, err, "missing required flag --hub")
 	after, err := os.ReadFile(cfg.PendingPath())
 	require.NoError(t, err)
 	assert.Equal(t, before, after)

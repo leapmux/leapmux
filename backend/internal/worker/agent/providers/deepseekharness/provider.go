@@ -73,17 +73,20 @@ func (deepseekHarnessProvider) PlanApprovalOptions(permissionMode string) map[st
 	return map[string]string{agent.OptionIDPermissionMode: permissionMode}
 }
 
-func (deepseekHarnessProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+func (p deepseekHarnessProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	resolution := agent.DefaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) > 0 {
-		if refusal := storedControlRefusal(ctx); refusal != "" {
+		parsed, refusal := resolveStoredControl(ctx)
+		if refusal != "" {
 			resolution.Refuse(refusal)
 			return resolution
 		}
+		if parsed.Kind == nativeControlKindPlanReview {
+			resolution.PlanModeControl = agent.PlanModeControlExit
+		}
+		return resolution
 	}
-	if ctx.ToolName == contracts.DeepseekHarnessToolExitPlanMode {
-		resolution.PlanModeControl = agent.PlanModeControlExit
-	}
+	resolution.PlanModeControl = p.PlanModeControl(ctx.ToolName)
 	return resolution
 }
 

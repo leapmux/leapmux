@@ -3178,7 +3178,7 @@ func TestHandleOutput_AnElicitationAnsweredDuringItsPublishKeepsNoEntry(t *testi
 	a, stdin := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 	sink.answer = func(requestID string) error {
 		answer := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"action":"decline"}}}`, requestID)
-		return a.SendRawInput([]byte(answer), agent.StopContext{})
+		return a.SendRawInput(sink.Answer(requestID, []byte(answer)))
 	}
 
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
@@ -3231,6 +3231,7 @@ func TestHandleOutput_AControlRequestWithAMistypedOptionalFieldStillPublishes(t 
 			published := sink.PublishedControls()
 			require.Len(t, published, 1, "the request reaches the reader")
 			assert.Equal(t, "r1", published[0].RequestID)
+			agenttest.AssertPublishedControlKeys(t, claudeProvider{}, sink)
 			assert.Empty(t, stdin.String(), "a published request needs no failure answer")
 			assert.Empty(t, elicitationEntries(a), "a mistyped elicitation field records no entry")
 		})
@@ -3267,7 +3268,7 @@ func TestHandleOutput_AnsweredAndCancelledElicitationsForgetTheirRequest(t *test
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
 	assert.Equal(t, map[string]string{"e1": "r1"}, elicitationEntries(a),
 		"a published elicitation records its request id")
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("r1", []byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`))))
 	assert.Empty(t, elicitationEntries(a), "the answered request is forgotten")
 	answered := stdin.String()
 	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
@@ -3291,7 +3292,7 @@ func TestSendRawInput_AFrameThatAnswersNothingKeepsTheElicitation(t *testing.T) 
 
 	// A frame that answers no request carries no request id, so it changes no
 	// bookkeeping and the pending card is still withdrawn at the completion.
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"user","message":{"role":"user","content":"hello"}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"user","message":{"role":"user","content":"hello"}}`)}))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
 	assert.Equal(t, []string{"r1"}, sink.CanceledControls(), "the entry outlived the input")
 }
@@ -3304,7 +3305,7 @@ func TestSendRawInput_AnAnswerRetiresOnlyItsOwnElicitation(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r2","request":{"subtype":"elicitation","mcp_server_name":"gitlab","message":"Sign in","elicitation_id":"e2"}}`))
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("r1", []byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`))))
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"gitlab","elicitation_id":"e2","uuid":"u-1","session_id":"s-1"}`))
 	assert.Equal(t, []string{"r2"}, sink.CanceledControls(),
@@ -3371,7 +3372,7 @@ func TestClaudeNormalAndErrorResultPreserveOpenToolSpan(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-			require.NoError(t, a.SendInput("run bash", nil))
+			require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 			a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 			a.HandleOutput([]byte(tc.result))
 
@@ -3478,7 +3479,7 @@ func TestClaudeInterruptedResultPersistsClosingRowsBeforeDivider(t *testing.T) {
 		sink := &agenttest.Sink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 42))
 		services.ReportProgress(agent.OutputTailProgress("tool-1", "working...", false))
@@ -3507,7 +3508,7 @@ func TestClaudeInterruptedResultPersistsClosingRowsBeforeDivider(t *testing.T) {
 		sink := &claudeInterruptedRetrySink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}},{"type":"tool_use","id":"tool-2","name":"Bash","input":{"command":"sleep 20"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 12))
 		services.ReportProgress(agent.OutputTailProgress("tool-1", "out1", false))
@@ -3574,7 +3575,7 @@ func TestClaudeIdleInterruptClosesOpenToolsInSequenceAndSuppressesLateResult(t *
 		services := agent.NewProviderServices(sink)
 		a := newClaudeRespondingInterruptAgent(t, services, 2*time.Second)
 
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 42))
 		services.ReportProgress(agent.OutputTailProgress("tool-1", "running...", false))
@@ -3605,7 +3606,7 @@ func TestClaudeIdleInterruptClosesOpenToolsInSequenceAndSuppressesLateResult(t *
 		reserveSink := &claudeReserveErrorSink{ProviderServices: agent.NewProviderServices(sink)}
 		a := newClaudeRespondingInterruptAgent(t, reserveSink, 5*time.Second)
 
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
 
@@ -3621,7 +3622,7 @@ func TestClaudeLateToolProgressAfterForceCloseDoesNotBroadcast(t *testing.T) {
 	sink := &agenttest.Sink{}
 	services := agent.NewProviderServices(sink)
 	a, _ := newClaudeAgentWithStdin(services)
-	require.NoError(t, a.SendInput("run tools", nil))
+	require.NoError(t, agenttest.SendInput(a, "run tools", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[` +
 		`{"type":"tool_use","id":"tool-bash","name":"Bash","input":{"command":"sleep 10"}},` +
 		`{"type":"tool_use","id":"tool-agent","name":"Agent","input":{"description":"sub"}},` +
@@ -3654,7 +3655,7 @@ func TestClaudeProcessExitClosesOpenToolsAndResetsSpans(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-	require.NoError(t, a.SendInput("run bash", nil))
+	require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-exit","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 	a.NoteIntentionalStop()
 	a.finishClaudeProcessExit()
@@ -3676,7 +3677,7 @@ func TestClaudeAbortedResultVariantsAndReplayResetSpans(t *testing.T) {
 		sink := &agenttest.Sink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-cancel","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-cancel", 15))
 		require.Equal(t, int64(15), sink.ProgressSnapshot().OutputBytes)
@@ -3700,7 +3701,7 @@ func TestClaudeAbortedResultVariantsAndReplayResetSpans(t *testing.T) {
 		sink := &agenttest.Sink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-abort","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-abort", 20))
 
@@ -3731,7 +3732,7 @@ func TestClaudeAbortedResultVariantsAndReplayResetSpans(t *testing.T) {
 				t.Parallel()
 				sink := &agenttest.Sink{}
 				a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-				require.NoError(t, a.SendInput("run bash", nil))
+				require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 				a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-keep","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 				a.HandleOutput([]byte(tc.result))
 
@@ -3773,7 +3774,7 @@ func TestClaudeConversationResetAndSessionChangeResetOpenTools(t *testing.T) {
 		services := agent.NewProviderServices(sink)
 		a := newClaudeRespondingInterruptAgent(t, services, 2*time.Second)
 
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-before-reset","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-before-reset", 33))
 		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
@@ -3798,7 +3799,7 @@ func TestClaudeConversationResetAndSessionChangeResetOpenTools(t *testing.T) {
 		a := newClaudeRespondingInterruptAgent(t, services, 2*time.Second)
 
 		a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"sess-1"}`))
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","session_id":"sess-1","message":{"content":[{"type":"tool_use","id":"tool-s1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-s1", 44))
 		a.HandleOutput([]byte(`{"type":"result","session_id":"sess-1","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
@@ -3846,7 +3847,7 @@ func TestClaudeDelayedIdleCloseDoesNotWipeReplacementSession(t *testing.T) {
 	a := newClaudeRespondingInterruptAgent(t, notify, 2*time.Second)
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"sess-1"}`))
-	require.NoError(t, a.SendInput("run bash", nil))
+	require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","session_id":"sess-1","message":{"content":[{"type":"tool_use","id":"tool-s1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 	a.HandleOutput([]byte(`{"type":"result","session_id":"sess-1","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
 

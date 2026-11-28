@@ -1,7 +1,11 @@
 package crdt
 
 import (
+	"fmt"
+	"slices"
 	"sort"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -14,38 +18,94 @@ type TabRef struct {
 	TabID   string
 }
 
-// FindRootWorkspace walks nodeID's parent_id chain to a registered
-// workspace root and returns the workspace_id, or "" when the chain
-// doesn't terminate at a known root (orphan, cycle, or workspace the
-// caller can't see). Works against both `UserCrdtState` and
-// `UserMaterialized` because both protos store their workspaces and
-// nodes as `map<string, WorkspaceContentsRecord>` / `map<string,
-// NodeRecord>` with identical shapes.
+// FindNodeRoot walks nodeID's parent_id chain to a registered workspace root
+// or live floating-window root and returns the owning workspace ID, the
+// matched root node ID, and whether that root belongs to a floating window.
+// Returns ("", "", false) when the chain does not end at a known root (orphan,
+// cycle, tombstoned floating window, or workspace the caller cannot see).
+// Works against both `UserCrdtState` and `UserMaterialized` because both
+// protos store their workspaces, floating windows, and nodes with identical
+// shapes.
 //
-// A visited set guards against malformed parent cycles; projection
-// repair already breaks cycles before they reach here, but defense in
-// depth is cheap.
+// A visited set guards against malformed parent cycles; projection repair
+// already breaks cycles before they reach here, but defense in depth is cheap.
+func FindNodeRoot(
+	nodes map[string]*leapmuxv1.NodeRecord,
+	workspaces map[string]*leapmuxv1.WorkspaceContentsRecord,
+	floatingWindows map[string]*leapmuxv1.FloatingWindowRecord,
+	nodeID string,
+) (workspaceID, rootNodeID string, isFloating bool) {
+	if nodeID == "" {
+		return "", "", false
+	}
+	type rootEntry struct {
+		workspaceID string
+		isFloating  bool
+	}
+	roots := make(map[string]rootEntry, len(workspaces)+len(floatingWindows))
+	// Workspace roots are indexed first so a workspace root takes precedence
+	// over a floating-window root on collision, matching project.go.
+	wsIDs := make([]string, 0, len(workspaces))
+	for wsID := range workspaces {
+		wsIDs = append(wsIDs, wsID)
+	}
+	sort.Strings(wsIDs)
+	for _, wsID := range wsIDs {
+		if rid := workspaces[wsID].GetRootNodeId(); rid != "" {
+			if _, taken := roots[rid]; !taken {
+				roots[rid] = rootEntry{workspaceID: wsID}
+			}
+		}
+	}
+	fwIDs := make([]string, 0, len(floatingWindows))
+	for fwID := range floatingWindows {
+		fwIDs = append(fwIDs, fwID)
+	}
+	sort.Strings(fwIDs)
+	for _, fwID := range fwIDs {
+		fw := floatingWindows[fwID]
+		if fw == nil || !HLCIsZero(fw.GetTombstoneAt()) {
+			continue
+		}
+		rid := fw.GetRootNodeId()
+		wsID := fw.GetWorkspaceId().GetValue()
+		if rid == "" || wsID == "" {
+			continue
+		}
+		if _, taken := roots[rid]; !taken {
+			roots[rid] = rootEntry{workspaceID: wsID, isFloating: true}
+		}
+	}
+	visited := map[string]bool{}
+	cur := nodeID
+	for cur != "" {
+		if visited[cur] {
+			return "", "", false
+		}
+		visited[cur] = true
+		if entry, ok := roots[cur]; ok {
+			return entry.workspaceID, cur, entry.isFloating
+		}
+		rec, ok := nodes[cur]
+		if !ok || rec == nil {
+			return "", "", false
+		}
+		cur = rec.GetParentId()
+	}
+	return "", "", false
+}
+
+// FindRootWorkspace walks nodeID's parent_id chain to a registered workspace
+// root or live floating-window root and returns the workspace_id, or "" when
+// the chain does not end at a known root.
 func FindRootWorkspace(
 	nodes map[string]*leapmuxv1.NodeRecord,
 	workspaces map[string]*leapmuxv1.WorkspaceContentsRecord,
+	floatingWindows map[string]*leapmuxv1.FloatingWindowRecord,
 	nodeID string,
 ) string {
-	if nodeID == "" {
-		return ""
-	}
-	rootToWS := make(map[string]string, len(workspaces))
-	for wsID, ws := range workspaces {
-		if rid := ws.GetRootNodeId(); rid != "" {
-			rootToWS[rid] = wsID
-		}
-	}
-	return resolveParentChain(rootToWS, nodeID, func(id string) (string, bool) {
-		rec, ok := nodes[id]
-		if !ok || rec == nil {
-			return "", false
-		}
-		return rec.GetParentId(), true
-	})
+	wsID, _, _ := FindNodeRoot(nodes, workspaces, floatingWindows, nodeID)
+	return wsID
 }
 
 // resolveParentChain walks startID through `parentOf` until it hits a
@@ -138,18 +198,153 @@ func buildChildrenIndex(state *leapmuxv1.UserCrdtState, includeTombstoned bool) 
 	return idx
 }
 
-// LiveOrderedChildren returns parentID's live children sorted by their
-// LexoRank position register so heir-finding sees the same left/upper
-// ordering the renderer does. `index` is the already-built parent →
-// children adjacency from LiveChildrenByParent.
-func LiveOrderedChildren(state *leapmuxv1.UserMaterialized, index map[string][]string, parentID string) []string {
-	ids := append([]string(nil), index[parentID]...)
-	sort.SliceStable(ids, func(i, j int) bool {
-		a := state.GetNodes()[ids[i]].GetPosition().GetValue()
-		b := state.GetNodes()[ids[j]].GetPosition().GetValue()
-		return a < b
+// GridCellPosition returns the position register for one grid cell.
+func GridCellPosition(row, col int) string {
+	return fmt.Sprintf("%d,%d", row, col)
+}
+
+// compareLayoutString follows the browser's UTF-16 code unit order without
+// allocating temporary rune or UTF-16 slices.
+func compareLayoutString(a, b string) int {
+	var pendA, pendB uint16
+	for {
+		var uA, uB uint16
+		var okA, okB bool
+		uA, a, pendA, okA = nextUTF16Unit(a, pendA)
+		uB, b, pendB, okB = nextUTF16Unit(b, pendB)
+		if !okA && !okB {
+			return 0
+		}
+		if !okA {
+			return -1
+		}
+		if !okB {
+			return 1
+		}
+		if uA != uB {
+			if uA < uB {
+				return -1
+			}
+			return 1
+		}
+	}
+}
+
+func nextUTF16Unit(s string, pending uint16) (unit uint16, rest string, nextPending uint16, ok bool) {
+	if pending != 0 {
+		return pending, s, 0, true
+	}
+	if len(s) == 0 {
+		return 0, "", 0, false
+	}
+	if s[0] < utf8.RuneSelf {
+		return uint16(s[0]), s[1:], 0, true
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	if r <= 0xFFFF {
+		return uint16(r), s[size:], 0, true
+	}
+	r1, r2 := utf16.EncodeRune(r)
+	return uint16(r1), s[size:], uint16(r2), true
+}
+
+// LayoutChildIDs returns the children in display order. It takes a live
+// child index from either the canonical or materialized state. The result
+// includes an empty ID for each vacant grid cell.
+func LayoutChildIDs(nodes map[string]*leapmuxv1.NodeRecord, index map[string][]string, parentID string) []string {
+	parent := nodes[parentID]
+	if parent.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_GRID {
+		return gridChildIDs(nodes, index[parentID], parent.GetRows().GetValue(), parent.GetCols().GetValue())
+	}
+	ids := slices.Clone(index[parentID])
+	slices.SortFunc(ids, func(a, b string) int {
+		if order := compareLayoutString(nodes[a].GetPosition().GetValue(), nodes[b].GetPosition().GetValue()); order != 0 {
+			return order
+		}
+		return compareLayoutString(a, b)
 	})
 	return ids
+}
+
+func gridChildIDs(nodes map[string]*leapmuxv1.NodeRecord, children []string, rows, cols uint32) []string {
+	if rows > MaxGridDimension || cols > MaxGridDimension {
+		return nil
+	}
+	ordered := make([]string, int(rows*cols))
+	for _, childID := range children {
+		idx, ok := parseGridCellIndex(nodes[childID].GetPosition().GetValue(), rows, cols)
+		if !ok {
+			continue
+		}
+		if other := ordered[idx]; other == "" || compareLayoutString(childID, other) < 0 {
+			ordered[idx] = childID
+		}
+	}
+	return ordered
+}
+
+// parseGridCellIndex parses canonical GridCellPosition ("row,col") strings into
+// a flat row-major slice index for a rows x cols grid. Non-canonical strings
+// (leading zeros, signs, whitespace, or out-of-range coordinates) return false.
+func parseGridCellIndex(pos string, rows, cols uint32) (int, bool) {
+	row, rest, ok := parseCanonicalGridCoord(pos)
+	if !ok || len(rest) == 0 || rest[0] != ',' || row >= rows {
+		return 0, false
+	}
+	col, tail, ok := parseCanonicalGridCoord(rest[1:])
+	if !ok || len(tail) != 0 || col >= cols {
+		return 0, false
+	}
+	return int(row*cols + col), true
+}
+
+func parseCanonicalGridCoord(s string) (uint32, string, bool) {
+	if len(s) == 0 || s[0] < '0' || s[0] > '9' {
+		return 0, "", false
+	}
+	if s[0] == '0' {
+		if len(s) > 1 && s[1] >= '0' && s[1] <= '9' {
+			return 0, "", false
+		}
+		return 0, s[1:], true
+	}
+	var v uint32
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		v = v*10 + uint32(s[i]-'0')
+		if v > MaxGridDimension {
+			return 0, "", false
+		}
+		i++
+	}
+	return v, s[i:], true
+}
+
+// FirstLiveLayoutLeaf returns the first leaf that can receive a tab. It
+// skips vacant cells and visits each node at most once.
+func FirstLiveLayoutLeaf(nodes map[string]*leapmuxv1.NodeRecord, index map[string][]string, rootID string) string {
+	visited := map[string]bool{}
+	var walk func(string) string
+	walk = func(nodeID string) string {
+		if nodeID == "" || visited[nodeID] {
+			return ""
+		}
+		visited[nodeID] = true
+		node := nodes[nodeID]
+		if node == nil || !HLCIsZero(node.GetTombstoneAt()) {
+			return ""
+		}
+		if node.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_LEAF {
+			return nodeID
+		}
+		for _, childID := range LayoutChildIDs(nodes, index, nodeID) {
+			if leaf := walk(childID); leaf != "" {
+				return leaf
+			}
+		}
+		return ""
+	}
+	return walk(rootID)
 }
 
 // DescendantsLeavesFirst enumerates every live descendant of nodeID
@@ -237,8 +432,8 @@ func LiveTabsInSubtree(state *leapmuxv1.UserMaterialized, subtreeRoot string) []
 // returns the first leaf in the left/upper-preferred adjacent sibling.
 // Returns "" when no heir exists (single-leaf workspace, malformed tree).
 //
-// Mirrors frontend/src/stores/layout.store.ts:findHeirTileId so the
-// CLI and the CloseTileDialog drop tabs in the same place.
+// It follows the browser's display order and skips vacant cells because
+// they have no tile that can receive a tab.
 func FindHeirTileID(state *leapmuxv1.UserMaterialized, closingTileID, rootNodeID string) string {
 	if rootNodeID == "" || closingTileID == "" {
 		return ""
@@ -251,7 +446,8 @@ func FindHeirTileID(state *leapmuxv1.UserMaterialized, closingTileID, rootNodeID
 	for i := len(path) - 2; i >= 0; i-- {
 		parentID := path[i]
 		childID := path[i+1]
-		siblings := LiveOrderedChildren(state, index, parentID)
+		siblings := LayoutChildIDs(state.GetNodes(), index, parentID)
+		siblings = slices.DeleteFunc(siblings, func(id string) bool { return id == "" })
 		idx := -1
 		for j, s := range siblings {
 			if s == childID {
@@ -271,7 +467,7 @@ func FindHeirTileID(state *leapmuxv1.UserMaterialized, closingTileID, rootNodeID
 		if adj == "" {
 			continue
 		}
-		if leaf := firstLeafID(state, index, adj); leaf != "" {
+		if leaf := FirstLiveLayoutLeaf(state.GetNodes(), index, adj); leaf != "" {
 			return leaf
 		}
 	}
@@ -299,31 +495,4 @@ func buildPathToNode(state *leapmuxv1.UserMaterialized, index map[string][]strin
 	}
 	*out = (*out)[:len(*out)-1]
 	return false
-}
-
-// firstLeafID walks the leftmost descent of subtreeRoot (preferring the
-// first LexoRank-ordered child at each level) and returns the first
-// LEAF-kinded id encountered. Used by FindHeirTileID to pick the
-// destination leaf inside a sibling subtree. Returns "" when the
-// subtree is malformed (no live leaves).
-func firstLeafID(state *leapmuxv1.UserMaterialized, index map[string][]string, subtreeRoot string) string {
-	rec := state.GetNodes()[subtreeRoot]
-	if rec == nil || !HLCIsZero(rec.GetTombstoneAt()) {
-		return ""
-	}
-	// Tile kinds: LEAF returns itself; SPLIT/GRID descend into the
-	// first ordered live child. UNSPECIFIED is treated as a leaf — in
-	// practice that only happens for the workspace root that was minted
-	// before kind was first written, which projection-side renders as
-	// a leaf anyway.
-	kind := rec.GetKind().GetValue()
-	if kind == leapmuxv1.NodeKind_NODE_KIND_LEAF || kind == leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED {
-		return subtreeRoot
-	}
-	for _, childID := range LiveOrderedChildren(state, index, subtreeRoot) {
-		if leaf := firstLeafID(state, index, childID); leaf != "" {
-			return leaf
-		}
-	}
-	return ""
 }

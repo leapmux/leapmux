@@ -569,14 +569,15 @@ export async function exerciseAgentStartup(
       })
     }
     else {
-      // The dispatcher reserves this item, then waits for native startup before it can deliver the input.
+      // The Worker holds the input until tab creation records a startup outcome.
       await retryUntilPass(async () => {
         const queue = await readQueue()
+        expect(queue.activeTurn).toBe(false)
         expect(
-          queue.items.filter(item => item.text.includes(prompt)).map(item => ({ state: item.state, reserved: queue.activeTurn && !queue.activeTurnSteerable })),
-          'the Worker reserves the queued prompt while native startup waits',
+          queue.items.filter(item => item.text.includes(prompt)).map(item => item.state),
+          'the Worker holds the queued prompt while native startup waits',
         ).toEqual([
-          { state: AgentInputState.DISPATCHING, reserved: true },
+          AgentInputState.QUEUED,
         ])
       })
       await expect(context.page.getByTestId('agent-input-queue')).toContainText(prompt)

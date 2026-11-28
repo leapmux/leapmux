@@ -56,16 +56,9 @@ func (writer *kimiConversationRecordWriter) correctTextCompletion(correction kim
 	if err != nil {
 		return err
 	}
-	fields, err := kimiConversationProviderFields(stored.Content.Supplemental)
+	current, _, err := view.resolveLatestView(stored.Content.Supplemental)
 	if err != nil {
 		return err
-	}
-	current := view
-	if latest := fields[contracts.KimiConversationSupplementRoot]; len(latest) != 0 {
-		current, err = decodeKimiConversationRecord(latest)
-		if err != nil || !view.acceptsView(current) {
-			return fmt.Errorf("the Kimi text rendering data has another identity")
-		}
 	}
 	if current.record.SessionID != correction.sessionID || current.record.AgentID != correction.agentID ||
 		current.record.TurnID != correction.turnID || current.record.Role != contracts.KimiConversationRecordRoleItem ||

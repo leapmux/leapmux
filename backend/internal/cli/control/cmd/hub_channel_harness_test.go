@@ -47,6 +47,7 @@ type hubChannelHarness struct {
 	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
 	leapmuxv1connect.UnimplementedUserCRDTHandler
 	leapmuxv1connect.UnimplementedWorkerManagementServiceHandler
+	leapmuxv1connect.UnimplementedSectionServiceHandler
 
 	url string
 
@@ -72,6 +73,16 @@ type hubChannelHarness struct {
 // --hub. disp answers the worker calls of harnessWorkerProcedures.
 func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher) *hubChannelHarness {
 	t.Helper()
+	return startHubChannelHarnessWithMode(t, hub, disp, false)
+}
+
+func startLocalHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher) *hubChannelHarness {
+	t.Helper()
+	return startHubChannelHarnessWithMode(t, hub, disp, true)
+}
+
+func startHubChannelHarnessWithMode(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher, localSocket bool) *hubChannelHarness {
+	t.Helper()
 	clearRemoteEnv(t)
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 	t.Setenv("LEAPMUX_CONTROL_TOKEN", "")
@@ -93,10 +104,15 @@ func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.Loc
 	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, h)
 	leapmuxv1connect.RegisterUserCRDTHandler(connectServer, h)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, h)
+	leapmuxv1connect.RegisterSectionServiceHandler(connectServer, h)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	mux.HandleFunc(contracts.WSRouteChannel, h.relayFrames)
-	h.url = hubtransporttest.NewServer(t, mux).URL
+	if localSocket {
+		h.url = hubtransporttest.NewSocketServer(t, "local-hub-ch", mux)
+	} else {
+		h.url = hubtransporttest.NewServer(t, mux).URL
+	}
 
 	require.NoError(t, control.SaveCredentials(h.url, control.CredentialFile{
 		HubURL: h.url, AccessToken: "lmx_test_secret", UserID: hubChannelUser,
@@ -109,13 +125,21 @@ func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.Loc
 // catch-all, so a new procedure under test goes here.
 var harnessWorkerProcedures = []string{
 	leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure,
+	leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure,
+	leapmuxv1connect.WorkerAgentInputServiceDeleteQueuedAgentInputProcedure,
 	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure,
+	leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure,
 	leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
+	leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure,
+	leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure,
 	leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure,
 	leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure,
+	leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure,
 	leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
+	leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure,
 	leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 	leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure,
+	leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure,
 }
 
 // harnessDispatcher answers the Ping that tunnel.OpenChannel sends to verify a
@@ -285,6 +309,24 @@ func (h *hubChannelHarness) SubmitOps(ctx context.Context, req *leapmuxv1.Submit
 
 func (h *hubChannelHarness) GetWorker(ctx context.Context, req *leapmuxv1.GetWorkerRequest) (*leapmuxv1.GetWorkerResponse, error) {
 	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure, req, &leapmuxv1.GetWorkerResponse{})
+}
+
+// The list calls that resolve a short target, answered by the same stub.
+
+func (h *hubChannelHarness) ListWorkspaces(ctx context.Context, req *leapmuxv1.ListWorkspacesRequest) (*leapmuxv1.ListWorkspacesResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, req, &leapmuxv1.ListWorkspacesResponse{})
+}
+
+func (h *hubChannelHarness) ListTabs(ctx context.Context, req *leapmuxv1.ListTabsRequest) (*leapmuxv1.ListTabsResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkspaceServiceListTabsProcedure, req, &leapmuxv1.ListTabsResponse{})
+}
+
+func (h *hubChannelHarness) ListWorkers(ctx context.Context, req *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkerManagementServiceListWorkersProcedure, req, &leapmuxv1.ListWorkersResponse{})
+}
+
+func (h *hubChannelHarness) ListSections(ctx context.Context, req *leapmuxv1.ListSectionsRequest) (*leapmuxv1.ListSectionsResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.SectionServiceListSectionsProcedure, req, &leapmuxv1.ListSectionsResponse{})
 }
 
 // answerFromRecordingHub answers one typed hub RPC through hub, the stub that

@@ -1,0 +1,51 @@
+{{- /*
+  Render a provider SVG icon with automatic dark-mode contrast synthesis.
+  Monochrome dark fills/strokes and two-tone OpenCode icons receive a
+  generated dark SVG variant swapped via CSS (.dark).
+
+  Params (dict):
+    provider: provider map from checklist.json (requires id, icon, label)
+    size:     integer pixel width/height (default 24)
+    alt:      img alt text (defaults to provider.label; pass "" for decorative)
+    lazy:     bool (default true)
+*/ -}}
+{{- $provider := .provider -}}
+{{- $size := .size | default 24 -}}
+{{- $alt := $provider.label -}}
+{{- if isset . "alt" -}}
+  {{- $alt = .alt -}}
+{{- end -}}
+{{- $lazy := true -}}
+{{- if isset . "lazy" -}}
+  {{- $lazy = .lazy -}}
+{{- end -}}
+{{- $assetPath := strings.TrimPrefix "/" $provider.icon -}}
+{{- $lightURL := $assetPath | relURL -}}
+{{- $darkIcon := "" -}}
+{{- with resources.Get $assetPath -}}
+  {{- $svg := .Content -}}
+  {{- $darkSvg := $svg -}}
+  {{- $darkSvg = replace $darkSvg `fill="#24292f"` `fill="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `fill="#24292e"` `fill="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `stroke="#24292e"` `stroke="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `fill="#1a1a1a"` `fill="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `fill="#10151f"` `fill="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `fill="#000"` `fill="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `fill="#000000"` `fill="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `fill="currentColor"` `fill="#bebbb7"` -}}
+  {{- $darkSvg = replace $darkSvg `stroke="currentColor"` `stroke="#bebbb7"` -}}
+  {{- if and (strings.Contains $darkSvg `fill="#CFCECD"`) (strings.Contains $darkSvg `fill="#656363"`) -}}
+    {{- $darkSvg = replace $darkSvg `fill="#CFCECD"` `fill="#4B4646"` -}}
+    {{- $darkSvg = replace $darkSvg `fill="#656363"` `fill="#F1ECEC"` -}}
+  {{- end -}}
+  {{- if ne $darkSvg $svg -}}
+    {{- $darkRes := resources.FromString (printf "icons/agents/dark/%s.svg" $provider.id) $darkSvg -}}
+    {{- $darkIcon = $darkRes.RelPermalink -}}
+  {{- end -}}
+{{- end -}}
+{{- if $darkIcon -}}
+<img class="lm-theme-light" src="{{ $lightURL }}" width="{{ $size }}" height="{{ $size }}" alt="{{ $alt }}"{{ if $lazy }} loading="lazy"{{ end }} decoding="async">
+<img class="lm-theme-dark" src="{{ $darkIcon }}" width="{{ $size }}" height="{{ $size }}" alt="{{ $alt }}"{{ if $lazy }} loading="lazy"{{ end }} decoding="async">
+{{- else -}}
+<img src="{{ $lightURL }}" width="{{ $size }}" height="{{ $size }}" alt="{{ $alt }}"{{ if $lazy }} loading="lazy"{{ end }} decoding="async">
+{{- end -}}

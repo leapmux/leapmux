@@ -142,6 +142,10 @@ func (a *Agent) routeAskDialog(head dialogHeader) bool {
 			ID:        head.ID,
 			Questions: call.questions,
 		}
+		var receipt agent.NativeInputReceipt
+		if reply := a.replyOutputLocked(); reply != nil {
+			receipt = reply.receipt
+		}
 		a.Mu.Unlock()
 		payload, err := json.Marshal(request)
 		if err != nil {
@@ -153,7 +157,9 @@ func (a *Agent) routeAskDialog(head dialogHeader) bool {
 			a.handOffAsk(call)
 			return false
 		}
-		if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: head.ID, Payload: payload}); err != nil {
+		if err := a.sink.PublishControlRequest(agent.ControlRequest{
+			AgentSessionID: receipt.SessionID, NativeTurnID: receipt.TurnID, RequestID: head.ID, Payload: payload,
+		}); err != nil {
 			slog.Error("omp publish question request", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
 			a.cancelDialog(head.ID)
 		}
@@ -208,7 +214,7 @@ func (a *Agent) answerAsk(data []byte) error {
 		// A handed-off call's first dialog is gone: the reader cancelled it, omp
 		// withdrew it, or it was never published. omp ignores an answer to it.
 		a.Mu.Unlock()
-		return fmt.Errorf("the question %q is no longer open", answer.ID)
+		return fmt.Errorf("%w: the question %q is no longer open", agent.ErrControlRequestNotPending, answer.ID)
 	}
 	plan, err := newAskPlan(call.questions, answer.Answers)
 	if err != nil {
@@ -245,7 +251,7 @@ func (a *Agent) cancelAsk(requestID string, data []byte, stop agent.StopContext)
 	}
 	if call.handOff || call.plan != nil {
 		a.Mu.Unlock()
-		return true, fmt.Errorf("the question %q is no longer open", requestID)
+		return true, fmt.Errorf("%w: the question %q is no longer open", agent.ErrControlRequestNotPending, requestID)
 	}
 	call.handOff = true
 	a.Mu.Unlock()
@@ -358,7 +364,7 @@ func newAskPlan(questions []contracts.OhMyPiAskQuestion, answers []contracts.OhM
 			}
 			desired[value] = true
 		}
-		custom := strings.TrimSpace(answer.Custom) != ""
+		custom := agent.TrimJavaScriptSpace(answer.Custom) != ""
 		if custom && !question.AllowCustomText {
 			return nil, fmt.Errorf("question %q accepts selected options only", question.ID)
 		}
@@ -386,7 +392,8 @@ func newAskPlan(questions []contracts.OhMyPiAskQuestion, answers []contracts.OhM
 			continue
 		}
 		// Disabled preselected options remain in the native count. Only offered
-		// choices can be toggled; the browser sends the desired enabled values.
+		// choices can be toggled; the answer states the desired enabled values
+		// (AnswerControlRequest).
 		for _, option := range question.Options {
 			value := askOptionValue(option)
 			if initial[value] && !desired[value] {

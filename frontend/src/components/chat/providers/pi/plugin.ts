@@ -6,7 +6,6 @@ import { piCompactionBoundary, piCompactionStart, piNotificationEntry } from './
 import { piOutputFilePaths } from './extractors/outputFilePaths'
 import { piResultDivider } from './extractors/resultDivider'
 import { piExtractRow } from './extractors/row'
-import { piControls } from './pluginControls'
 import { resolvePiMessage } from './resolveMessage'
 import { piValidateResumeHandle } from './resumeHandle'
 import { piContextUsageFromMessage } from './sessionMetadata'
@@ -27,7 +26,6 @@ const piPlugin: ProviderPlugin = {
     notificationEntry: piNotificationEntry,
     extractDivider: piResultDivider,
   },
-  controls: piControls,
   session: {
     contextUsageFromMessage: piContextUsageFromMessage,
     compactionBoundaryFromMessage: piCompactionBoundary,

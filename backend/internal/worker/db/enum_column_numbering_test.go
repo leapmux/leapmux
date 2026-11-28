@@ -23,6 +23,10 @@ import (
 // The hub store checks its schema with the same method.
 const workerMigration = "migrations/00001_initial.sql"
 
+// agentMessageOrdinal is the AgentInputKind ordinal that the sender tie CHECKs
+// of agent_input_queue_items spell as a literal.
+const agentMessageOrdinal = int64(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE)
+
 type integerEnumColumn struct {
 	label, update, read string
 	minimum, maximum    int64
@@ -50,7 +54,14 @@ func integerEnumColumns() []integerEnumColumn {
 		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5, nil, false},
 		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2, nil, false},
 		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2, nil, false},
-		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 8, nil, false},
+		// The tie CHECKs demand a sender exactly when the kind is an agent
+		// message, so the update writes the sender from the same bound
+		// parameter (?1 appears three times). A range refusal then cannot hide
+		// behind a tie refusal.
+		{"agent_input_queue_items.kind", fmt.Sprintf("UPDATE agent_input_queue_items SET kind = ?1, sender_tab_id = CASE WHEN ?1 = %[1]d THEN 'enum-sender' ELSE '' END, sender_provider = CASE WHEN ?1 = %[1]d THEN %[2]d ELSE NULL END", agentMessageOrdinal, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, agentMessageOrdinal, nil, false},
+		// A provider needs a sender tab and the agent-message kind beside it,
+		// and NULL needs neither, so the update writes all three from ?1.
+		{"agent_input_queue_items.sender_provider", fmt.Sprintf("UPDATE agent_input_queue_items SET sender_provider = ?1, sender_tab_id = CASE WHEN ?1 IS NULL THEN '' ELSE 'enum-sender' END, kind = CASE WHEN ?1 IS NULL THEN 1 ELSE %d END", agentMessageOrdinal), "SELECT typeof(sender_provider), sender_provider FROM agent_input_queue_items", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil, true},
 		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5, nil, false},
 		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4, nil, false},
 		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2, nil, false},
@@ -62,6 +73,10 @@ func integerEnumColumns() []integerEnumColumn {
 		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3, nil, false},
 		{"agent_background_tasks.role", "UPDATE agent_background_tasks SET role = ?", "SELECT typeof(role), role FROM agent_background_tasks", 1, 3, nil, false},
 		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8, nil, false},
+		{"semantic_event_feed_heads.tab_type", "UPDATE semantic_event_feed_heads SET tab_type = ?", "SELECT typeof(tab_type), tab_type FROM semantic_event_feed_heads", 1, 2, nil, false},
+		{"semantic_event_tails.tab_type", "UPDATE semantic_event_tails SET tab_type = ? WHERE tab_id = 'enum-tail-only'", "SELECT typeof(tab_type), tab_type FROM semantic_event_tails WHERE tab_id = 'enum-tail-only'", 1, 2, nil, false},
+		// CHECK ties gap_reason IS NULL to length(fact) > 0, so update both from ?1.
+		{"semantic_event_entries.gap_reason", "UPDATE semantic_event_entries SET gap_reason = ?1, fact = CASE WHEN ?1 IS NULL THEN X'01' ELSE X'' END", "SELECT typeof(gap_reason), gap_reason FROM semantic_event_entries", 2, 3, nil, true},
 	}
 }
 
@@ -75,13 +90,18 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO agents (id) VALUES ('enum-owner')",
 		"INSERT INTO tab_creations(user_id,worker_id,tab_id,tab_type,request_hash,request_payload,publication_payload,runtime_payload,state) VALUES ('user','worker','tab',1,zeroblob(32),X'',X'',X'',1)",
 		"INSERT INTO messages (id, agent_id, seq, source, content, content_compression) VALUES ('enum-message', 'enum-owner', 1, 1, X'7b7d', 1)",
-		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('enum-input', 'enum-owner', 1, 1, 1)",
+		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state, idempotency_key) VALUES ('enum-input', 'enum-owner', 1, 1, 1, 'enum-key')",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-response', 'enum-owner', 1, 'enum-request', 'enum-claim', 1)",
 		"INSERT INTO control_response_payloads (delivery_id) VALUES ('enum-response')",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-unattached', 'enum-owner', 1, 'unattached', '', 1)",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-review', 'enum-owner', 2, 'review', 'session', 1)",
 		"INSERT INTO auto_review_approval_payloads (delivery_id, message_id) VALUES ('enum-review', 'enum-message')",
 		"INSERT INTO agent_todos (agent_id, seq, content, status) VALUES ('enum-owner', 1, 'todo', 1)",
+		"INSERT INTO semantic_event_journal (singleton, worker_id, owner_user_id, journal_id, cursor_key, dirty, entry_count, payload_bytes) VALUES (1, 'enum-worker', 'enum-user', 'enum-journal', zeroblob(32), 0, 1, 1)",
+		"INSERT INTO semantic_event_feed_heads (tab_type, singleton, high_sequence) VALUES (1, 1, 1)",
+		"INSERT INTO semantic_event_tails (tab_type, tab_id, tab_stream_id, high_sequence, floor_sequence, last_observed_unix_millis) VALUES (1, 'enum-tab', 'enum-stream', 1, 0, 1)",
+		"INSERT INTO semantic_event_tails (tab_type, tab_id, tab_stream_id, high_sequence, floor_sequence, last_observed_unix_millis) VALUES (1, 'enum-tail-only', 'enum-stream-only', 0, 0, 1)",
+		"INSERT INTO semantic_event_entries (tab_type, tab_id, sequence, feed_sequence, observed_unix_millis, fact, gap_reason) VALUES (1, 'enum-tab', 1, 1, 1, X'', 2)",
 	} {
 		_, err := store.ExecContext(t.Context(), statement)
 		require.NoError(t, err)
@@ -157,7 +177,8 @@ func TestEnumColumnIntegerChecksMatchTheirStorage(t *testing.T) {
 	for _, column := range integerEnumColumns() {
 		labels = append(labels, column.label)
 	}
-	labels = append(labels, "messages.source", "messages.mark_type", "messages.assembled_kind", "messages.completion", "agent_input_queue_state.pause_reason", "agent_input_queue_state.pause_owner")
+	labels = append(labels, "messages.source", "messages.mark_type", "messages.assembled_kind", "messages.completion", "messages.input_turn_outcome", "agent_input_queue_state.pause_reason", "agent_input_queue_state.pause_owner")
+	labels = append(labels, "native_agent_inputs.retired_outcome", "native_agent_reply_turns.outcome")
 	for _, label := range labels {
 		t.Run(label, func(t *testing.T) {
 			table, column, found := strings.Cut(label, ".")
@@ -217,8 +238,8 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 	require.NoError(t, err)
 	insert := func(id string, order int64, kind int64, state int64) error {
 		_, err := connection.ExecContext(t.Context(),
-			`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, state) VALUES (?, 'retry-owner', ?, ?, 'Continue.', ?)`,
-			id, order, kind, state)
+			`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, state, idempotency_key) VALUES (?, 'retry-owner', ?, ?, 'Continue.', ?, ?)`,
+			id, order, kind, state, "key-"+id)
 		return err
 	}
 	require.NoError(t, insert("retry-usage", 1, usageLimit, queued))
@@ -230,6 +251,11 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 	_, err = connection.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET state = ? WHERE id = 'retry-failed'`, queued)
 	assert.ErrorContains(t, err, "UNIQUE constraint failed",
 		"a queued retry conflicts with a FAILED row of the same kind, so cancellation must delete the row")
+
+	_, err = connection.ExecContext(t.Context(), `DELETE FROM agent_input_queue_items WHERE id = 'retry-usage'`)
+	require.NoError(t, err)
+	require.NoError(t, insert("retry-usage-3", 4, usageLimit, queued),
+		"deleting a queued retry leaves room for the next pending retry of its kind")
 }
 
 // The tie CHECK binds follow_up text to follow_up_kind: a queued kind without
@@ -246,6 +272,45 @@ func TestFollowUpTieCheckTiesTextToKind(t *testing.T) {
 	assert.NoError(t, err, "control feedback with its text must remain valid")
 	_, err = store.ExecContext(t.Context(), "UPDATE control_response_payloads SET follow_up = '', follow_up_kind = 0")
 	assert.NoError(t, err, "no follow-up input must remain valid")
+}
+
+// The two tie CHECKs bind the sender of a queued input to its kind: an agent
+// message must state the tab that sent it, and an input of any other kind must
+// state no sender. The first CHECK spells AGENT_INPUT_KIND_AGENT_MESSAGE as a
+// literal, so this test also ties the literal to the proto ordinal.
+func TestAgentMessageSenderTieCheck(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 1, strings.Count(statementsOfMigration(t), fmt.Sprintf("CHECK ((kind = %d) = (sender_tab_id <> ''))", agentMessageOrdinal)),
+		"the tie CHECK's literal is the AGENT_INPUT_KIND_AGENT_MESSAGE ordinal")
+	assert.Equal(t, 1, strings.Count(statementsOfMigration(t), "CHECK ((sender_tab_id = '') = (sender_provider IS NULL))"))
+
+	store := integerEnumStore(t)
+	update := func(kind int64, tabID string, provider any) error {
+		_, err := store.ExecContext(t.Context(),
+			"UPDATE agent_input_queue_items SET kind = ?, sender_tab_id = ?, sender_provider = ?", kind, tabID, provider)
+		return err
+	}
+	claude := int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	userMessage := int64(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)
+
+	assert.ErrorContains(t, update(agentMessageOrdinal, "", nil), "CHECK constraint failed", "an agent message with no sender must fail")
+	assert.ErrorContains(t, update(agentMessageOrdinal, "sender-tab", nil), "CHECK constraint failed", "a sender tab with no provider must fail")
+	assert.ErrorContains(t, update(agentMessageOrdinal, "", claude), "CHECK constraint failed", "a provider with no sender tab must fail")
+	assert.ErrorContains(t, update(userMessage, "sender-tab", claude), "CHECK constraint failed", "a user message must state no sender")
+	assert.NoError(t, update(agentMessageOrdinal, "sender-tab", claude), "an agent message with its sender must remain valid")
+	assert.NoError(t, update(userMessage, "", nil), "a user message with no sender must remain valid")
+
+	// The sender's title belongs to the sender: a row with no sender holds no
+	// title, and a sender without a title (an agent that the user never named)
+	// is valid.
+	setTitle := func(title string) error {
+		_, err := store.ExecContext(t.Context(), "UPDATE agent_input_queue_items SET sender_title = ?", title)
+		return err
+	}
+	assert.ErrorContains(t, setTitle("Fix flaky spec"), "CHECK constraint failed", "a title with no sender must fail")
+	require.NoError(t, update(agentMessageOrdinal, "sender-tab", claude))
+	assert.NoError(t, setTitle("Fix flaky spec"), "an agent message keeps its sender's title")
+	assert.NoError(t, setTitle(""), "a sender with no title must remain valid")
 }
 
 func TestGoalUnknownStorageAcceptsFiveAndRejectsDerivedDormantSix(t *testing.T) {
@@ -315,6 +380,25 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.MessageCompletion_name),
 		},
 		{
+			column:       "messages.input_turn_outcome",
+			check:        "CHECK (input_turn_outcome BETWEEN 1 AND 4)",
+			lastAccepted: int32(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputTurnOutcome_name),
+		},
+		{
+			column:       "native_agent_inputs.retired_outcome",
+			check:        "CHECK (retired_outcome BETWEEN 1 AND 4)",
+			lastAccepted: int32(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputTurnOutcome_name),
+		},
+		{
+			column:       "native_agent_reply_turns.outcome",
+			check:        "CHECK (outcome BETWEEN 1 AND 3)",
+			lastAccepted: int32(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputTurnOutcome_name),
+			narrower:     "a canonical reply stores an observed native outcome; unproved is a local retirement",
+		},
+		{
 			column:       "agent_input_queue_state.pause_reason",
 			check:        "CHECK (pause_reason BETWEEN 1 AND 7)",
 			lastAccepted: int32(leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY),
@@ -322,9 +406,15 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_items.kind",
-			check:        "CHECK (kind BETWEEN 1 AND 8)",
-			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR),
+			check:        "CHECK (kind BETWEEN 1 AND 9)",
+			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
+		},
+		{
+			column:       "agent_input_queue_items.sender_provider",
+			check:        "CHECK (sender_provider BETWEEN 1 AND 31)",
+			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentProvider_name),
 		},
 		{
 			column:       "control_response_payloads.follow_up_kind",
@@ -421,8 +511,9 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ContentCompression_name),
 		},
 		{
-			// agents is the one table that stores a provider: a message and a
-			// control answer report the provider of their agent.
+			// agents stores the provider of each agent: a message and a control
+			// answer report the provider of their agent. The sender_provider
+			// entry above is the one copy, of the agent that sent a message.
 			column:       "agents.agent_provider",
 			check:        "CHECK (agent_provider BETWEEN 1 AND 31)",
 			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI),
@@ -642,6 +733,46 @@ func TestTabCreationEnumColumnsMatchProto(t *testing.T) {
 	assert.Equal(t, int32(4), lastDeclaredOrdinal(t, leapmuxv1.TabType_name))
 	assert.Contains(t, declaration, "CHECK (cancel_action BETWEEN 1 AND 2)")
 	assert.Equal(t, int32(2), lastDeclaredOrdinal(t, leapmuxv1.WorktreeAction_name))
+}
+
+func TestSemanticEventEnumColumnsMatchProto(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(workerMigration)
+	require.NoError(t, err)
+	schema := string(data)
+	table := func(name string) string {
+		_, suffix, found := strings.Cut(schema, "CREATE TABLE "+name+" (")
+		require.True(t, found)
+		declaration, _, found := strings.Cut(suffix, "\n);")
+		require.True(t, found)
+		return declaration
+	}
+	assert.Contains(t, table("semantic_event_tails"), fmt.Sprintf(
+		"CHECK (tab_type BETWEEN %d AND %d)",
+		leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabType_TAB_TYPE_TERMINAL))
+	assert.Contains(t, table("semantic_event_feed_heads"), fmt.Sprintf(
+		"CHECK (tab_type BETWEEN %d AND %d)",
+		leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabType_TAB_TYPE_TERMINAL))
+	_, terminalRetirement, found := strings.Cut(schema, "CREATE TRIGGER semantic_event_terminal_closed")
+	require.True(t, found)
+	terminalRetirement, _, found = strings.Cut(terminalRetirement, "\nEND;")
+	require.True(t, found)
+	assert.Contains(t, terminalRetirement, fmt.Sprintf("WHERE tab_type = %d AND tab_id = NEW.id", leapmuxv1.TabType_TAB_TYPE_TERMINAL))
+	_, agentRetirement, found := strings.Cut(schema, "CREATE TRIGGER semantic_event_agent_closed")
+	require.True(t, found)
+	agentRetirement, _, found = strings.Cut(agentRetirement, "\nEND;")
+	require.True(t, found)
+	assert.Contains(t, agentRetirement, fmt.Sprintf("WHERE tab_type = %d AND tab_id = NEW.id", leapmuxv1.TabType_TAB_TYPE_AGENT))
+	assert.Contains(t, table("semantic_event_entries"), fmt.Sprintf(
+		"CHECK (gap_reason BETWEEN %d AND %d)",
+		leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP,
+		leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT))
+	// Pin the full enum extent so adding a new SemanticWatchGapReason ordinal
+	// forces an explicit decision on whether it is stored or reader-derived.
+	assert.Equal(t, int32(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_HISTORY_UNAVAILABLE),
+		lastDeclaredOrdinal(t, leapmuxv1.SemanticWatchGapReason_name))
+	assert.Equal(t, int32(1), int32(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION))
+	assert.Equal(t, int32(4), int32(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_HISTORY_UNAVAILABLE))
 }
 
 func TestBackgroundTaskCanonicalRolePredicatesMatchProtoOrdinals(t *testing.T) {

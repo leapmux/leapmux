@@ -76,14 +76,6 @@ func (h *sqliteTestHelper) SetLastActiveAt(ctx context.Context, id string, lastA
 	return h.setEntityTime(ctx, store.EntitySessions, "last_active_at", id, lastActiveAt)
 }
 
-func (h *sqliteTestHelper) SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error {
-	return h.setEntityTime(ctx, store.EntityWorkers, "deregistering_at", workerID, deregisteringAt)
-}
-
-func (h *sqliteTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error {
-	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.DialectSQLite, workerID)
-}
-
 // setEntityTime binds t as a SQLiteTime and writes it to a fixed column on a
 // validated entity table. This matches every production write path
 // byte-for-byte: Go-bound writes route through the same SQLiteTime.Value(), and

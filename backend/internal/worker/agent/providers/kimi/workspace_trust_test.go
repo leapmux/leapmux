@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,14 +43,14 @@ func newKimiTrustRigAtSequence(t *testing.T, trusted bool, sequence int) *kimiTe
 
 // answerKimiWorkspaceTrust sends the saved answer to the question, as the worker
 // forwards it.
-func answerKimiWorkspaceTrust(t *testing.T, a *Agent, requestID, decision string) error {
+func answerKimiWorkspaceTrust(t *testing.T, a *Agent, sink *agenttest.ControlSink, requestID, decision string) error {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{
 		"subtype": "success", "request_id": requestID,
 		"response": map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
 	}})
 	require.NoError(t, err)
-	return a.SendRawInput(raw, agent.StopContext{})
+	return a.SendRawInput(sink.Answer(requestID, raw))
 }
 
 // A workspace that Kimi Code does not trust gets one question, which names the
@@ -81,8 +82,8 @@ func TestKimiRuntimeReplacementReplacesAnUnansweredWorkspaceTrustQuestion(t *tes
 	published := fresh.sink.LastPublishedControl()
 	assert.Equal(t, providerkit.WorkspaceTrustRequestID("session_2"), published.RequestID)
 	assert.Equal(t, "session_2", published.AgentSessionID)
-	require.ErrorIs(t, answerKimiWorkspaceTrust(t, old.agent, oldRequestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
-	require.ErrorIs(t, answerKimiWorkspaceTrust(t, fresh.agent, oldRequestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
+	require.ErrorIs(t, answerKimiWorkspaceTrust(t, old.agent, old.sink, oldRequestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
+	require.ErrorIs(t, answerKimiWorkspaceTrust(t, fresh.agent, old.sink, oldRequestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
 	assert.Empty(t, old.fake.requestsTo("POST "+kimiTrustRoute))
 	assert.Empty(t, fresh.fake.requestsTo("POST "+kimiTrustRoute))
 }
@@ -160,7 +161,7 @@ func TestKimiWorkspaceTrustTrustAsksForANewProcess(t *testing.T) {
 	requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
 	require.False(t, rig.agent.NativeTurnRestartRequired())
 	published := len(rig.sink.TurnStates())
-	require.NoError(t, answerKimiWorkspaceTrust(t, rig.agent, requestID, contracts.WorkspaceTrustDecisionTrust))
+	require.NoError(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust))
 	assert.Len(t, rig.fake.requestsTo("POST "+kimiTrustRoute), 1)
 	assert.True(t, rig.agent.NativeTurnRestartRequired())
 	require.Greater(t, len(rig.sink.TurnStates()), published, "the turn state is republished, so the Worker reads the restart")
@@ -183,12 +184,12 @@ func TestKimiWorkspaceTrustKeepsTheQuestionAfterARefusedGrant(t *testing.T) {
 			rig.fake.reply("POST "+kimiTrustRoute, reply)
 			rig.agent.checkWorkspaceTrust()
 			requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
-			require.Error(t, answerKimiWorkspaceTrust(t, rig.agent, requestID, contracts.WorkspaceTrustDecisionTrust))
+			require.Error(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust))
 			assert.False(t, rig.agent.NativeTurnRestartRequired())
 			assert.Empty(t, rig.sink.CanceledControls())
 
 			rig.fake.reply("POST "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": true}})
-			require.NoError(t, answerKimiWorkspaceTrust(t, rig.agent, requestID, contracts.WorkspaceTrustDecisionTrust))
+			require.NoError(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust))
 			assert.True(t, rig.agent.NativeTurnRestartRequired())
 		})
 	}
@@ -201,7 +202,7 @@ func TestKimiWorkspaceTrustRejectAsksNoMore(t *testing.T) {
 	rig := newKimiTrustRig(t, false)
 	rig.agent.checkWorkspaceTrust()
 	requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
-	require.NoError(t, answerKimiWorkspaceTrust(t, rig.agent, requestID, contracts.WorkspaceTrustDecisionReject))
+	require.NoError(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionReject))
 	assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
 	assert.False(t, rig.agent.NativeTurnRestartRequired())
 	assert.Equal(t, []string{requestID}, rig.sink.CanceledControls())
@@ -218,29 +219,132 @@ func TestKimiWorkspaceTrustRetiresWithTheSessionControls(t *testing.T) {
 	rig.agent.withdrawAllControls()
 	requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
 	assert.Contains(t, rig.sink.CanceledControls(), requestID)
-	require.ErrorIs(t, answerKimiWorkspaceTrust(t, rig.agent, requestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
+	require.ErrorIs(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
 	assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
 }
 
-// The plugin turns the browser's neutral decision into the saved answer that the
+// The plugin turns the neutral allow or deny into the saved answer that the
 // agent reads.
 func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTrustRig(t, false)
 	rig.agent.checkWorkspaceTrust()
 	request := rig.sink.LastPublishedControl()
+	// The question states no key, so the session that the Worker stores with
+	// it gives the key that the agent published it under.
+	agenttest.AssertPublishedControlKeys(t, kimiProvider{}, rig.sink)
 	for behavior, want := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		content, err := json.Marshal(map[string]any{"response": map[string]any{
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},
 		}})
 		require.NoError(t, err)
-		resolution := kimiProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID: request.RequestID, RequestPayload: request.Payload, ResponseContent: content,
-		})
+		resolution := agenttest.ResolveAnswerInSession(kimiProvider{}, request.Payload, request.AgentSessionID, request.RequestID, agent.ControlAnswer{Content: content})
 		require.False(t, resolution.Withhold, behavior)
 		assert.Contains(t, string(resolution.Content), `"decision":"`+want+`"`, behavior)
 	}
+}
+
+// Stop and Wait retire an open or blocked workspace-trust check without a
+// manual call to withdrawAllControls.
+func TestKimiShutdownRetiresWorkspaceTrust(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Stop retires an open workspace-trust question and Wait stays idempotent", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		exitOnShutdown(rig)
+		rig.agent.checkWorkspaceTrust()
+		requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
+		require.Equal(t, requestID, rig.sink.LastPublishedControl().RequestID)
+
+		rig.agent.Stop()
+		assert.Equal(t, []string{requestID}, rig.sink.CanceledControls())
+		require.ErrorContains(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust), "agent is stopped")
+		raw, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{
+			"subtype": "success", "request_id": requestID,
+			"response": map[string]string{contracts.WorkspaceTrustFieldDecision: contracts.WorkspaceTrustDecisionTrust},
+		}})
+		require.NoError(t, err)
+		handled, err := rig.agent.workspaceTrust.Answer(rig.agent.sink, kimiWorkspaceTrustHost{rig.agent}, rig.sink.Answer(requestID, raw))
+		require.True(t, handled)
+		require.ErrorIs(t, err, providerkit.ErrWorkspaceTrustClosed)
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
+
+		require.NoError(t, rig.agent.Wait())
+		assert.Equal(t, []string{requestID}, rig.sink.CanceledControls())
+	})
+
+	t.Run("Wait retires an open workspace-trust question after unexpected exit", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		rig.agent.checkWorkspaceTrust()
+		requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
+		require.Equal(t, requestID, rig.sink.LastPublishedControl().RequestID)
+
+		rig.agent.SimulateExitForTest()
+		require.NoError(t, rig.agent.Wait())
+		assert.Equal(t, []string{requestID}, rig.sink.CanceledControls())
+		require.ErrorIs(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
+	})
+
+	t.Run("Stop retires a blocked workspace-trust check", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		exitOnShutdown(rig)
+		entered, held := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(held) })
+		defer release()
+		rig.fake.reply("GET "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": false}, BeforeReply: func() { close(entered); <-held }})
+		completed := make(chan struct{})
+		go func() { rig.agent.checkWorkspaceTrust(); close(completed) }()
+		ctx := testutil.DeadlineContext(t)
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("the workspace-trust check did not reach its native HTTP read")
+		}
+
+		rig.agent.Stop()
+		release()
+		select {
+		case <-completed:
+		case <-ctx.Done():
+			t.Fatal("the retired workspace-trust check did not finish")
+		}
+		assert.Zero(t, rig.sink.PublishedControlCount(), "a late HTTP result cannot publish after Stop")
+		require.NoError(t, rig.agent.Wait())
+		assert.Zero(t, rig.sink.PublishedControlCount())
+	})
+
+	t.Run("Wait retires a blocked workspace-trust check after unexpected exit", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		entered, held := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(held) })
+		defer release()
+		rig.fake.reply("GET "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": false}, BeforeReply: func() { close(entered); <-held }})
+		completed := make(chan struct{})
+		go func() { rig.agent.checkWorkspaceTrust(); close(completed) }()
+		ctx := testutil.DeadlineContext(t)
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("the workspace-trust check did not reach its native HTTP read")
+		}
+
+		rig.agent.SimulateExitForTest()
+		require.NoError(t, rig.agent.Wait())
+		release()
+		select {
+		case <-completed:
+		case <-ctx.Done():
+			t.Fatal("the retired workspace-trust check did not finish")
+		}
+		assert.Zero(t, rig.sink.PublishedControlCount(), "a late HTTP result cannot publish after Wait")
+		assert.Len(t, rig.fake.requestsTo("GET "+kimiTrustRoute), 1)
+	})
 }

@@ -1,4 +1,4 @@
-// Package listenset answers one question: given the address `-listen` gives
+// Package listenset answers one question: given the address `--listen` gives
 // and the extra addresses an administrator stored, which sockets does the hub
 // bind?
 //
@@ -35,7 +35,7 @@ const (
 	KindAnyV6
 	// KindIP is one IP literal, with an optional zone ("fe80::1%en0").
 	KindIP
-	// KindHost is a name. Only `-listen` can produce one -- the settings
+	// KindHost is a name. Only `--listen` can produce one -- the settings
 	// validator refuses it, and the address picker cannot offer it -- and it
 	// covers nothing but an identical address, because the names it resolves
 	// to are not knowable here.
@@ -93,8 +93,8 @@ func Parse(s string) (Addr, error) {
 	}
 	// net.LookupPort, not strconv.Atoi, because net.Listen resolves the port
 	// this way and Parse must accept every address that used to bind. It reads
-	// the machine's services table, so `-listen 127.0.0.1:http` gives 80, and
-	// it maps an EMPTY port to 0, so `-listen localhost:` still asks the
+	// the machine's services table, so `--listen 127.0.0.1:http` gives 80, and
+	// it maps an EMPTY port to 0, so `--listen localhost:` still asks the
 	// operating system to choose. It also does the range check, and refuses a
 	// service name the machine does not list.
 	//
@@ -106,7 +106,7 @@ func Parse(s string) (Addr, error) {
 		return Addr{}, fmt.Errorf("listen address %q has no usable port %q: %w", s, portStr, err)
 	}
 	// Port 0 is ACCEPTED here, and it means "let the operating system choose".
-	// It is what a test harness or an embedded launcher passes to -listen to
+	// It is what a test harness or an embedded launcher passes to --listen to
 	// get a free port, so refusing it would take a working option away.
 	//
 	// It is refused where it is meaningless instead: a STORED extra address of
@@ -214,7 +214,7 @@ func (a Addr) DialAddr() string {
 // A NAME is false, with one exception. The addresses a name resolves to are not
 // knowable here, so the safe answer to "is this exposed" is yes -- but
 // "localhost" identifies this machine by a convention every operating system ships,
-// and `-listen localhost:4327` exposes nothing. Calling it exposed would demand
+// and `--listen localhost:4327` exposes nothing. Calling it exposed would demand
 // a password for a hub nobody else can reach. httpsec.LoopbackHosts is where
 // that convention lives, and reading it here keeps the two answers from
 // drifting apart. The residual: an operator who redefines localhost in
@@ -243,7 +243,7 @@ func (a Addr) IsLoopback() bool {
 // "::" takes the IPv4 stack as well, so "[::]:4327" and "192.168.1.24:4327"
 // collide although neither covers the other here. A sysctl is not readable
 // from an address, so Merge cannot fold that pair; the bind fails with
-// EADDRINUSE and the caller reports it. Only a hand-written -listen reaches
+// EADDRINUSE and the caller reports it. Only a hand-written --listen reaches
 // the case, because the address picker offers "*" and never "::".
 func (a Addr) Covers(b Addr) bool {
 	if a.port != b.port {
@@ -360,12 +360,12 @@ func Strings(addrs []Addr) []string {
 type Source string
 
 const (
-	// SourceListen is the address -listen gives, bound alone.
+	// SourceListen is the address --listen gives, bound alone.
 	SourceListen Source = contracts.AddressSourceListen
 	// SourceExtra is an address the extra_listen_addresses setting adds.
 	SourceExtra Source = contracts.AddressSourceExtra
 	// SourceMerged is an address that is BOTH: the operator asked for it and
-	// it also covers what -listen gives, so one socket serves both. The panel
+	// it also covers what --listen gives, so one socket serves both. The panel
 	// says so, because "127.0.0.1:4327 is gone" and "127.0.0.1:4327 is served
 	// by *:4327" look identical in a list that only states what is bound.
 	SourceMerged Source = contracts.AddressSourceMerged

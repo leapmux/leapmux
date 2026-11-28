@@ -1,5 +1,12 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
-import { codingAgentMatrixDimensions, verifyCodingAgentProviderCount, verifyCodingAgentSite } from './verify-coding-agent-site.mjs'
+import { codingAgentMatrixDimensions, findDuplicateTopH1, findOrphanH2Headings, verifyBuiltSiteArtifacts, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker, verifyInternalAnchors, verifyReverseProxySamples } from './verify-coding-agent-site.mjs'
+
+const require = createRequire(new URL('../frontend/package.json', import.meta.url))
+const { JSDOM } = require('jsdom')
 
 const SUPPORT_STATES = [
   { id: 'supported', symbol: '✅', label: 'Supported' },
@@ -540,5 +547,620 @@ describe('verifyCodingAgentProviderCount', () => {
   it('rejects a page without the generated count', () => {
     expect(verifyCodingAgentProviderCount('<p>Three providers.</p>', checklist))
       .toContain('the page contains no generated provider count')
+  })
+})
+
+describe('verifyCodingAgentTicker', () => {
+  const tickerHtml = `
+    <div class="agent-ticker" role="region" aria-label="Supported coding agents" style="--agent-ticker-count: 1;">
+      <div class="agent-ticker-viewport">
+        <div class="agent-ticker-track">
+          <ul class="agent-ticker-list" role="list">
+            <li class="agent-ticker-item">
+              <a class="agent-ticker-link" href="https://pi.dev/" title="Pi">
+                <img src="/icons/agents/pi.svg" width="24" height="24" alt="Pi">
+              </a>
+            </li>
+          </ul>
+          <ul class="agent-ticker-list" role="list" aria-hidden="true">
+            <li class="agent-ticker-item">
+              <a class="agent-ticker-link" href="https://pi.dev/" tabindex="-1" title="Pi">
+                <img src="/icons/agents/pi.svg" width="24" height="24" alt="">
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `
+
+  it('accepts a dynamic ticker matching every source provider', () => {
+    expect(verifyCodingAgentTicker(tickerHtml, checklist)).toEqual([])
+  })
+
+  it('rejects a page without a ticker', () => {
+    expect(verifyCodingAgentTicker('<h1>Hello</h1>', checklist))
+      .toContain('the page contains no coding-agent ticker')
+  })
+
+  it('rejects a ticker with a mismatched count CSS variable', () => {
+    expect(verifyCodingAgentTicker(tickerHtml.replace('--agent-ticker-count: 1;', '--agent-ticker-count: 99;'), checklist))
+      .toContain('ticker count property is "99", expected "1"')
+  })
+
+  it('rejects a ticker with a missing or mismatched provider', () => {
+    expect(verifyCodingAgentTicker(tickerHtml.replace('src="/icons/agents/pi.svg" width="24" height="24" alt="Pi"', 'src="/icons/agents/other.svg" width="24" height="24" alt="Pi"'), checklist))
+      .toContain('ticker provider 1 differs from pi')
+    expect(verifyCodingAgentTicker(tickerHtml.replace('href="https://pi.dev/" title="Pi"', 'href="https://example.com/" title="Pi"'), checklist))
+      .toContain('ticker provider 1 has the wrong URL')
+  })
+
+  it('accepts a dynamic ticker with light/dark icon pairs', () => {
+    const themedHtml = tickerHtml
+      .replace('<img src="/icons/agents/pi.svg" width="24" height="24" alt="Pi">', '<img class="agent-ticker-icon-light" src="/icons/agents/pi.svg" width="24" height="24" alt="Pi"><img class="agent-ticker-icon-dark" src="/icons/agents/dark/pi.svg" width="24" height="24" alt="Pi">')
+      .replace('<img src="/icons/agents/pi.svg" width="24" height="24" alt="">', '<img class="agent-ticker-icon-light" src="/icons/agents/pi.svg" width="24" height="24" alt=""><img class="agent-ticker-icon-dark" src="/icons/agents/dark/pi.svg" width="24" height="24" alt="">')
+    expect(verifyCodingAgentTicker(themedHtml, checklist)).toEqual([])
+    expect(verifyCodingAgentTicker(themedHtml.replace('/icons/agents/dark/pi.svg', '/icons/agents/dark/wrong.svg'), checklist))
+      .toContain('ticker provider 1 has a mismatched dark icon')
+  })
+
+  it('rejects an accessible or focusable duplicate loop track', () => {
+    expect(verifyCodingAgentTicker(tickerHtml.replace('aria-hidden="true"', ''), checklist))
+      .toContain('duplicate ticker track must be hidden from assistive technology')
+    expect(verifyCodingAgentTicker(tickerHtml.replace('tabindex="-1"', ''), checklist))
+      .toContain('duplicate ticker provider 1 must not be keyboard focusable')
+    expect(verifyCodingAgentTicker(tickerHtml.replace('alt=""', 'alt="Pi"'), checklist))
+      .toContain('duplicate ticker provider 1 must have an empty alt')
+  })
+})
+
+describe('findOrphanH2Headings', () => {
+  it('flags an H2 heading followed directly by another H2 heading or EOF', () => {
+    const md = [
+      '# Title',
+      '',
+      '## Empty section',
+      '',
+      '## Populated section',
+      '',
+      'Some text.',
+      '',
+      '## Trailing empty',
+    ].join('\n')
+
+    expect(findOrphanH2Headings(md)).toEqual([
+      { line: 3, heading: '## Empty section' },
+      { line: 9, heading: '## Trailing empty' },
+    ])
+  })
+
+  it('allows an H2 heading followed by an H3 subsection and ignores headings inside fenced code blocks', () => {
+    const md = [
+      '## Run your first parallel session',
+      '',
+      '### Launch LeapMux in solo mode',
+      '',
+      '```bash',
+      '## comment line one',
+      '## comment line two',
+      '```',
+    ].join('\n')
+
+    expect(findOrphanH2Headings(md)).toEqual([])
+  })
+})
+
+describe('verifyBuiltSiteArtifacts', () => {
+  function createMockConfigReference() {
+    const metrics = Array.from({ length: 21 }, (_, index) => ({
+      name: `leapmux_metric_${index + 1}`,
+      type: 'Counter',
+      labels: [],
+      meaning: `Metric ${index + 1}.`,
+      group: 'HTTP and RPC metrics',
+    }))
+    return {
+      schema_version: 1,
+      source: '/docs/admin/configuration-reference/',
+      sections: [
+        {
+          id: 'hub-configuration',
+          title: 'Hub configuration',
+          groups: [
+            {
+              id: 'server-options',
+              title: 'Server options',
+              columns: ['config_key'],
+              entries: [
+                { config_key: 'listen' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'worker-configuration',
+          title: 'Worker configuration',
+          groups: [
+            {
+              id: 'worker-options',
+              title: 'Worker options',
+              columns: ['config_key'],
+              entries: [
+                { config_key: 'name' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'storage-backends',
+          title: 'Storage backends',
+          groups: [
+            {
+              id: 'sqlite-default',
+              title: 'SQLite (default)',
+              columns: ['config_key'],
+              entries: [
+                { config_key: 'storage.sqlite.path' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'prometheus-metrics',
+          title: 'Prometheus metrics',
+          groups: [
+            {
+              id: 'http-and-rpc-metrics',
+              title: 'HTTP and RPC metrics',
+              columns: ['metric'],
+              entries: [
+                { metric: 'leapmux_metric_1' },
+              ],
+            },
+          ],
+        },
+      ],
+      metrics,
+    }
+  }
+
+  function createMockPublicDir() {
+    const dir = mkdtempSync(join(tmpdir(), 'leapmux-site-artifacts-'))
+    const dirs = [
+      'docs/getting-started/quick-start',
+      'docs/getting-started/concepts',
+      'docs/admin/configuration',
+      'docs/admin/encryption-and-data',
+      'docs/admin/recover',
+      'docs/admin/reverse-proxy',
+      'docs/admin/starting-and-stopping',
+      'docs/recipes/parallel-agents',
+      'docs/reference/faq',
+      'docs/reference/supported-agents',
+      'docs/reference/commands',
+      'download',
+      'changelog',
+      'pagefind',
+      'vendor/asciinema-player',
+    ]
+    for (const relDir of dirs)
+      mkdirSync(join(dir, relDir), { recursive: true })
+
+    writeFileSync(join(dir, 'docs/getting-started/quick-start/index.md'), [
+      '# Quick Start',
+      '',
+      '## Run your first parallel session',
+      '',
+      '### Launch LeapMux in solo mode',
+      '### Create a workspace and start your first agent',
+      '### Open a second agent and a shell terminal side by side',
+      '### Send prompts, tune settings, and inspect diffs',
+      '',
+      'Done.',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/encryption-and-data/index.md'), [
+      '# Encryption & Data',
+      '',
+      '### Generate a new active key version',
+      '### Restart the Hub',
+      '### Re-encrypt existing persistent rows',
+      '### Remove the retired key version (optional)',
+      '### Stop the Hub and affected Workers',
+      '### Restore the database and matching `encryption.key`',
+      '### Start the Hub and verify Workers',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/reverse-proxy/index.md'), [
+      '# Reverse Proxy',
+      '',
+      '### Bind the Hub to loopback',
+      '### Set the public URL, secure cookies, and trusted proxies',
+      '### Register Workers against the external HTTPS URL',
+      '### Verify HTTPS, HTTP/2, and `/metrics` protection',
+      '### Register and start a Worker through the proxy',
+      '',
+      '```nginx',
+      'proxy_set_header Upgrade $http_upgrade;',
+      'proxy_set_header Host $host;',
+      'return 301 https://$host$request_uri;',
+      'proxy_set_header X-Forwarded-Proto $scheme;',
+      '```',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/recover/index.md'), [
+      '# Recovery',
+      '',
+      '> **Warning:** First paragraph.',
+      '>',
+      '> Passing the top-level directory creates an orphan database.',
+    ].join('\n'))
+    writeFileSync(join(dir, 'download/index.md'), '# Download LeapMux\n\nClean markdown.\n')
+    writeFileSync(join(dir, 'changelog/index.md'), '# Changelog\n\n## 2026-11-01 — Release\n')
+    writeFileSync(join(dir, 'docs/admin/starting-and-stopping/index.md'), [
+      '# Starting and Stopping',
+      '',
+      '### Stop and disable the old service',
+      '### Move or restore the directory',
+      '### Start the instance at the new path',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/reference/faq/index.md'), '# FAQ\n\nSupported: Pi\n')
+    writeFileSync(join(dir, 'docs/reference/supported-agents/index.md'), '# Supported Agents\n\n### Coding agent feature matrix\n')
+    writeFileSync(join(dir, 'docs/reference/commands/index.md'), '# Commands\n\nUse <workspace>.\n')
+    writeFileSync(join(dir, 'llms.txt'), '# LeapMux\n- [Command Reference](https://leapmux.dev/docs/reference/commands/index.md)\n- [Changelog (Overview)](https://leapmux.dev/changelog/index.md)\n')
+    writeFileSync(join(dir, 'llms-small.txt'), '# LeapMux (Core Index)\n- [Concepts & Topologies](https://leapmux.dev/docs/getting-started/concepts/index.md)\n')
+    writeFileSync(join(dir, 'llms-full.txt'), [
+      '# LeapMux — Full Documentation Guides',
+      '# Quick Start',
+      '# Configuration Guide',
+      '# Configuration Reference',
+      '# Security & Authentication',
+      '# Troubleshooting',
+      'proxy_set_header Upgrade $http_upgrade;',
+    ].join('\n\n'))
+    writeFileSync(join(dir, 'config-reference.json'), JSON.stringify(createMockConfigReference()))
+    writeFileSync(join(dir, 'index.html'), [
+      '<meta property="og:image:alt" content="LeapMux">',
+      '<meta property="og:locale" content="en_US">',
+      '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css" integrity="sha384-test" crossorigin="anonymous">',
+      '<style>.lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux{--term-color-foreground:rgb(34 32 30);--term-color-15:#b8bdbe;}</style>',
+      '<video muted loop playsinline preload="none"></video>',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/index.html'), '<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"CollectionPage"},{"@type":"BreadcrumbList"}]}</script>')
+    writeFileSync(join(dir, 'docs/getting-started/concepts/index.html'), '<script src="https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js" integrity="sha384-test" crossorigin="anonymous"></script>')
+    writeFileSync(join(dir, '_headers'), '/*.txt\n  Content-Type: text/plain; charset=utf-8\n\n/*.md\n  Content-Type: text/markdown; charset=utf-8\n')
+    writeFileSync(join(dir, 'docs/admin/configuration/index.html'), '<meta property="article:section" content="Administration">')
+    writeFileSync(join(dir, 'docs/recipes/parallel-agents/index.html'), '<meta property="article:section" content="Workflow Recipes">')
+    writeFileSync(join(dir, 'pagefind/pagefind.js'), '// pagefind')
+    writeFileSync(join(dir, 'vendor/asciinema-player/asciinema-player.min.js'), '// asciinema')
+    writeFileSync(join(dir, 'vendor/asciinema-player/asciinema-player.css'), '/* asciinema */')
+    return dir
+  }
+
+  it('accepts clean Markdown companions, llms.txt, llms-full.txt, config-reference.json, OG metadata, and pruned Pagefind output', () => {
+    const dir = createMockPublicDir()
+    try {
+      expect(verifyBuiltSiteArtifacts(dir, checklist)).toEqual([])
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects unexpanded shortcodes, leaked comments, escaped entities, duplicate OG alt, and FlexSearch JSON', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'docs/reference/commands/index.md'), '<!-- The command tree generates -->\n{{< card >}} &lt;id&gt;\n')
+      writeFileSync(join(dir, 'index.html'), '<meta property="og:image:alt" content="LeapMux — LeapMux">')
+      writeFileSync(join(dir, 'en.search-data.json'), '{}')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('docs/reference/commands/index.md: contains unexpanded Hugo shortcode')
+      expect(errors).toContain('docs/reference/commands/index.md: leaks internal generated-file HTML comment')
+      expect(errors).toContain('docs/reference/commands/index.md: contains unescaped HTML angle-bracket entities')
+      expect(errors).toContain('index.html: og:image:alt duplicates site title')
+      expect(errors).toContain('site/public/en.search-data.json: monolithic FlexSearch JSON should not be emitted when Pagefind is enabled')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects erased step headings and orphan empty H2 headings', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'docs/getting-started/quick-start/index.md'), '# Quick Start\n\n## Run your first parallel session\n\n## Where to go next\n\nDone.\n')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('docs/getting-started/quick-start/index.md: orphan empty heading "## Run your first parallel session" at line 3')
+      expect(errors).toContain('docs/getting-started/quick-start/index.md: missing expected step heading "### Launch LeapMux in solo mode"')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects invalid llms-full.txt, malformed config-reference.json, unpruned Pagefind UI assets, and wrong article:section metadata', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'llms-full.txt'), '# Quick Start\n{{% steps %}}\n')
+      writeFileSync(join(dir, 'config-reference.json'), JSON.stringify({ schema_version: 1, sections: [], metrics: [] }))
+      writeFileSync(join(dir, 'pagefind/pagefind-ui.js'), '// unused stock UI')
+      writeFileSync(join(dir, 'docs/admin/configuration/index.html'), '<meta property="article:section" content="Documentation">')
+      writeFileSync(join(dir, 'docs/recipes/parallel-agents/index.html'), '<meta property="article:section" content="Documentation">')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('llms-full.txt: contains unexpanded Hugo shortcode')
+      expect(errors).toContain('llms-full.txt: missing core guide heading "# Troubleshooting"')
+      expect(errors).toContain('config-reference.json: missing populated section "hub-configuration"')
+      expect(errors).toContain('config-reference.json: found 0 unique leapmux_ metrics (0 total), expected 21')
+      expect(errors).toContain('site/public/pagefind/pagefind-ui.js: unused Pagefind stock UI asset should be pruned')
+      expect(errors).toContain('docs/admin/configuration/index.html: article:section is "Documentation", expected "Administration"')
+      expect(errors).toContain('docs/recipes/parallel-agents/index.html: article:section is "Documentation", expected "Workflow Recipes"')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects mangled nginx variables, broken callouts, raw HTML in Markdown, escaped entities in llms.txt, overlapping _headers, missing SRI, autoplay video, and wrong section JSON-LD', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'docs/admin/reverse-proxy/index.md'), '# Reverse Proxy\n\n### Bind the Hub to loopback\n### Set the public URL, secure cookies, and trusted proxies\n### Register Workers against the external HTTPS URL\n### Verify HTTPS, HTTP/2, and `/metrics` protection\n### Register and start a Worker through the proxy\n\nproxy_set_header Upgrade ;\n')
+      writeFileSync(join(dir, 'docs/admin/recover/index.md'), '# Recovery\n\n> **Warning:** First paragraph.\n\nPassing the top-level directory.\n')
+      writeFileSync(join(dir, 'download/index.md'), '# Download\n<div class="hero"><script>alert(1)</script></div>\n')
+      writeFileSync(join(dir, 'llms.txt'), '# LeapMux\n- [Concepts &amp; Topologies](https://leapmux.dev/docs/reference/commands/index.md)\n')
+      writeFileSync(join(dir, 'llms-small.txt'), '# Core\n- [It&#39;s escaped](https://leapmux.dev/)\n')
+      writeFileSync(join(dir, 'llms-full.txt'), '# Quick Start\n# Control Command Reference\n')
+      writeFileSync(join(dir, 'index.html'), [
+        '<meta property="og:image:alt" content="LeapMux">',
+        '<meta property="og:locale" content="en">',
+        '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css">',
+        '<video autoplay muted loop playsinline></video>',
+      ].join('\n'))
+      writeFileSync(join(dir, 'docs/admin/index.html'), '<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"TechArticle"},{"@type":"BreadcrumbList"}]}</script>')
+      mkdirSync(join(dir, 'docs/admin/security'), { recursive: true })
+      writeFileSync(join(dir, 'docs/admin/security/index.html'), '<meta http-equiv="refresh" content="0; url=https://leapmux.dev/docs/admin/security-and-auth/">')
+      writeFileSync(join(dir, 'docs/getting-started/concepts/index.html'), '<script src="https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js"></script>')
+      writeFileSync(join(dir, '_headers'), '/*.md\n  Content-Type: text/markdown\n  Vary: Accept\n\n/skills/*\n  Content-Type: text/markdown\n')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('docs/admin/reverse-proxy/index.md: missing nginx variable $http_upgrade')
+      expect(errors).toContain('docs/admin/recover/index.md: multi-paragraph callout lost blockquote prefix on continuation paragraph')
+      expect(errors).toContain('download/index.md: leaks raw <script> tag')
+      expect(errors).toContain('download/index.md: leaks raw <div> tag')
+      expect(errors).toContain('llms.txt: missing /changelog/index.md entry')
+      expect(errors).toContain('llms.txt: contains HTML-escaped entities')
+      expect(errors).toContain('llms-small.txt: contains HTML-escaped entities')
+      expect(errors).toContain('llms-full.txt: must exclude Control Command Reference (llms_full: false)')
+      expect(errors).toContain('index.html: og:locale is "en", expected "en_US"')
+      expect(errors).toContain('index.html: contains <video autoplay> attribute; video playback must be gated by JS')
+      expect(errors).toContain('index.html: missing generated asciinema-player terminal theme from contracts/theme-default.json')
+      expect(errors).toContain('index.html: external CDN asset https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css lacks sha384 integrity')
+      expect(errors).toContain('docs/admin/index.html: JSON-LD @type is "TechArticle", expected "CollectionPage"')
+      expect(errors).toContain('docs/admin/security/index.html: contains meta-refresh redirect (Hugo alias); pre-release docs must not keep old URLs working')
+      expect(errors).toContain('docs/getting-started/concepts/index.html: external CDN asset https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js lacks sha384 integrity')
+      expect(errors).toContain('_headers: must define disjoint /*.txt and /*.md rules')
+      expect(errors).toContain('_headers: contains overlapping /skills/* or /agent-guide.md rule that duplicates Content-Type on Cloudflare')
+      expect(errors).toContain('_headers: must not emit Vary: Accept for static assets without content negotiation')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects duplicate H1 in download/index.md and broken backticks in download, reverse-proxy, and glossary HTML', () => {
+    const dir = createMockPublicDir()
+    try {
+      mkdirSync(join(dir, 'docs/reference/glossary'), { recursive: true })
+      writeFileSync(join(dir, 'download/index.md'), '# Download LeapMux\n\n# Download LeapMux\n')
+      writeFileSync(join(dir, 'download/index.html'), '<p id="lm-download-desc">macOS (`.dmg`)</p>')
+      writeFileSync(join(dir, 'docs/admin/reverse-proxy/index.html'), '<td><code>!Path(\\</code>/metrics`)</td>')
+      writeFileSync(join(dir, 'docs/reference/glossary/index.html'), '<p><code>Ctrl+\\`` (or </code>Ctrl)</p>')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('download/index.md: duplicates top-level H1 "Download LeapMux" at line 3')
+      expect(errors).toContain('download/index.html: #lm-download-desc contains unrendered Markdown backticks')
+      expect(errors).toContain('docs/admin/reverse-proxy/index.html: broken backslash-escaped backtick code span in Traefik row')
+      expect(errors).toContain('docs/reference/glossary/index.html: broken backslash-escaped backtick code span in Quake-mode terminal')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses CSS subgrid instead of display: contents on the hero h1', () => {
+    const customCss = readFileSync(resolve(import.meta.dirname, '../site/assets/css/custom.css'), 'utf8')
+    expect(customCss).not.toMatch(/\.hero-headline-with-ticker\s+h1\s*\{[^}]*display\s*:\s*contents\b/)
+    expect(customCss).toMatch(/\.hero-headline-with-ticker\s+h1\s*\{[^}]*grid-template-columns\s*:\s*subgrid\b[^}]+grid-template-rows\s*:\s*subgrid\b/)
+    expect(customCss).not.toContain('--term-color-')
+  })
+
+  it('rejects weak SRI hashes, missing crossorigin, malformed JSON-LD, missing nginx vars in llms-full.txt, and missing asciinema vendor assets', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'index.html'), [
+        '<meta property="og:image:alt" content="LeapMux">',
+        '<meta property="og:locale" content="en_US">',
+        '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css" integrity="sha256-weak">',
+        '<style>.lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux{--term-color-15:#b8bdbe;}</style>',
+      ].join('\n'))
+      writeFileSync(join(dir, 'docs/admin/index.html'), '<script type="application/ld+json">{broken json</script>')
+      writeFileSync(join(dir, 'llms-full.txt'), '# Quick Start\n# Configuration Guide\n# Configuration Reference\n# Security & Authentication\n# Troubleshooting\n')
+      rmSync(join(dir, 'vendor/asciinema-player/asciinema-player.min.js'))
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('index.html: external CDN asset https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css lacks sha384 integrity')
+      expect(errors).toContain('index.html: external CDN asset https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css lacks crossorigin="anonymous"')
+      expect(errors).toContain('docs/admin/index.html: JSON-LD @type is null, expected "CollectionPage"')
+      expect(errors).toContain('llms-full.txt: missing nginx variable $http_upgrade')
+      expect(errors).toContain('site/public/vendor/asciinema-player/asciinema-player.min.js: missing locked asciinema-player bundle asset')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('table-filter.js behavior', () => {
+  const tableFilterSource = readFileSync(resolve(import.meta.dirname, '../site/assets/js/table-filter.js'), 'utf8')
+
+  function mountTableFilter(bodyHtml, url = 'https://leapmux.dev/docs/test/') {
+    const dom = new JSDOM(`<!doctype html><html><body>${bodyHtml}</body></html>`, {
+      url,
+      runScripts: 'dangerously',
+    })
+    dom.window.history.replaceState({ kept: 42 }, '', url)
+    dom.window.eval(tableFilterSource)
+    return dom
+  }
+
+  function widgetMarkup(attrs = '') {
+    return `<div class="lm-table-filter" data-table-filter ${attrs}>
+      <div class="lm-table-filter-bar">
+        <input class="lm-table-filter-input" type="search">
+        <button class="lm-table-filter-clear" type="button" hidden>Clear</button>
+        <span class="lm-table-filter-count"></span>
+      </div>
+      <div class="lm-table-filter-pills"></div>
+      <div class="lm-table-filter-empty" hidden>No matches</div>
+    </div>`
+  }
+
+  it('filters rows, toggles category pills, preserves sibling prose wrappers, and keeps history.state on reset', () => {
+    const dom = mountTableFilter(`
+      <main class="content">
+        ${widgetMarkup()}
+        <h2>Hub</h2>
+        <div class="prose-and-table">
+          <p class="keep-prose">Important note beside table.</p>
+          <table><tbody>
+            <tr><td>listen</td><td>127.0.0.1:4327</td></tr>
+            <tr><td>storage</td><td>sqlite</td></tr>
+          </tbody></table>
+        </div>
+        <h2>Worker</h2>
+        <div class="table-only">
+          <table><tbody>
+            <tr><td>hub_url</td><td>https://hub.example</td></tr>
+          </tbody></table>
+        </div>
+      </main>
+    `)
+    try {
+      const { document, Event, window } = dom.window
+      const input = document.querySelector('.lm-table-filter-input')
+      const clearBtn = document.querySelector('.lm-table-filter-clear')
+      const countEl = document.querySelector('.lm-table-filter-count')
+      const emptyEl = document.querySelector('.lm-table-filter-empty')
+      const pills = Array.from(document.querySelectorAll('.lm-table-filter-pill'))
+
+      expect(countEl.textContent).toBe('Showing 3 of 3 entries')
+      expect(pills.map(p => p.textContent)).toEqual(['All', 'Hub', 'Worker'])
+
+      // Filter to a row in Worker: Hub's wrapper with sibling prose must not be hidden.
+      input.value = 'hub_url'
+      input.dispatchEvent(new Event('input'))
+      expect(countEl.textContent).toBe('Showing 1 of 3 entries')
+      expect(emptyEl.hidden).toBe(true)
+      expect(document.querySelector('.prose-and-table').hidden).toBe(false)
+
+      // Zero matches shows the empty state.
+      input.value = 'nonexistent-key'
+      input.dispatchEvent(new Event('input'))
+      expect(countEl.textContent).toBe('Showing 0 of 3 entries')
+      expect(emptyEl.hidden).toBe(false)
+
+      // Clear resets rows immediately and preserves history.state.
+      clearBtn.click()
+      expect(countEl.textContent).toBe('Showing 3 of 3 entries')
+      expect(window.history.state).toEqual({ kept: 42 })
+
+      // Clicking a category pill filters to that section and toggles aria-pressed.
+      pills[1].click()
+      expect(pills[1].getAttribute('aria-pressed')).toBe('true')
+      expect(countEl.textContent).toBe('Showing 2 of 3 entries')
+    }
+    finally {
+      dom.window.close()
+    }
+  })
+
+  it('hides widgets with an invalid scope selector without breaking sibling widgets and isolates URL params', () => {
+    const dom = mountTableFilter(`
+      <main class="content">
+        ${widgetMarkup('data-table-filter-scope="[invalid"')}
+        ${widgetMarkup('id="w2"')}
+        <table><tbody><tr><td>alpha</td></tr><tr><td>beta</td></tr></tbody></table>
+      </main>
+    `, 'https://leapmux.dev/docs/test/?q2=alpha')
+    try {
+      const { document } = dom.window
+      const [badWidget, goodWidget] = document.querySelectorAll('[data-table-filter]')
+      expect(badWidget.hidden).toBe(true)
+      expect(goodWidget.hidden).toBe(false)
+      expect(goodWidget.querySelector('.lm-table-filter-input').value).toBe('alpha')
+      expect(goodWidget.querySelector('.lm-table-filter-count').textContent).toBe('Showing 1 of 2 entries')
+    }
+    finally {
+      dom.window.close()
+    }
+  })
+})
+
+describe('docs content regression guards', () => {
+  it('detects duplicate top-level H1 headings outside code fences', () => {
+    expect(findDuplicateTopH1('# Download LeapMux\n\n# Download LeapMux\n')).toEqual([
+      { line: 3, heading: 'Download LeapMux' },
+    ])
+    expect(findDuplicateTopH1('# Title\n\n```md\n# Title\n```\n\n~~~md\n# Title\n~~~\n')).toEqual([])
+  })
+
+  it('verifies shipped reverse-proxy sample configs strip Forwarded and decode HAProxy /metrics', () => {
+    const dir = resolve(import.meta.dirname, '../site/content/docs/admin/reverse-proxy')
+    expect(verifyReverseProxySamples(dir)).toEqual([])
+  })
+
+  it('rejects reverse-proxy configs that omit Forwarded stripping, append X-Forwarded-For, or skip HAProxy url_dec', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'leapmux-proxy-test-'))
+    try {
+      writeFileSync(join(dir, 'nginx.conf'), 'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n')
+      writeFileSync(join(dir, 'haproxy.cfg'), 'option forwardfor\nhttp-request deny deny_status 404 if { path /metrics }\n')
+      writeFileSync(join(dir, 'apache.conf'), 'RequestHeader set X-Forwarded-Proto "https"\n')
+      writeFileSync(join(dir, 'Caddyfile'), 'reverse_proxy 127.0.0.1:4327\n')
+      writeFileSync(join(dir, 'traefik-dynamic.yml'), 'http:\n  routers:\n    leapmux:\n      service: leapmux\n')
+      const errors = verifyReverseProxySamples(dir)
+      expect(errors).toContain('reverse-proxy/nginx.conf: must strip client-supplied Forwarded header')
+      expect(errors).toContain('reverse-proxy/nginx.conf: must set X-Forwarded-For from $remote_addr instead of $proxy_add_x_forwarded_for')
+      expect(errors).toContain('reverse-proxy/haproxy.cfg: must strip client-supplied Forwarded header')
+      expect(errors).toContain('reverse-proxy/haproxy.cfg: must set X-Forwarded-For from %[src] instead of appending with option forwardfor')
+      expect(errors).toContain('reverse-proxy/haproxy.cfg: must decode percent-encoded paths (path,url_dec /metrics) before denying /metrics')
+      expect(errors).toContain('reverse-proxy/apache.conf: must unset client-supplied Forwarded header')
+      expect(errors).toContain('reverse-proxy/apache.conf: must unset client-supplied X-Forwarded-For header')
+      expect(errors).toContain('reverse-proxy/Caddyfile: must strip client-supplied Forwarded header with header_up -Forwarded')
+      expect(errors).toContain('reverse-proxy/traefik-dynamic.yml: must attach a strip-forwarded middleware clearing Forwarded')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects broken internal #anchor links and accepts valid ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'leapmux-anchors-test-'))
+    try {
+      mkdirSync(join(dir, 'docs/a'), { recursive: true })
+      mkdirSync(join(dir, 'docs/b'), { recursive: true })
+      writeFileSync(
+        join(dir, 'docs/a/index.html'),
+        [
+          '<h2 id=ok-anchor>OK</h2>',
+          '<a href="/docs/b/#good">ok</a>',
+          '<a href="/docs/b/#missing">bad</a>',
+          '<a href="/docs/gone/#sec">missing page</a>',
+          '<a href="#ok-anchor">self</a>',
+          '<a href="#">empty fragment</a>',
+          '<a href="https://example.com/#external">external</a>',
+        ].join(''),
+      )
+      writeFileSync(join(dir, 'docs/b/index.html'), '<h2 id="good">Good</h2>')
+      expect(verifyInternalAnchors(dir)).toEqual([
+        '/docs/a/: broken internal anchor link "/docs/b/#missing" (missing #missing on /docs/b/)',
+        '/docs/a/: broken internal anchor link "/docs/gone/#sec" (target page /docs/gone/ not found)',
+      ])
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

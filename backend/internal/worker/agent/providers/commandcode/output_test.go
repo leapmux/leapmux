@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -239,10 +241,10 @@ func TestRunErrorPrecedesTheSteerFlush(t *testing.T) {
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(observer))
 	feedEvent(t, a, map[string]any{"type": "text_delta", "delta": "buffered output"})
 	feedEvent(t, a, map[string]any{"type": "run_error", "error": "held error"})
-	require.NoError(t, a.SteerInput("guidance", nil))
-	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 1})
+	require.NoError(t, agenttest.SteerInput(a, testCommandCodeSteer(1, "guidance")))
+	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 1})
 	assert.Equal(t, 1, observer.noticesAtMessage)
-	require.Len(t, sink.SteerEchoReports(), 1)
+	assert.Equal(t, []agent.SteerResolution{testCommandCodeSteerReport(a, 1, "turn_1", agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 }
 
 func TestRunErrorStaysHeldAcrossLiveProgressWithoutARetry(t *testing.T) {
@@ -510,4 +512,58 @@ func TestCompleteTurnClosesForegroundChildrenOnly(t *testing.T) {
 			assert.Equal(t, bgtask.StatusRunning, bgRow.Status, "background child must stay running across turn completion")
 		})
 	}
+}
+
+func TestCommandCodeTurnMetadataUsesTurnDurationMillis(t *testing.T) {
+	t.Parallel()
+	t.Run("omits duration when start is absent", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.clock = testutil.NewQuartzMock(t)
+		a.Mu.Lock()
+		a.turnID = "turn_1"
+		a.turnStarted = time.Time{}
+		a.Mu.Unlock()
+		feedMethod(t, a, contracts.CommandCodeMethodTurnCompleted, map[string]any{"turnId": "turn_1", "stopReason": "end_turn"})
+
+		msgs := sink.Messages()
+		require.Len(t, msgs, 1)
+		var metadata map[string]any
+		require.NoError(t, json.Unmarshal(msgs[0].Metadata, &metadata))
+		assert.NotContains(t, metadata, contracts.MessageMetadataFieldDurationMs)
+	})
+
+	t.Run("omits duration when clock moves backwards", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		clock := testutil.NewQuartzMock(t)
+		a.clock = clock
+		a.Mu.Lock()
+		a.turnID = "turn_1"
+		a.turnStarted = clock.Now().Add(time.Second)
+		a.Mu.Unlock()
+		feedMethod(t, a, contracts.CommandCodeMethodTurnCompleted, map[string]any{"turnId": "turn_1", "stopReason": "end_turn"})
+
+		msgs := sink.Messages()
+		require.Len(t, msgs, 1)
+		var metadata map[string]any
+		require.NoError(t, json.Unmarshal(msgs[0].Metadata, &metadata))
+		assert.NotContains(t, metadata, contracts.MessageMetadataFieldDurationMs)
+	})
+
+	t.Run("records elapsed milliseconds for normal turn", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		clock := testutil.NewQuartzMock(t)
+		a.clock = clock
+		a.startTurn("turn_1")
+		clock.Advance(250 * time.Millisecond)
+		feedMethod(t, a, contracts.CommandCodeMethodTurnCompleted, map[string]any{"turnId": "turn_1", "stopReason": "end_turn"})
+
+		msgs := sink.Messages()
+		require.Len(t, msgs, 1)
+		var metadata map[string]any
+		require.NoError(t, json.Unmarshal(msgs[0].Metadata, &metadata))
+		assert.Equal(t, float64(250), metadata[contracts.MessageMetadataFieldDurationMs])
+	})
 }

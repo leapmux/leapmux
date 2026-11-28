@@ -12,6 +12,10 @@ import (
 type kimiPromptSubmission struct {
 	id, sessionID, receiver string
 	observed                bool
+	replySink               agent.ProviderServices
+	turnID, itemID          string
+	consumingOpener         bool
+	conflictingConsumption  bool
 	ready                   func(agent.CapturedTranscript) error
 	readyCapture            agent.CapturedTranscript
 }
@@ -19,7 +23,21 @@ type kimiPromptSubmission struct {
 func (a *Agent) reservePromptSubmission(sessionID, receiver string) (*kimiPromptSubmission, error) {
 	a.dispatchMu.Lock()
 	defer a.finishDispatch()
-	return a.registerPromptSubmissionLocked(sessionID, receiver)
+	submission, err := a.registerPromptSubmissionLocked(sessionID, receiver)
+	if err == nil {
+		submission.replySink = a.sink
+	}
+	return submission, err
+}
+
+func (submission *kimiPromptSubmission) receipt() agent.NativeInputReceipt {
+	return agent.NativeInputReceipt{SessionID: submission.sessionID, InputID: submission.id}
+}
+
+func (a *Agent) hasObservedPrompt(submission *kimiPromptSubmission) bool {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	return submission.observed && !submission.conflictingConsumption
 }
 
 func (a *Agent) registerPromptSubmissionLocked(sessionID, receiver string) (*kimiPromptSubmission, error) {
@@ -37,16 +55,19 @@ func (a *Agent) registerPromptSubmissionLocked(sessionID, receiver string) (*kim
 	return submission, nil
 }
 
-func (a *Agent) finishPromptSubmission(submission *kimiPromptSubmission, err error) {
+// finishPromptSubmission releases admission and reports any exact native consumption.
+func (a *Agent) finishPromptSubmission(submission *kimiPromptSubmission, err error) bool {
 	a.dispatchMu.Lock()
 	defer a.finishDispatch()
+	consumed := submission.observed && !submission.conflictingConsumption
 	if errors.Is(err, agent.ErrDeliveryUncertain) {
-		return
+		return consumed
 	}
 	a.releaseChildPromptSubmission(submission)
 	if !submission.observed && a.promptSubmissions[submission.id] == submission {
 		delete(a.promptSubmissions, submission.id)
 	}
+	return consumed
 }
 
 // The caller holds dispatchMu. Pending admission and native turn activity are

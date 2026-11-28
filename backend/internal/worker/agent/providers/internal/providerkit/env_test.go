@@ -1,12 +1,16 @@
 package providerkit
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/agentenv"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,11 +89,11 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 	// subset, so EVERY scrub key is exercised and a newly-added key (or a typo
 	// in an oddly-shaped one like "_EXTENSION_OPENCODE_PORT") is automatically
 	// covered.
-	identity := agentIdentityEnvScrubKeys
+	identity := agentenv.IdentityScrubKeys
 	// Must survive: per-provider rc markers / entrypoint re-added BEFORE
 	// FinalizeAgentEnv, plus auth tokens, provider-selection, and config dirs.
 	mustSurvive := []string{
-		"CLAUDECODE", "CODEX_CI", "OPENCODE_CLIENT", "KILO_CLIENT", "CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDECODE", "CODEX_CI", "OPENCODE_CLIENT", "KILO_CLIENT", "MIMOCODE_CLIENT", "CLAUDE_CODE_ENTRYPOINT",
 		"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
 		"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
 		"CLAUDE_CODE_USE_BEDROCK", "CODEX_HOME", "GOOSE_MODEL", "PI_CODING_AGENT_DIR", "GROK_HOME",
@@ -103,7 +107,7 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 			env = append(env, k+"=leaked")
 		}
 		env = append(env,
-			"CLAUDECODE=1", "CODEX_CI=1", "OPENCODE_CLIENT=1", "KILO_CLIENT=1",
+			"CLAUDECODE=1", "CODEX_CI=1", "OPENCODE_CLIENT=1", "KILO_CLIENT=1", "MIMOCODE_CLIENT=1",
 			"CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1",
 			"CLAUDE_CODE_OAUTH_TOKEN=tok", "OPENAI_API_KEY=sk-test", "CODEX_API_KEY=sk-codex",
 			"CLAUDE_CODE_USE_BEDROCK=1", "CODEX_HOME=/home/u/.codex", "GOOSE_MODEL=gpt-x",
@@ -237,6 +241,43 @@ func TestFinalizeAgentEnv_StripsAnInheritedHelperVariable(t *testing.T) {
 	}, agent.Options{})
 	assert.False(t, envutil.HasKey(out, contracts.EnvAgentHelper))
 	assert.Contains(t, out, "PATH=/usr/bin")
+}
+
+// An agent with remote control finds the CLI of its own Worker first on PATH,
+// and LEAPMUX_CONTROL_CLI gives it exactly. The context of a parent Worker that
+// the Worker inherited leaves the environment, its PATH entry included.
+func TestFinalizeAgentEnv_PutsTheControlCLIDirectoryFirstOnPath(t *testing.T) {
+	t.Parallel()
+	parentDir := filepath.Join(t.TempDir(), "parent")
+	cliDir := filepath.Join(t.TempDir(), "cli-1")
+	sep := string(os.PathListSeparator)
+	extra := []string{"LEAPMUX_CONTROL_SOCK=unix:/fresh/sock", controlenv.CLIVariable + "=" + filepath.Join(cliDir, "leapmux")}
+
+	env := FinalizeAgentEnv([]string{
+		"PATH=" + parentDir + sep + "/usr/bin",
+		"LEAPMUX_CONTROL_SOCK=unix:/parent/sock",
+		controlenv.CLIVariable + "=" + filepath.Join(parentDir, "leapmux"),
+	}, agent.Options{ExtraEnv: extra})
+
+	assert.Equal(t, []string{cliDir + sep + "/usr/bin"}, envutil.ValuesFor(env, "PATH"))
+	assert.Equal(t, []string{"unix:/fresh/sock"}, envutil.ValuesFor(env, "LEAPMUX_CONTROL_SOCK"))
+	assert.Equal(t, extra, env[len(env)-len(extra):], "ExtraEnv still lands last, after the pins")
+}
+
+// An agent without remote control gets no LEAPMUX_CONTROL_CLI, so it gets no
+// PATH entry either, and the context of a parent Worker still leaves.
+func TestFinalizeAgentEnv_GivesNoPathEntryWithoutRemoteControl(t *testing.T) {
+	t.Parallel()
+	parentDir := filepath.Join(t.TempDir(), "parent")
+	sep := string(os.PathListSeparator)
+
+	env := FinalizeAgentEnv([]string{
+		"PATH=" + parentDir + sep + "/usr/bin",
+		controlenv.CLIVariable + "=" + filepath.Join(parentDir, "leapmux"),
+	}, agent.Options{})
+
+	assert.Equal(t, []string{"/usr/bin"}, envutil.ValuesFor(env, "PATH"))
+	assert.False(t, envutil.HasKey(env, controlenv.CLIVariable))
 }
 
 // `cline --data-dir` and an inherited CLINE_SANDBOX=1 put Cline in a sandbox.

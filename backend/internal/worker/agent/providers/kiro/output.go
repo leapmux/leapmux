@@ -65,41 +65,11 @@ const kiroMetaReplayID = "replayId"
 
 // chunkMessageID reads the answer that one chunk belongs to, from the `_meta` of
 // the update. It is "" for a chunk that states none.
-func chunkMessageID(_ agent.AssembledMessageKind, metadata map[string]json.RawMessage) string {
-	return fieldString(kiroFields(metadata[contracts.KiroMetaNamespace]), kiroMetaReplayID)
-}
-
-// kiroFields reads the `_meta.kiro` object of one update into its fields. It is
-// nil for an update that carries none.
-func kiroFields(raw json.RawMessage) map[string]json.RawMessage {
-	if len(raw) == 0 {
-		return nil
+func chunkMessageID(info acp.UpdateMessageInfo) string {
+	if info.UpdateType != contracts.ACPUpdateAgentMessageChunk && info.UpdateType != contracts.ACPUpdateAgentThoughtChunk {
+		return ""
 	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
-		return nil
-	}
-	return fields
-}
-
-// fieldString reads one string field, or "" for a field that is absent or not a
-// string.
-func fieldString(fields map[string]json.RawMessage, key string) string {
-	var value string
-	if raw, ok := fields[key]; ok {
-		_ = json.Unmarshal(raw, &value)
-	}
-	return value
-}
-
-// fieldBool reads one boolean field, or false for a field that is absent or
-// not a boolean.
-func fieldBool(fields map[string]json.RawMessage, key string) bool {
-	var value bool
-	if raw, ok := fields[key]; ok {
-		_ = json.Unmarshal(raw, &value)
-	}
-	return value
+	return providerkit.ObjectString(providerkit.RawFields(info.UpdateMeta[contracts.KiroMetaNamespace]), kiroMetaReplayID)
 }
 
 // turnState follows the turns of the main session. Guarded by Agent.stateMu.
@@ -112,9 +82,12 @@ func fieldBool(fields map[string]json.RawMessage, key string) bool {
 // turn is Kiro's own when it opens while LeapMux runs no prompt, or when its
 // updates say so.
 type turnState struct {
-	// agentTurn records that the base runs a turn that Kiro started, which
-	// the next turn_end of the main session ends.
+	// agentTurn records that the base runs a turn that Kiro started.
 	agentTurn bool
+	// The start marker can precede the first update that marks the execution
+	// as agent-initiated. Once the turn begins, agentExecutionID holds its ID.
+	startExecutionID string
+	agentExecutionID string
 	// heldError is the last display_error of a prompt of LeapMux's. A prompt
 	// that fails reports its own failure through its JSON-RPC error, which
 	// states the same text on every probed failure. So the display error waits:
@@ -133,7 +106,7 @@ type turnState struct {
 // the update persists where the reader can see what a later build states.
 func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool {
 	raw := metadata[contracts.KiroMetaNamespace]
-	fields := kiroFields(raw)
+	fields := providerkit.RawFields(raw)
 	if updateType != "session_info_update" {
 		// Kiro copies the kiro metadata of the prompt into every chunk of its
 		// turn, so a main-session text chunk with none at all is the answer of
@@ -153,12 +126,12 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		a.observeConversationUpdate(fields)
 		return false
 	}
-	kind := fieldString(fields, contracts.KiroMetaKind)
+	kind := providerkit.ObjectString(fields, contracts.KiroMetaKind)
 	switch kind {
 	case kiroKindTurnStart:
-		a.handleTurnStart()
+		a.handleTurnStart(fields)
 	case contracts.KiroKindTurnEnd:
-		a.handleTurnEnd(fieldString(fields, contracts.KiroMetaStopReason), update)
+		a.handleTurnEnd(fields, update)
 		a.requestUsageRefresh()
 	case kiroKindTurnCompletion:
 		a.logTurnCompletion(raw)
@@ -175,7 +148,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 	case kiroKindRecap:
 		a.reportRecap(raw)
 	case kiroKindSteeringInjected:
-		a.handleSteeringInjected(fieldString(fields, "messageId"))
+		a.handleSteeringInjected(providerkit.ObjectString(fields, "messageId"))
 	case kiroKindSteeringCleared:
 		a.handleSteeringCleared(fields["messageIds"])
 	default:
@@ -200,7 +173,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 // session states beside its conversation: the mark of a turn that Kiro
 // started.
 func (a *Agent) observeConversationUpdate(fields map[string]json.RawMessage) {
-	if fieldBool(fields, kiroMetaAgentInitiated) {
+	if providerkit.RawBool(fields[kiroMetaAgentInitiated]) {
 		a.beginAgentTurn()
 	}
 }
@@ -218,8 +191,13 @@ func (a *Agent) observeConversationUpdate(fields map[string]json.RawMessage) {
 // A display error that the prompt holds stays held through the start: it can
 // come from the preparation of the turn, and the end of the prompt still
 // settles it.
-func (a *Agent) handleTurnStart() {
-	if !a.PromptActive() {
+func (a *Agent) handleTurnStart(fields map[string]json.RawMessage) {
+	a.stateMu.Lock()
+	if !a.turns.agentTurn {
+		a.turns.startExecutionID = kiroExecutionID(fields, "-turn-start")
+	}
+	a.stateMu.Unlock()
+	if !a.PromptActive() || providerkit.RawBool(fields[kiroMetaAgentInitiated]) {
 		a.beginAgentTurn()
 	}
 }
@@ -228,17 +206,27 @@ func (a *Agent) handleTurnStart() {
 func (a *Agent) beginAgentTurn() {
 	a.stateMu.Lock()
 	begun := a.turns.agentTurn
+	executionID := a.turns.startExecutionID
 	a.stateMu.Unlock()
 	if begun {
 		return
 	}
 	// Outside the lock: the base publishes the turn state, which broadcasts.
-	if !a.BeginAgentTurn() {
+	if !a.BeginAgentTurnWithReply(executionID) {
 		return
 	}
 	a.stateMu.Lock()
 	a.turns.agentTurn = true
+	a.turns.agentExecutionID = executionID
 	a.stateMu.Unlock()
+}
+
+func kiroExecutionID(fields map[string]json.RawMessage, suffix string) string {
+	id, matched := strings.CutSuffix(providerkit.ObjectString(fields, "messageId"), suffix)
+	if !matched {
+		return ""
+	}
+	return id
 }
 
 // handleTurnEnd reads the end of one execution. It ends a turn that Kiro
@@ -248,10 +236,21 @@ func (a *Agent) beginAgentTurn() {
 // The update itself is the turn-end row of a turn that Kiro started. The
 // browser plugin reads its stop reason into the divider, as it reads the
 // prompt response of a turn that LeapMux started.
-func (a *Agent) handleTurnEnd(stopReason string, update json.RawMessage) {
+func (a *Agent) handleTurnEnd(fields map[string]json.RawMessage, update json.RawMessage) {
+	stopReason := providerkit.ObjectString(fields, contracts.KiroMetaStopReason)
+	executionID := kiroExecutionID(fields, "-turn-end")
 	a.stateMu.Lock()
 	agentTurn := a.turns.agentTurn
+	agentExecutionID := a.turns.agentExecutionID
+	if agentTurn && agentExecutionID != "" && executionID != "" && agentExecutionID != executionID {
+		a.stateMu.Unlock()
+		return
+	}
 	a.turns.agentTurn = false
+	a.turns.agentExecutionID = ""
+	if executionID == "" || a.turns.startExecutionID == executionID {
+		a.turns.startExecutionID = ""
+	}
 	// An error end of a prompt of LeapMux's keeps the display error for the
 	// end of the prompt, whose own error can state the same text. Any other
 	// end leaves the display error the only record of it.
@@ -269,7 +268,11 @@ func (a *Agent) handleTurnEnd(stopReason string, update json.RawMessage) {
 		a.persistStatus("The response stopped at the output token limit of the model")
 	}
 	if agentTurn {
-		a.EndAgentTurn(append(json.RawMessage(nil), update...))
+		if executionID != "" && executionID == agentExecutionID {
+			a.EndAgentTurnWithReply(executionID, update, kiroTurnOutcome(stopReason))
+		} else {
+			a.EndAgentTurn(update)
+		}
 		return
 	}
 	// An error end of a prompt of LeapMux's keeps its native frame for the
@@ -280,6 +283,13 @@ func (a *Agent) handleTurnEnd(stopReason string, update json.RawMessage) {
 		a.turns.heldEndFrame = append(json.RawMessage(nil), update...)
 		a.stateMu.Unlock()
 	}
+}
+
+func kiroTurnOutcome(stopReason string) leapmuxv1.AgentInputTurnOutcome {
+	if stopReason == kiroStopError {
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
+	}
+	return acp.StopReasonOutcome(stopReason)
 }
 
 // logTurnCompletion logs the credits that one turn used. Kiro bills in
@@ -393,6 +403,9 @@ func (a *Agent) handleDisplayError(raw json.RawMessage) {
 func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	a.requestUsageRefresh()
 	a.stateMu.Lock()
+	if !a.turns.agentTurn {
+		a.turns.startExecutionID = ""
+	}
 	held := a.turns.heldError
 	a.turns.heldError = ""
 	frame := a.turns.heldEndFrame
@@ -567,55 +580,6 @@ func (a *Agent) handleContentChunk(params json.RawMessage) {
 	a.stateMu.Unlock()
 	sink.ReportProgress(agent.OutputTotalProgress(chunk.ToolCallID, total, false))
 	sink.ReportProgress(agent.OutputTailProgress(chunk.ToolCallID, tail, lost))
-}
-
-// handleSteeringInjected reports one steer as read by the model. The flush
-// runs first, so the text that the model wrote before the injection lands
-// above the steer row. An injection whose steer reply has not stated its id
-// yet waits in the early set; the reply completes it.
-func (a *Agent) handleSteeringInjected(messageID string) {
-	if messageID == "" {
-		return
-	}
-	a.FlushBufferedOutput(agent.MessageCompletionComplete)
-	if !a.steers.EchoID(messageID) {
-		a.stateMu.Lock()
-		if a.earlySteerEchoes == nil {
-			a.earlySteerEchoes = make(map[string]providerkit.SteerTicket)
-		}
-		a.earlySteerEchoes[messageID] = 0
-		a.stateMu.Unlock()
-		return
-	}
-	a.steers.Settle(a.Sink())
-}
-
-// handleSteeringCleared drops each steer that Kiro cleared without injecting:
-// the turn it belonged to is over, and Kiro itself states that the model never
-// read it.
-func (a *Agent) handleSteeringCleared(raw json.RawMessage) {
-	var cleared []string
-	if json.Unmarshal(raw, &cleared) != nil {
-		return
-	}
-	dropped := false
-	for _, id := range cleared {
-		a.stateMu.Lock()
-		_, early := a.earlySteerEchoes[id]
-		delete(a.earlySteerEchoes, id)
-		a.stateMu.Unlock()
-		if early {
-			// The injection never reached its own steer entry, so nothing is
-			// pending under this id. The early marker alone ends here.
-			continue
-		}
-		if a.steers.DropID(id) {
-			dropped = true
-		}
-	}
-	if dropped {
-		a.steers.Settle(a.Sink())
-	}
 }
 
 // pickRefusal reads the refusal object of one kiro metadata block, or nil.

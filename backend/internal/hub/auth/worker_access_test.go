@@ -27,7 +27,7 @@ func TestWorkerUsableNow(t *testing.T) {
 	}), "an ACTIVE worker is usable now")
 
 	for _, status := range []leapmuxv1.WorkerStatus{
-		leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
+		leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED,
 		leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED,
 	} {
 		assert.False(t, auth.WorkerUsableNow(&store.Worker{Status: status}),

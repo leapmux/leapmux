@@ -51,6 +51,7 @@ func (h *fakeHandle) Cancel() {
 }
 
 func (h *fakeHandle) Done() <-chan struct{} { return h.done }
+func (h *fakeHandle) EndErr() error         { return nil }
 
 // fakeTransport is an in-memory Transport implementation. Tests
 // drive `pushFrame` to deliver synthetic WatchEventsResponse frames
@@ -213,15 +214,16 @@ func TestSubscription_ForwardsRetractionWithoutAdvancingAgentCursor(t *testing.T
 	assert.Equal(t, int64(20), agents.Get(agentID))
 }
 
-// TestSubscription_TurnEndNotifyDoesNotForward pins that AgentTurnEnd is a
-// UI-only notify frame: the CLI events stream must neither invoke onAgent nor
-// advance the agent cursor.
-func TestSubscription_TurnEndNotifyDoesNotForward(t *testing.T) {
+// TestSubscription_TurnEndReachesOnAgentWithoutMovingTheCursor pins that
+// AgentTurnEnd, a notification-class frame, reaches onAgent: `agent send
+// --wait` reads it, because a provider can end a turn without an activity
+// change. It carries no message, so the agent cursor stays where it was.
+func TestSubscription_TurnEndReachesOnAgentWithoutMovingTheCursor(t *testing.T) {
 	tr := &fakeTransport{}
 	agents := NewAgentCursor()
-	var calls int
+	var got []*leapmuxv1.AgentEvent
 	sub := NewSubscription(tr, agents, NewTerminalCursor(),
-		func(*leapmuxv1.AgentEvent) { calls++ },
+		func(ae *leapmuxv1.AgentEvent) { got = append(got, ae) },
 		nil, nil)
 	t.Cleanup(sub.Cancel)
 
@@ -235,8 +237,92 @@ func TestSubscription_TurnEndNotifyDoesNotForward(t *testing.T) {
 		}},
 	})
 
-	assert.Equal(t, 0, calls, "turn_end must not reach onAgent")
-	assert.Equal(t, int64(0), agents.Get("a-1"), "turn_end must not advance the agent cursor")
+	require.Len(t, got, 1, "the turn end reaches onAgent")
+	assert.NotNil(t, got[0].GetTurnEnd())
+	assert.Equal(t, int64(0), agents.Get("a-1"), "a turn end does not advance the agent cursor")
+}
+
+// updateAck is the acknowledgement of updateID that rejects each id in
+// notFound as closed.
+func updateAck(updateID uint64, notFound ...string) *leapmuxv1.WatchEventsResponse {
+	ack := &leapmuxv1.WatchUpdateAck{UpdateId: updateID}
+	for _, id := range notFound {
+		ack.RejectedAgents = append(ack.RejectedAgents, &leapmuxv1.WatchRejection{
+			EntityId: id,
+			Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND,
+		})
+	}
+	return &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: ack}}
+}
+
+func notifyInterest(agentIDs ...string) *leapmuxv1.WatchEventsRequest {
+	req := &leapmuxv1.WatchEventsRequest{}
+	for _, id := range agentIDs {
+		req.Agents = append(req.Agents, &leapmuxv1.WatchAgentEntry{AgentId: id, Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY})
+	}
+	return req
+}
+
+// TestSubscription_WithUpdateAckReceivesOnlyTheCurrentAcknowledgement pins
+// the hook that a wait reads its start state after: the acknowledgement of
+// the interest in force reaches it with its rejections, and the
+// acknowledgement of a replaced revision does not.
+func TestSubscription_WithUpdateAckReceivesOnlyTheCurrentAcknowledgement(t *testing.T) {
+	tr := &fakeTransport{}
+	var acks []*leapmuxv1.WatchUpdateAck
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithUpdateAck(func(ack *leapmuxv1.WatchUpdateAck) { acks = append(acks, ack) }))
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	first := tr.calls[0].GetUpdateId()
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1", "a-2")))
+	second := tr.lastUpdate().GetUpdateId()
+	require.Greater(t, second, first)
+
+	tr.pushFrame(updateAck(first))
+	assert.Empty(t, acks, "the acknowledgement of a replaced revision is stale")
+	tr.pushFrame(updateAck(0))
+	assert.Empty(t, acks, "an acknowledgement with no update id answers no request")
+
+	tr.pushFrame(updateAck(second, "a-2"))
+	require.Len(t, acks, 1)
+	assert.Equal(t, second, acks[0].GetUpdateId())
+	require.Len(t, acks[0].GetRejectedAgents(), 1)
+	assert.Equal(t, "a-2", acks[0].GetRejectedAgents()[0].GetEntityId())
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND, acks[0].GetRejectedAgents()[0].GetReason())
+
+	tr.pushFrame(updateAck(second))
+	assert.Len(t, acks, 2, "each acknowledgement of the current interest reaches the hook")
+}
+
+// openingAckTransport delivers the acknowledgement of the opening request
+// before OpenWatchEvents returns, as a fast Worker can.
+type openingAckTransport struct {
+	fakeTransport
+}
+
+func (t *openingAckTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
+	onFrame func(*leapmuxv1.WatchEventsResponse),
+) (Handle, error) {
+	onFrame(updateAck(req.GetUpdateId()))
+	return t.fakeTransport.OpenWatchEvents(ctx, req, onFrame)
+}
+
+// TestSubscription_WithUpdateAckReceivesAnAcknowledgementThatPrecedesTheOpen
+// covers the acknowledgement that arrives while the stream still opens. The
+// subscription holds it until the handle is installed, then hands it to the
+// hook once.
+func TestSubscription_WithUpdateAckReceivesAnAcknowledgementThatPrecedesTheOpen(t *testing.T) {
+	tr := &openingAckTransport{}
+	var acks []*leapmuxv1.WatchUpdateAck
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithUpdateAck(func(ack *leapmuxv1.WatchUpdateAck) { acks = append(acks, ack) }))
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	require.Len(t, acks, 1)
+	assert.Equal(t, tr.calls[0].GetUpdateId(), acks[0].GetUpdateId())
 }
 
 // fastRetry is a small, jitterless LOOKUP_FAILED budget for tests that drive
@@ -485,9 +571,8 @@ func TestSubscription_TerminalDataAdvancesOffset(t *testing.T) {
 }
 
 // TestSubscription_CursorResetCallback fires when a TerminalData
-// frame carries `is_snapshot=true`. Consumers use this to emit a
-// notice and (optionally) reset their cursor before processing the
-// snapshot replay.
+// frame carries `is_snapshot=true`. The cursor already holds the new
+// offset when the callback runs before snapshot delivery.
 func TestSubscription_CursorResetCallback(t *testing.T) {
 	tr := &fakeTransport{}
 	agents := NewAgentCursor()
@@ -1366,7 +1451,7 @@ func TestSubscription_UpdateAfterCancelReturnsClosed(t *testing.T) {
 	err := sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
 	})
-	require.ErrorIs(t, err, errSubscriptionClosed)
+	require.ErrorIs(t, err, ErrSubscriptionClosed)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened),
 		"Update after Cancel must not re-open a stream (no orphan)")
 }
@@ -1951,20 +2036,25 @@ func TestSubscriptionReplayIdentityReportsExhaustionOutsideItsMutex(t *testing.T
 	subscription.mu.Unlock()
 	previousLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
-	var warnings int
+	var warnings, rejections int
 	slog.SetDefault(slog.New(&subscriptionLockLogHandler{inspect: func(record slog.Record) {
-		if record.Message != "streamevents: LOOKUP_FAILED retry budget exhausted" {
+		switch record.Message {
+		case "streamevents: LOOKUP_FAILED retry budget exhausted":
+			warnings++
+		case "streamevents: agent watch rejected":
+			rejections++
+		default:
 			return
 		}
-		warnings++
 		unlocked := subscription.mu.TryLock()
-		assert.True(t, unlocked, "a synchronous log handler must receive the warning outside the subscription mutex")
+		assert.True(t, unlocked, "a synchronous log handler must receive %q outside the subscription mutex", record.Message)
 		if unlocked {
 			subscription.mu.Unlock()
 		}
 	}}))
 	pushLookupFailed(transport, "agent")
 	assert.Equal(t, 1, warnings)
+	assert.Equal(t, 1, rejections)
 	assert.True(t, subscription.retryExhaustedLogged)
 }
 
@@ -2014,4 +2104,460 @@ func TestSubscriptionReplayIdentityKeepsAFreshOpeningRetryAfterAnOlderTimerRetir
 	attempts, inFlight = retryState(subscription)
 	assert.Equal(t, 1, attempts)
 	assert.False(t, inFlight)
+}
+
+// terminalNotifyFrames lists one frame of each notification-class terminal
+// event: a bell, a notification, a title change and a progress report.
+func terminalNotifyFrames(terminalID string) []*leapmuxv1.WatchEventsResponse {
+	events := []*leapmuxv1.TerminalEvent{
+		{Event: &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}}},
+		{Event: &leapmuxv1.TerminalEvent_Notification{Notification: &leapmuxv1.TerminalNotification{Title: "Build", Body: "done"}}},
+		{Event: &leapmuxv1.TerminalEvent_TitleChanged{TitleChanged: &leapmuxv1.TerminalTitleChanged{Title: "make test"}}},
+		{Event: &leapmuxv1.TerminalEvent_Progress{Progress: &leapmuxv1.TerminalProgress{State: leapmuxv1.TerminalProgress_STATE_NORMAL, Percent: 40}}},
+	}
+	out := make([]*leapmuxv1.WatchEventsResponse, len(events))
+	for i, te := range events {
+		te.TerminalId = terminalID
+		out[i] = &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: te}}
+	}
+	return out
+}
+
+// A subscription drops the notification-class frames of a terminal unless
+// the consumer asks for them, so `agent messages --follow` and a screen
+// reader keep seeing only what moves the screen.
+func TestSubscription_DropsTerminalNotificationsByDefault(t *testing.T) {
+	tr := &fakeTransport{}
+	var got []*leapmuxv1.TerminalEvent
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil,
+		func(te *leapmuxv1.TerminalEvent) { got = append(got, te) }, nil)
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1"}}}))
+
+	for _, frame := range terminalNotifyFrames("t-1") {
+		tr.pushFrame(frame)
+	}
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: &leapmuxv1.TerminalEvent{
+		TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: proto.Int32(2)}},
+	}}})
+
+	require.Len(t, got, 1, "only the exit passes")
+	assert.Equal(t, int32(2), got[0].GetClosed().GetExitCode())
+}
+
+// WithTerminalNotifications passes every notification-class frame to
+// onTerminal, in order, and none of them moves the terminal cursor.
+func TestSubscription_WithTerminalNotificationsDeliversThem(t *testing.T) {
+	tr := &fakeTransport{}
+	terminals := NewTerminalCursor()
+	var got []*leapmuxv1.TerminalEvent
+	sub := NewSubscription(tr, NewAgentCursor(), terminals, nil,
+		func(te *leapmuxv1.TerminalEvent) { got = append(got, te) }, nil, WithTerminalNotifications())
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}}))
+
+	frames := terminalNotifyFrames("t-1")
+	for _, frame := range frames {
+		tr.pushFrame(frame)
+	}
+
+	require.Len(t, got, len(frames))
+	for i, frame := range frames {
+		assert.True(t, proto.Equal(frame.GetTerminalEvent(), got[i]), "frame %d arrives as it was sent", i)
+	}
+	assert.Equal(t, int64(0), terminals.Get("t-1"), "a notification carries no screen bytes, so the cursor stays")
+}
+
+// endingHandle is a Handle that reports a reason for its end.
+type endingHandle struct {
+	fakeHandle
+	err error
+}
+
+func (h *endingHandle) EndErr() error { return h.err }
+
+// endingTransport opens endingHandles whose stream ends with err.
+type endingTransport struct {
+	err    error
+	handle *endingHandle
+}
+
+func (t *endingTransport) OpenWatchEvents(context.Context, *leapmuxv1.WatchEventsRequest, func(*leapmuxv1.WatchEventsResponse)) (Handle, error) {
+	done := make(chan struct{})
+	close(done)
+	t.handle = &endingHandle{fakeHandle: fakeHandle{cancel: func() {}, done: done}, err: t.err}
+	return t.handle, nil
+}
+
+// EndErr reports the reason that the handle of the current stream gives,
+// nil when the handle reports no error, and nil after Cancel retired the stream.
+func TestSubscription_EndErrReportsTheReasonOfTheHandle(t *testing.T) {
+	refused := errors.New("the worker refused the watch")
+	tr := &endingTransport{err: refused}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	assert.NoError(t, sub.EndErr(), "no stream has run yet")
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	<-sub.Done()
+	assert.ErrorIs(t, sub.EndErr(), refused)
+
+	sub.Cancel()
+	assert.NoError(t, sub.EndErr(), "Cancel retires the stream and its reason")
+
+	plain := &fakeTransport{}
+	sub = NewSubscription(plain, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	assert.NoError(t, sub.EndErr(), "a running stream with no end error returns nil")
+
+	// A fresh Update after a failed stream replaces the handle and clears EndErr.
+	tr2 := &fakeTransport{}
+	tr2Sub := NewSubscription(tr2, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(tr2Sub.Cancel)
+	endedDone := make(chan struct{})
+	close(endedDone)
+	tr2Sub.mu.Lock()
+	tr2Sub.handle = &endingHandle{fakeHandle: fakeHandle{cancel: func() {}, done: endedDone}, err: refused}
+	tr2Sub.mu.Unlock()
+	require.ErrorIs(t, tr2Sub.EndErr(), refused)
+	require.NoError(t, tr2Sub.Update(context.Background(), notifyInterest("a-1")))
+	assert.NoError(t, tr2Sub.EndErr(), "a fresh stream after a failed one starts with no end error")
+}
+
+// TestSubscription_OpeningAckCallbackCanCallCancelWithoutDeadlock pins SCAN-19:
+// WithUpdateAck runs outside every lock, including when the opening ack arrives
+// before OpenWatchEvents returns.
+func TestSubscription_OpeningAckCallbackCanCallCancelWithoutDeadlock(t *testing.T) {
+	tr := &openingAckTransport{}
+	var sub *Subscription
+	called := make(chan struct{})
+	sub = NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithUpdateAck(func(*leapmuxv1.WatchUpdateAck) {
+			sub.Cancel()
+			close(called)
+		}))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sub.Update(context.Background(), notifyInterest("a-1"))
+	}()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("Update deadlocked when onUpdateAck called Cancel on an opening ack")
+	}
+	select {
+	case <-called:
+	case <-ctx.Done():
+		t.Fatal("onUpdateAck did not run")
+	}
+}
+
+// blockingRetryTransport blocks the second OpenWatchEvents call until ctx is
+// cancelled, reproducing a LOOKUP_FAILED retry stuck in OpenWatchEvents.
+type blockingRetryTransport struct {
+	fakeTransport
+	secondStarted chan struct{}
+}
+
+func (t *blockingRetryTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
+	onFrame func(*leapmuxv1.WatchEventsResponse),
+) (Handle, error) {
+	if atomic.LoadInt32(&t.callsOpened) >= 1 {
+		close(t.secondStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return t.fakeTransport.OpenWatchEvents(ctx, req, onFrame)
+}
+
+// TestSubscription_CancelUnblocksRetryStuckInOpenWatchEvents pins TRAPS-3:
+// Cancel must cancel the subscription's lifecycle context before taking
+// lifecycleMu so a retry blocked inside OpenWatchEvents unblocks promptly.
+func TestSubscription_CancelUnblocksRetryStuckInOpenWatchEvents(t *testing.T) {
+	tr := &blockingRetryTransport{secondStarted: make(chan struct{})}
+	clk := &armCountingClock{Mock: testutil.NewQuartzMock(t)}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil, WithClock(clk))
+	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
+
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+
+	// Arm a LOOKUP_FAILED retry, then drop the handle so the retry's Update
+	// takes the OpenWatchEvents path rather than revising the live handle.
+	pushLookupFailed(&tr.fakeTransport, "a-1")
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	tr.mu.Lock()
+	h := tr.handle
+	tr.mu.Unlock()
+	h.Cancel()
+	<-h.Done()
+
+	clk.Advance(delay).MustWait(ctx)
+
+	select {
+	case <-tr.secondStarted:
+	case <-ctx.Done():
+		t.Fatal("retry did not reach OpenWatchEvents")
+	}
+
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		sub.Cancel()
+	}()
+	select {
+	case <-cancelDone:
+	case <-ctx.Done():
+		t.Fatal("Cancel blocked waiting for a retry stuck in OpenWatchEvents")
+	}
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+}
+
+// TestSubscription_NilCursorsDoNotPanic pins TRAPS-5: passing nil agent or
+// terminal cursors must not panic when agent or terminal frames arrive.
+func TestSubscription_NilCursorsDoNotPanic(t *testing.T) {
+	tr := &fakeTransport{}
+	var agentCount, termCount, resetCount int
+	sub := NewSubscription(tr, nil, nil,
+		func(*leapmuxv1.AgentEvent) { agentCount++ },
+		func(*leapmuxv1.TerminalEvent) { termCount++ },
+		func(string) { resetCount++ })
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
+		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1"}},
+	}))
+
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+			AgentId: "a-1",
+			Event:   &leapmuxv1.AgentEvent_MessagesRetracted{MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{3}}},
+		}},
+	})
+	pushAgentMessage(tr, "a-1", 4)
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				IsSnapshot: true,
+				Data:       []byte("snap"),
+				EndOffset:  4,
+			}},
+		}},
+	})
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:      []byte("live"),
+				EndOffset: 8,
+			}},
+		}},
+	})
+
+	assert.Equal(t, 2, agentCount)
+	assert.Equal(t, 2, termCount)
+	assert.Equal(t, 1, resetCount)
+}
+
+func TestSubscription_UpdateRejectsNilRequestAndNilAgentEntry(t *testing.T) {
+	tr := &fakeTransport{}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	require.ErrorContains(t, sub.Update(t.Context(), nil), "watch interest is absent")
+	require.ErrorContains(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{nil},
+	}), "watch agent entry is absent")
+	assert.Zero(t, atomic.LoadInt32(&tr.callsOpened))
+}
+
+func TestSubscription_DispatchUpdateAckSingleLockStaleTerminalAndConcurrentRejections(t *testing.T) {
+	tr := &fakeTransport{}
+	clk := &armCountingClock{Mock: testutil.NewQuartzMock(t)}
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
+
+	var ackCount atomic.Int32
+	var concurrentPhase atomic.Bool
+	var sub *Subscription
+	checkOutsideLock := func(where string) {
+		if concurrentPhase.Load() {
+			sub.mu.Lock()
+			_ = sub.generation
+			sub.mu.Unlock()
+			return
+		}
+		unlocked := sub.mu.TryLock()
+		assert.True(t, unlocked, "%s must run outside s.mu", where)
+		if unlocked {
+			sub.mu.Unlock()
+		}
+	}
+	sub = NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithClock(clk),
+		WithUpdateAck(func(*leapmuxv1.WatchUpdateAck) {
+			checkOutsideLock("onUpdateAck")
+			ackCount.Add(1)
+		}),
+	)
+	sub.retry = fastRetry()
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1"}},
+	}))
+	require.NoError(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-2"}},
+	}))
+	currentID := tr.lastUpdate().GetUpdateId()
+
+	previousLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	var termRejectLogs atomic.Int32
+	slog.SetDefault(slog.New(&subscriptionLockLogHandler{inspect: func(record slog.Record) {
+		if record.Message == "streamevents: terminal watch rejected" {
+			checkOutsideLock("rejection logging")
+			termRejectLogs.Add(1)
+		}
+	}}))
+
+	// Nil ack and stale/future/zero update IDs must neither log nor notify nor arm.
+	sub.dispatchUpdateAck(nil)
+	for _, staleID := range []uint64{0, currentID - 1, currentID + 1} {
+		tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+				UpdateId: staleID,
+				RejectedTerminals: []*leapmuxv1.WatchRejection{{
+					EntityId: "t-2",
+					Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+				}},
+			}},
+		})
+	}
+	assert.Zero(t, termRejectLogs.Load())
+	assert.Zero(t, ackCount.Load())
+	assert.Zero(t, clk.armCount())
+
+	// Current ack for dropped terminal logs and notifies, but arms no retry.
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+			UpdateId: currentID,
+			RejectedTerminals: []*leapmuxv1.WatchRejection{{
+				EntityId: "t-1",
+				Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+			}},
+		}},
+	})
+	assert.Equal(t, int32(1), termRejectLogs.Load())
+	assert.Equal(t, int32(1), ackCount.Load())
+	assert.Zero(t, clk.armCount())
+
+	// Concurrent current acks for the wanted terminal coalesce to a single retry timer.
+	concurrentPhase.Store(true)
+	const workers = 6
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+				Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+					UpdateId: currentID,
+					RejectedTerminals: []*leapmuxv1.WatchRejection{{
+						EntityId: "t-2",
+						Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+					}},
+				}},
+			})
+		}()
+	}
+	wg.Wait()
+
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	assert.Equal(t, 1, clk.armCount(), "concurrent rejections must coalesce into one retry timer")
+	assert.Equal(t, int32(1+workers), ackCount.Load())
+	assert.Equal(t, int32(1+workers), termRejectLogs.Load())
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
+}
+
+func TestClipTerminalOutput_PreservesReplayCompleteOnPartialOverlap(t *testing.T) {
+	t.Parallel()
+
+	t.Run("partial overlap preserves ReplayComplete and geometry metadata", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:             []byte("abcdef"),
+				EndOffset:        16, // range [10..16)
+				ReplayComplete:   true,
+				ScreenEpoch:      "epoch-1",
+				GeometryRevision: 3,
+			}},
+		}
+
+		clipped := ClipTerminalOutput(event, 12)
+		require.NotNil(t, clipped)
+		data := clipped.GetData()
+		require.NotNil(t, data)
+		assert.Equal(t, "t-1", clipped.GetTerminalId())
+		assert.Equal(t, []byte("cdef"), data.GetData())
+		assert.Equal(t, int64(16), data.GetEndOffset())
+		assert.True(t, data.GetReplayComplete())
+		assert.False(t, data.GetIsSnapshot())
+		assert.Equal(t, "epoch-1", data.GetScreenEpoch())
+		assert.Equal(t, uint64(3), data.GetGeometryRevision())
+	})
+
+	t.Run("partial overlap keeps ReplayComplete false when unset", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:      []byte("abcdef"),
+				EndOffset: 16,
+			}},
+		}
+
+		clipped := ClipTerminalOutput(event, 13)
+		require.NotNil(t, clipped)
+		assert.Equal(t, []byte("def"), clipped.GetData().GetData())
+		assert.False(t, clipped.GetData().GetReplayComplete())
+	})
+
+	t.Run("fully covered delta returns nil", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:           []byte("abc"),
+				EndOffset:      13,
+				ReplayComplete: true,
+			}},
+		}
+		assert.Nil(t, ClipTerminalOutput(event, 13))
+		assert.Nil(t, ClipTerminalOutput(event, 20))
+	})
+
+	t.Run("snapshot passes through unchanged even when offset exceeds end", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:           []byte("snap"),
+				EndOffset:      4,
+				IsSnapshot:     true,
+				ReplayComplete: true,
+			}},
+		}
+		got := ClipTerminalOutput(event, 100)
+		assert.Same(t, event, got)
+	})
 }

@@ -169,6 +169,20 @@ func BuildOAuthNonceCookie(state, nonce string, ttl time.Duration, secure bool) 
 	return oauthNonceFamily.build(state, nonce, ttl, secure)
 }
 
+// BuildOAuthNonceCookieForFormPost creates the flow-binding cookie for a
+// provider whose callback arrives as a cross-site HTTP POST
+// (response_mode=form_post, such as Sign in with Apple). Browsers withhold
+// SameSite=Lax cookies on cross-site POST requests, so HTTPS deployments set
+// SameSite=None; Secure on this short-lived single-use cookie while plain HTTP
+// keeps SameSite=Lax (browsers reject SameSite=None without Secure).
+func BuildOAuthNonceCookieForFormPost(state, nonce string, ttl time.Duration, secure bool) *http.Cookie {
+	c := oauthNonceFamily.build(state, nonce, ttl, secure)
+	if secure {
+		c.SameSite = http.SameSiteNoneMode
+	}
+	return c
+}
+
 // ClearOAuthNonceCookie creates the cookies that clear one flow's OAuth
 // nonce. The callback clears it once the flow can no longer be completed:
 // the nonce is single-use, and one left in the browser would outlive the

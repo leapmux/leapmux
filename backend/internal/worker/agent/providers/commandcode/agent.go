@@ -4,13 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sync"
 	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -23,6 +21,12 @@ type Agent struct {
 	sink       agent.ProviderServices
 	sendMu     sync.Mutex
 	dispatchMu sync.Mutex
+	// replyProcessID separates durable reply keys when a process reuses a native turn ID.
+	replyProcessID string
+	// dispatchMu guards reply capture and the turn identified by the native output stream.
+	replyOutputTurnID string
+	replies           providerkit.NativeReplyLedger
+	pendingSteers     []*pendingCommandCodeSteer
 	// dispatchMu guards the error while the next native row determines whether it repeats.
 	pendingRunError *agent.CapturedTranscript
 	clock           quartz.Clock
@@ -42,6 +46,7 @@ type Agent struct {
 	localOnly        bool
 	models           []*agent.ModelInfo
 	turnID           string
+	steerProofLost   bool
 	turnStarted      time.Time
 	finishedTurns    []string
 	compacting       bool
@@ -52,7 +57,6 @@ type Agent struct {
 	usage            map[string]any
 	generation       providerkit.GenerationBuffer
 	retryResolution  providerkit.RetryResolution
-	steers           providerkit.SteerLedger
 }
 
 type openTool struct {
@@ -73,55 +77,62 @@ var (
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	active := a.operationActiveLocked()
-	steerable := a.turnID != "" && !a.compacting && a.manualCompaction == nil
+	steerable := a.turnID != "" && !a.compacting && a.manualCompaction == nil && !a.steerProofLost
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: steerable}, seq)
 }
 
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments)
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()
 	err := providerkit.CheckInputSession(expected, a.sessionID)
-	busy, stopped := a.operationActiveLocked(), a.StoppedLocked()
+	busy, stopped, sessionID := a.operationActiveLocked(), a.StoppedLocked(), a.sessionID
 	a.Mu.Unlock()
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if stopped {
-		return fmt.Errorf("the Command Code agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Command Code agent is stopped")
 	}
 	if busy {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	blocks, err := inputBlocks(content, agent.ClassifyAttachments(attachments))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
+	var receipt agent.NativeInputReceipt
+	var wireTurnID string
+	a.beginCommandCodeReplyStart()
+	defer func() { a.finishCommandCodeReplyStart(wireTurnID, receipt) }()
 	result, err := a.request(methodTurnStart, map[string]any{"input": blocks}, a.APITimeout())
 	if err != nil {
 		if providerkit.HasJSONRPCErrorCode(err, -32010) {
-			return agent.ErrAgentBusy
+			return receipt, agent.ErrAgentBusy
 		}
-		return providerkit.ClassifyJSONRPCDeliveryError(methodTurnStart, err)
+		return receipt, providerkit.ClassifyJSONRPCDeliveryError(methodTurnStart, err)
 	}
 	var response struct {
 		TurnID string `json:"turnId"`
 	}
 	if json.Unmarshal(result, &response) != nil || response.TurnID == "" {
-		return fmt.Errorf("%w: Command Code returned no turn ID", agent.ErrDeliveryUncertain)
+		return receipt, fmt.Errorf("%w: Command Code returned no turn ID", agent.ErrDeliveryUncertain)
 	}
 	a.startTurn(response.TurnID)
-	return nil
+	wireTurnID = response.TurnID
+	turnID := a.commandCodeDurableTurnID(wireTurnID)
+	receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: turnID, TurnID: turnID}
+	return receipt, nil
 }
 
 func inputBlocks(content string, attachments []agent.ClassifiedAttachment) ([]contentBlock, error) {
@@ -159,6 +170,7 @@ func (a *Agent) startTurn(turnID string) {
 		return
 	}
 	a.turnID, a.turnStarted, a.TurnToolUses = turnID, a.clock.Now(), 0
+	a.steerProofLost = false
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 }
@@ -173,46 +185,6 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return false }
 
 func (a *Agent) operationActiveLocked() bool {
 	return a.turnID != "" || a.compacting || a.manualCompaction != nil
-}
-
-// SteerInput uses the native parent-turn queue. Images require a later full turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	a.sendMu.Lock()
-	defer a.sendMu.Unlock()
-	a.Mu.Lock()
-	active := a.turnID != "" && !a.compacting && a.manualCompaction == nil
-	a.Mu.Unlock()
-	if !active {
-		return agent.ErrNoActiveTurn
-	}
-	for _, attachment := range agent.ClassifyAttachments(attachments) {
-		if attachment.Kind != contracts.AttachmentMediaKindText {
-			return agent.ErrSteeringUnsupported
-		}
-		content += "\n\n" + providerkit.BuildInlineTextAttachmentBlock(attachment)
-	}
-	a.dispatchMu.Lock()
-	ticket := a.steers.Add("")
-	a.dispatchMu.Unlock()
-	_, err := a.request(methodTurnSteer, map[string]string{"input": content}, a.APITimeout())
-	if err == nil {
-		return nil
-	}
-	a.dispatchMu.Lock()
-	pending := slices.Contains(a.steers.Pending(), ticket)
-	if pending {
-		a.steers.Forget(ticket)
-		a.steers.Settle(a.sink)
-	}
-	a.dispatchMu.Unlock()
-	if !pending {
-		// A native echo or turn end already determines this input's disposition.
-		return nil
-	}
-	if providerkit.HasJSONRPCErrorCode(err, -32001) {
-		return agent.ErrNoActiveTurn
-	}
-	return providerkit.ClassifyJSONRPCDeliveryError(methodTurnSteer, err)
 }
 
 func (a *Agent) Interrupt(stop agent.StopContext) error {

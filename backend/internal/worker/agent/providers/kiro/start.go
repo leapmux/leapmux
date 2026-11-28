@@ -118,7 +118,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		// Two answers of the model can arrive in one turn with no update
 		// between them: the plan mode's last answer, and the first answer of
 		// the mode that runs the plan. Each chunk states its answer.
-		ChunkMessageID: chunkMessageID,
+		UpdateMessageID: chunkMessageID,
 		// A subagent streams in the parent session, and each update of it
 		// carries the id of its subtask.
 		ChildUpdateRoute: a.childUpdateRoute,
@@ -128,7 +128,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		ControlRequestObserver:     a.observeControlRequest,
-		ToolOutputComplete:         a.forgetToolOutput,
+		ToolOutputComplete:         func(_ string, toolCallID string) { a.forgetToolOutput(toolCallID) },
 		// Kiro steers through `_session/steer`, which its initialize response
 		// does not advertise.
 		SteersByOwnRoute:   true,
@@ -145,10 +145,8 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 func (a *Agent) clearProviderState() {
 	// A steer of the outgoing session can no longer reach a model: Kiro
 	// cleared its queue with the session.
-	a.steers.DropAll()
-	a.steers.Settle(a.Sink())
+	a.dropPendingSteers()
 	a.stateMu.Lock()
-	a.earlySteerEchoes = nil
 	a.turns = turnState{}
 	a.children = childState{}
 	a.controls = controlIndex{}

@@ -99,7 +99,6 @@ describe('claude extractQuotableText', () => {
 })
 
 describe('claude preview text (scroll-rail mark preview)', () => {
-  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
   // The rail reads the row through whichever shape it carries, the way
   // `chatMarkPreview` does.
   const preview = (parent: Record<string, unknown>, category: MessageCategory) =>
@@ -193,75 +192,6 @@ describe('claude preview text (scroll-rail mark preview)', () => {
         ],
       },
     }, { kind: 'assistant_text' })).toBe('hi')
-  })
-
-  it('derives the control-response display from the native response envelope (not previewText)', () => {
-    // Control-response rows resolve through controlResponseDisplay, not previewText -- Claude's
-    // derivation IS the neutral behavior envelope: allow -> Approved, deny+message -> feedback.
-    const allow = {
-      type: 'control_response',
-      response: {
-        request_id: 'r',
-        response: { behavior: 'allow' },
-      },
-    }
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: 'r',
-      request: undefined,
-      response: allow,
-    }))
-      .toEqual({ kind: 'label', text: 'Allow' })
-    const deny = {
-      type: 'control_response',
-      response: {
-        request_id: 'r',
-        response: { behavior: 'deny', message: 'use ripgrep' },
-      },
-    }
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: 'r',
-      request: undefined,
-      response: deny,
-    }))
-      .toEqual({ kind: 'feedback', message: 'use ripgrep' })
-  })
-
-  /*
-   * The envelope above says nothing about WHICH control it answers, and the two Claude
-   * offers carry different words: a plan is approved, a permission is allowed. The
-   * request decides, through the same reader the banner drew it with -- so a saved row
-   * reads the words its own button carried.
-   */
-  it.each([
-    ['ExitPlanMode', 'Approve', 'Reject'],
-    ['Bash', 'Allow', 'Deny'],
-  ])('reads the %s answer with that control\'s own words', (toolName, allowWord, denyWord) => {
-    const request = {
-      request: { tool_name: toolName, input: {} },
-    }
-    const answer = (behavior: string) => ({
-      type: 'control_response',
-      response: {
-        request_id: 'r',
-        response: { behavior },
-      },
-    })
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'c',
-      requestId: 'r',
-      request,
-      response: answer('allow'),
-    }))
-      .toEqual({ kind: 'label', text: allowWord })
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'c',
-      requestId: 'r',
-      request,
-      response: answer('deny'),
-    }))
-      .toEqual({ kind: 'label', text: denyWord })
   })
 })
 

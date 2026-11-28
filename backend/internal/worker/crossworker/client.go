@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/tunnel"
+	"github.com/leapmux/leapmux/util/ctxutil"
 )
 
 // channelOpenTimeout limits a single cross-worker E2EE channel open (the
@@ -169,9 +170,8 @@ func (c *Client) dedicatedChannel(ctx context.Context, targetWorkerID string, us
 	// channelOpenTimeout completing a handshake it then immediately
 	// closed, holding the worker-side stream handler goroutine open long
 	// after the client was gone.
-	openCtx, cancel := context.WithCancel(ctx)
+	openCtx, cancel := ctxutil.WithLinkedCancel(ctx, c.ctx)
 	defer cancel()
-	defer context.AfterFunc(c.ctx, cancel)()
 
 	return c.openChannel(openCtx, targetWorkerID, userID)
 }
@@ -264,12 +264,12 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, user
 // delegation scope used both for minting the bearer and for keying the
 // channel pool. An error that the sibling's handler answers comes back as the
 // *channelwire.RPCError that tunnel.Channel.CallRPC returns, which keeps its code.
-func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	ch, err := c.channelFor(ctx, targetWorkerID, userID)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := ch.CallRPC(ctx, method, payload)
+	resp, err := ch.CallRequest(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -292,40 +292,50 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID us
 // CLI simply stops receiving events and never learns why. Pooling is a
 // connection-reuse optimisation; it must not make two independent
 // subscribers share an identity.
-func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage) error, bindCtrl func(channel.StreamController)) error {
 	ch, err := c.dedicatedChannel(ctx, targetWorkerID, userID)
 	if err != nil {
 		return err
 	}
 	defer ch.Close()
-	return runStream(ctx, ch, method, payload, onMsg, bindCtrl)
+	return runStream(ctx, ch, req, onMsg, bindCtrl)
 }
 
 // streamRPCChannel is what runStream needs from a dedicated channel.
 // *tunnel.Channel implements it, and a test substitutes a fake.
 type streamRPCChannel interface {
 	streamChannel
-	SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers tunnel.RPCHandlers) (uint64, error)
+	SendRequestNoWait(ctx context.Context, req *leapmuxv1.InnerRpcRequest, handlers tunnel.RPCHandlers) (uint64, error)
 	UnregisterPending(reqID uint64)
 	UnregisterStream(reqID uint64)
 }
 
 // runStream runs one server-streaming inner RPC on ch, which belongs to this
-// stream alone, and returns when the stream ends or ctx is cancelled.
-func runStream(ctx context.Context, ch streamRPCChannel, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+// stream alone, and returns when the stream ends, onMsg fails, or ctx cancels.
+func runStream(ctx context.Context, ch streamRPCChannel, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage) error, bindCtrl func(channel.StreamController)) error {
 	done := make(chan struct{})
 	var doneOnce sync.Once
 	var streamErr error
-	// `closed` drops a frame the per-stream dispatcher delivers after StreamInner
-	// has already returned: the dispatcher runs the callback on its OWN goroutine,
-	// so a frame queued before teardown (a stalled ctx cancel, or a server that
-	// sends past End) can race the return and invoke onMsg on a caller that has
-	// finished. The flag is checked ONLY before onMsg, deliberately NOT
-	// synchronized with it -- holding a lock across a back-pressured onMsg would
-	// let the callback block the teardown that sets `closed`. Guarding a lone bool
-	// with no compound invariant is exactly an atomic.Bool, so it is one. This
-	// mirrors streamevents.ChannelTransport's identical guard.
-	var closed atomic.Bool
+	// stopping drops queued frames as soon as teardown begins, while sendMu
+	// serializes onMsg calls and lets teardown wait for an in-flight onMsg to
+	// finish before runStream returns to its ConnectRPC handler.
+	var stopping atomic.Bool
+	var sendMu sync.Mutex
+	var closed bool
+	forward := func(m *leapmuxv1.InnerStreamMessage) (error, bool) {
+		if stopping.Load() {
+			return nil, false
+		}
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		if closed {
+			return nil, false
+		}
+		if onMsg == nil {
+			return nil, true
+		}
+		return onMsg(m), true
+	}
 	// A streaming RPC can end with a unary error (InnerRpcResponse) instead of
 	// a stream frame -- "unknown method", "no dispatcher configured" or "too many
 	// incomplete chunked messages". Each comes from a layer that has no method
@@ -336,12 +346,9 @@ func runStream(ctx context.Context, ch streamRPCChannel, method string, payload 
 	// hanging until the caller's context expires. streamevents.ChannelTransport
 	// watches a response channel for the same reason.
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait(ctx, method, payload, tunnel.RPCHandlers{
+	reqID, err := ch.SendRequestNoWait(ctx, req, tunnel.RPCHandlers{
 		Response: respCh,
 		Stream: func(m *leapmuxv1.InnerStreamMessage) {
-			if closed.Load() {
-				return
-			}
 			if rpcErr := m.GetError(); rpcErr != nil {
 				// Assign streamErr inside the Once so it is written exactly once,
 				// happens-before close(done); a trailing error frame after the
@@ -350,13 +357,24 @@ func runStream(ctx context.Context, ch streamRPCChannel, method string, payload 
 					// Forward the error frame before the stream ends, as the
 					// same-worker path does (controlipc.streamCollector), so the
 					// caller reads the worker's error with its code.
-					onMsg(m)
+					_, _ = forward(m)
 					streamErr = channelwire.ErrorOf(rpcErr)
 					close(done)
 				})
 				return
 			}
-			onMsg(m)
+			sendErr, sent := forward(m)
+			if !sent {
+				return
+			}
+			if sendErr != nil {
+				stopping.Store(true)
+				doneOnce.Do(func() {
+					streamErr = sendErr
+					close(done)
+				})
+				return
+			}
 			if m.GetEnd() {
 				doneOnce.Do(func() { close(done) })
 			}
@@ -365,14 +383,16 @@ func runStream(ctx context.Context, ch streamRPCChannel, method string, payload 
 	if err != nil {
 		return err
 	}
-	defer ch.UnregisterStream(reqID)
-	defer ch.UnregisterPending(reqID)
-	// Flip `closed` BEFORE unregistering (defers run LIFO, so this runs first) so
-	// any frame the dispatcher delivers from here on drops itself instead of
-	// calling onMsg after StreamInner returns.
+	// Defers run LIFO: stop admitting new frames first, unregister handlers
+	// next, then take sendMu to wait for any in-flight onMsg before returning.
 	defer func() {
-		closed.Store(true)
+		sendMu.Lock()
+		closed = true
+		sendMu.Unlock()
 	}()
+	defer ch.UnregisterPending(reqID)
+	defer ch.UnregisterStream(reqID)
+	defer stopping.Store(true)
 	// Expose a controller so the local-IPC router can forward UpdateStream
 	// revisions and cancellations onto this dedicated channel's correlation id. Without it,
 	// a sibling-worker WatchEvents subscription can never revise its interest.

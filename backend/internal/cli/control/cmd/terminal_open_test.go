@@ -1,0 +1,423 @@
+package cmd
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/leapmux/leapmux/channelwire"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
+)
+
+// localIPC starts the fake hub and Worker behind the local IPC socket, the
+// transport of a command that runs inside a LeapMux tab, and returns the
+// --hub value that selects it.
+func localIPC(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher) string {
+	startSpawnIPC(t, hub, disp)
+	return ""
+}
+
+// openTerminalOnFakeWorker runs `terminal open` with args against a fake hub and
+// Worker on transport, and returns the outcome and the requests that reached
+// the Worker.
+func openTerminalOnFakeWorker(t *testing.T, start func(*testing.T, *recordingHub, controlipc.LocalDispatcher) string, stdin string, args ...string) (cliOutcome, *recordingHub, []recordedWorkerCall) {
+	t.Helper()
+	hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
+	dispatcher := &creationPublicationDispatcher{}
+	hubFlag := start(t, hub, dispatcher)
+	base := []string{"terminal", "open", "--workspace", "ws-1", "--tile", "root-1", "--worker", "worker-A", "--dir", "/src/app", "--json"}
+	base = append(base, testHubArgs(hubFlag)...)
+	o := runControlIn(t, stdin, append(base, args...)...)
+	return o, hub, dispatcher.recorded()
+}
+
+// requireOpenTerminalRequest asserts that calls holds exactly one
+// OpenTerminal, and returns it.
+func requireOpenTerminalRequest(t *testing.T, calls []recordedWorkerCall) *leapmuxv1.OpenTerminalRequest {
+	t.Helper()
+	require.Len(t, calls, 1, "one request reaches the Worker")
+	req, ok := calls[0].in.(*leapmuxv1.OpenTerminalRequest)
+	require.Truef(t, ok, "the Worker received %T", calls[0].in)
+	return req
+}
+
+// `terminal open --command` sends the command line in the OpenTerminal
+// request itself, so the Worker runs it in the shell that the request starts.
+// The rest of the request is what an open without --command sends.
+func TestTerminalOpenOverIPC_SendsTheInitialCommandInTheRequest(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			o, hub, calls := openTerminalOnFakeWorker(t, transport.start, "", "--command", "make test", "--title", "Tests")
+			data := o.Data(t)
+			got := requireOpenTerminalRequest(t, calls)
+			assert.Equal(t, data["id"], got.GetCreation().GetTabId())
+			assert.Equal(t, "ws-1", got.GetCreation().GetPlacement().GetWorkspaceId())
+			assert.Equal(t, "root-1", got.GetCreation().GetPlacement().GetTileId())
+			want := &leapmuxv1.OpenTerminalRequest{
+				WorkingDir:     "/src/app",
+				Title:          "Tests",
+				InitialCommand: "make test",
+				Target:         &leapmuxv1.OpenTerminalRequest_Creation{Creation: got.GetCreation()},
+			}
+			assert.Truef(t, proto.Equal(want, got), "the exact request:\nwant %v\ngot  %v", want, got)
+			assert.NotEmpty(t, hub.called())
+		})
+	}
+}
+
+// An open without --command leaves the field empty, which runs nothing.
+func TestTerminalOpenOverIPC_WithoutACommandSendsNone(t *testing.T) {
+	o, _, calls := openTerminalOnFakeWorker(t, localIPC, "")
+	o.Data(t)
+	assert.Empty(t, requireOpenTerminalRequest(t, calls).GetInitialCommand())
+}
+
+func TestTerminalOpenPreservesTheLiteralWorktreePath(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			const path = "/src/worktrees/selected "
+			result, _, calls := openTerminalOnFakeWorker(t, transport.start, "", "--use-worktree", path)
+			_ = result.Data(t)
+			assert.Equal(t, path, requireOpenTerminalRequest(t, calls).GetGitSetup().GetUseWorktree().GetPath())
+		})
+	}
+}
+
+func TestTerminalOpenSendsAnExactWorktreeBranch(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			result, _, calls := openTerminalOnFakeWorker(t, transport.start, "", "--use-worktree", "branch:origin/Feature")
+			_ = result.Data(t)
+			request := requireOpenTerminalRequest(t, calls)
+			assert.Equal(t, "/src/app", request.GetWorkingDir())
+			assert.Equal(t, "origin/Feature", request.GetGitSetup().GetUseWorktree().GetBranch())
+			assert.Empty(t, request.GetGitSetup().GetUseWorktree().GetPath())
+		})
+	}
+}
+
+// --command reads stdin for "-", and it drops the line endings at the end as
+// `terminal run` does, because the Worker presses Enter itself. The line
+// endings inside the command stay.
+func TestTerminalOpenOverIPC_ReadsTheCommandAsTerminalRunReadsIt(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stdin string
+		value string
+		want  string
+	}{
+		"a line from stdin":        {"go test ./...\n", "-", "go test ./..."},
+		"CRLF line endings":        {"dir\r\n\r\n", "-", "dir"},
+		"a trailing newline":       {"", "make\n", "make"},
+		"lines inside the command": {"", "cd /tmp\nls\n", "cd /tmp\nls"},
+		"leading blanks stay":      {"", "  ls", "  ls"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o, _, calls := openTerminalOnFakeWorker(t, localIPC, tc.stdin, "--command", tc.value)
+			o.Data(t)
+			assert.Equal(t, tc.want, requireOpenTerminalRequest(t, calls).GetInitialCommand())
+		})
+	}
+}
+
+// A --command that holds nothing to run fails before the command sends
+// anything: the hub and the Worker see nothing.
+func TestTerminalOpenOverIPC_RefusesAnEmptyCommand(t *testing.T) {
+	for name, tc := range map[string]struct{ stdin, value string }{
+		"an empty value":      {"", ""},
+		"blanks":              {"", " \t "},
+		"line endings only":   {"", "\r\n\n"},
+		"an empty stdin":      {"", "-"},
+		"a stdin of newlines": {"\n\n", "-"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o, hub, calls := openTerminalOnFakeWorker(t, localIPC, tc.stdin, "--command", tc.value)
+			f := o.requireFailure(t, cli.CodeUsage)
+			assert.Equal(t, "--command is empty", f.Message)
+			assert.Empty(t, hub.called(), "a refused open calls no hub")
+			assert.Empty(t, calls, "a refused open reaches no Worker")
+		})
+	}
+}
+
+func TestTerminalOpenRequest_CarriesTheInitialCommand(t *testing.T) {
+	creation := &leapmuxv1.TabCreation{TabId: "terminal-creation"}
+	req := terminalOpenRequest(openTerminalArgs{WorkerID: "w-1", WorkingDir: "/src", InitialCommand: "make test"}, creation)
+	assert.Equal(t, "make test", req.GetInitialCommand())
+	assert.Equal(t, "/src", req.GetWorkingDir())
+	assert.Same(t, creation, req.GetCreation())
+}
+
+// The help of `terminal open` states the contract of --command: when the
+// shell runs it, that a restart does not, and how to read it from stdin.
+func TestTerminalOpenLong(t *testing.T) {
+	flat := strings.Join(strings.Fields(terminalOpenLong), " ")
+	for _, fact := range []string{
+		"in the original interactive shell after its startup files run",
+		"if the shell cannot acknowledge the handoff",
+		"recovery reports an unverified outcome without running it again",
+		"A restart of the terminal does not run it again",
+		`"-" to read it from stdin`,
+	} {
+		assert.Contains(t, flat, fact)
+	}
+	for _, line := range strings.Split(terminalOpenLong, "\n") {
+		assert.LessOrEqualf(t, len(line), helpWidth, "line %q", line)
+	}
+}
+
+type quakeRunDispatcher struct {
+	adopted         bool
+	initialStatuses []leapmuxv1.TerminalStatus
+	mu              sync.Mutex
+	opened          bool
+	listCalls       int
+	sentCmds        []*leapmuxv1.SendInputRequest
+}
+
+func (d *quakeRunDispatcher) DispatchWith(_ context.Context, _ channel.Caller, r *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	var resp proto.Message
+	switch r.GetMethod() {
+	case leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure:
+		d.mu.Lock()
+		d.listCalls++
+		var terminals []*leapmuxv1.TerminalInfo
+		if len(d.initialStatuses) > 0 {
+			st := d.initialStatuses[0]
+			if len(d.initialStatuses) > 1 {
+				d.initialStatuses = d.initialStatuses[1:]
+			}
+			terminals = []*leapmuxv1.TerminalInfo{{
+				TerminalId: "quake-term-1",
+				Quake:      true,
+				WorkingDir: "/src/app",
+				Status:     st,
+			}}
+		} else if d.opened {
+			terminals = []*leapmuxv1.TerminalInfo{{
+				TerminalId: "quake-term-1",
+				Quake:      true,
+				WorkingDir: "/src/app",
+				Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
+			}}
+		}
+		d.mu.Unlock()
+		resp = &leapmuxv1.ListTerminalsResponse{Terminals: terminals}
+	case leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure:
+		d.mu.Lock()
+		d.opened = true
+		d.mu.Unlock()
+		resp = &leapmuxv1.OpenTerminalResponse{
+			TerminalId: "quake-term-1",
+			Adopted:    d.adopted,
+		}
+	case leapmuxv1connect.WorkerTerminalServiceSendInputProcedure:
+		var req leapmuxv1.SendInputRequest
+		if err := proto.Unmarshal(r.GetPayload(), &req); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.sentCmds = append(d.sentCmds, &req)
+		d.mu.Unlock()
+		resp = &leapmuxv1.SendInputResponse{}
+	default:
+		_ = w.SendError(int32(codes.Unimplemented), "unexpected method "+r.GetMethod())
+		return
+	}
+	raw, err := proto.Marshal(resp)
+	if err != nil {
+		_ = w.SendError(int32(codes.Internal), err.Error())
+		return
+	}
+	_ = w.SendResponse(channelwire.NewPayloadResponse(raw))
+}
+
+func TestTerminalQuakeRun_AdoptedSendsCommandViaSendInput(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		adopted         bool
+		initialStatuses []leapmuxv1.TerminalStatus
+		wantSendCall    bool
+	}{
+		{name: "fresh quake runs InitialCommand on open", adopted: false, wantSendCall: false},
+		{name: "adopted quake forwards command via SendInput without client polling", adopted: true, wantSendCall: true},
+		{
+			name:    "existing starting quake invokes SendInput directly without client polling",
+			adopted: false,
+			initialStatuses: []leapmuxv1.TerminalStatus{
+				leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
+			},
+			wantSendCall: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := &recordingHub{workers: workerRows("worker-A")}
+			disp := &quakeRunDispatcher{adopted: tc.adopted, initialStatuses: tc.initialStatuses}
+			startSpawnIPC(t, hub, disp)
+
+			o := runControlIn(t, "", "terminal", "quake", "run", "echo hello", "--worker", "worker-A", "--dir", "/src/app", "--json")
+			data := o.Data(t)
+			assert.Equal(t, "quake-term-1", data["id"])
+
+			disp.mu.Lock()
+			sent := append([]*leapmuxv1.SendInputRequest(nil), disp.sentCmds...)
+			listCalls := disp.listCalls
+			disp.mu.Unlock()
+			assert.Equal(t, 1, listCalls, "must only issue the initial lookup without client-side ListTerminals polling")
+			if tc.wantSendCall {
+				require.Len(t, sent, 1)
+				assert.Equal(t, "quake-term-1", sent[0].GetTerminalId())
+				assert.Equal(t, []byte("echo hello"), sent[0].GetData())
+			} else {
+				assert.Empty(t, sent)
+			}
+		})
+	}
+}
+
+func TestTerminalQuakeSend_InvokesSendInputDirectlyWithoutPolling(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		adopted         bool
+		initialStatuses []leapmuxv1.TerminalStatus
+	}{
+		{name: "fresh quake sends input directly after open", adopted: false},
+		{name: "adopted quake sends input directly", adopted: true},
+		{
+			name:            "existing starting quake sends input directly",
+			initialStatuses: []leapmuxv1.TerminalStatus{leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := &recordingHub{workers: workerRows("worker-A")}
+			disp := &quakeRunDispatcher{adopted: tc.adopted, initialStatuses: tc.initialStatuses}
+			startSpawnIPC(t, hub, disp)
+
+			o := runControlIn(t, "", "terminal", "quake", "send", "ls -la", "--key", "enter", "--worker", "worker-A", "--dir", "/src/app", "--json")
+			data := o.Data(t)
+			assert.Equal(t, "quake-term-1", data["id"])
+
+			disp.mu.Lock()
+			sent := append([]*leapmuxv1.SendInputRequest(nil), disp.sentCmds...)
+			listCalls := disp.listCalls
+			disp.mu.Unlock()
+			assert.Equal(t, 1, listCalls, "must not poll ListTerminals waiting for READY")
+			require.Len(t, sent, 1)
+			assert.Equal(t, "quake-term-1", sent[0].GetTerminalId())
+			assert.Equal(t, []byte("ls -la"), sent[0].GetData())
+			assert.Equal(t, []string{"enter"}, sent[0].GetKeys())
+		})
+	}
+}
+
+func TestTerminalOpen_WaitOnlyFlagsRequireWaitBeforeDialing(t *testing.T) {
+	cases := []struct {
+		flag string
+		args []string
+	}{
+		{"exit", []string{"--exit"}},
+		{"text", []string{"--text", "READY"}},
+		{"regex", []string{"--regex", "^READY$"}},
+		{"change", []string{"--change"}},
+		{"scrollback", []string{"--scrollback"}},
+		{"timeout", []string{"--timeout", "5s"}},
+	}
+	for _, tc := range cases {
+		t.Run("--"+tc.flag, func(t *testing.T) {
+			o, hub, calls := openTerminalOnFakeWorker(t, localIPC, "", tc.args...)
+			f := o.requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "--"+tc.flag+" needs --wait")
+			assert.Empty(t, hub.called(), "refused wait-only flag must fail before dialing the Hub")
+			assert.Empty(t, calls, "refused wait-only flag must fail before reaching the Worker")
+		})
+	}
+}
+
+type openWaitDispatcher struct {
+	open creationPublicationDispatcher
+}
+
+func (d *openWaitDispatcher) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure:
+		d.open.DispatchWith(ctx, caller, req, rw)
+	case leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure:
+		var in leapmuxv1.ListTerminalsRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		var terminals []*leapmuxv1.TerminalInfo
+		for _, id := range in.GetTabIds() {
+			terminals = append(terminals, &leapmuxv1.TerminalInfo{
+				TerminalId:      id,
+				Cols:            80,
+				Rows:            24,
+				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
+				Screen:          []byte("$ "),
+				ScreenEndOffset: 2,
+			})
+		}
+		writeProtoResponse(rw, &leapmuxv1.ListTerminalsResponse{Terminals: terminals})
+	case leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure:
+		var in leapmuxv1.WatchEventsRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		sendWatchFrame(rw, &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{
+			UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: in.GetUpdateId()},
+		}})
+		for _, entry := range in.GetTerminals() {
+			sendWatchFrame(rw, terminalFrame(entry.GetTerminalId(), replayDataEvent("", entry.GetAfterOffset(), false)))
+			sendWatchFrame(rw, terminalFrame(entry.GetTerminalId(), dataEvent("server READY\r\n", entry.GetAfterOffset()+14, false)))
+		}
+		<-ctx.Done()
+	default:
+		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+	}
+}
+
+func TestTerminalOpenOverIPC_WaitForTextHappyPath(t *testing.T) {
+	hub := &recordingHub{
+		workers:      workerRows("worker-A"),
+		materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st,
+	}
+	disp := &openWaitDispatcher{}
+	startSpawnIPC(t, hub, disp)
+
+	o := runControl(t, "terminal", "open",
+		"--workspace", "ws-1",
+		"--tile", "root-1",
+		"--worker", "worker-A",
+		"--dir", "/src/app",
+		"--command", "echo READY",
+		"--wait", "--text", "READY",
+	)
+	data := o.Data(t)
+	opened := requireOpenTerminalRequest(t, disp.open.recorded())
+	assert.Equal(t, opened.GetCreation().GetTabId(), data["id"])
+	assert.Equal(t, true, data["reached"])
+	assert.Equal(t, "ready", data["status"])
+	assert.Equal(t, "$ server READY", data["line"])
+}
+
+func TestTerminalQuakeGet_MissingQuakeReturnsNotFoundWithStartupHint(t *testing.T) {
+	hub := &recordingHub{workers: workerRows("worker-A")}
+	startSpawnIPC(t, hub, &quakeRunDispatcher{})
+
+	f := runControl(t, "terminal", "quake", "get", "--worker", "worker-A", "--dir", "/src/app").requireFailure(t, cli.CodeNotFound)
+	assert.Contains(t, f.Message, "no quake terminal is open for /src/app")
+	require.NotEmpty(t, f.Hints)
+	assert.Contains(t, f.Hints[0], `leapmux terminal quake open --dir /src/app`)
+}

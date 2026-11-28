@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
@@ -113,5 +114,53 @@ func TestKimiInterrupt(t *testing.T) {
 		before := len(rig.fake.routes())
 		require.ErrorContains(t, rig.agent.Interrupt(agent.StopContext{}), "session id")
 		assert.Len(t, rig.fake.routes(), before)
+	})
+}
+
+func TestKimiStopAndWaitWithdrawPendingControlsByInstanceID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Stop withdraws pending controls by instance ID and Wait stays idempotent", func(t *testing.T) {
+		t.Parallel()
+		sink := &kimiInstanceCancelSink{}
+		a := newOfflineKimiAgent(t, sink)
+		sink.UpdateSessionID("session_1")
+		a.HandleOutput(kimiEventFrame(t, "session_1", approvalEvent("approval_b", map[string]any{"kind": "command", "command": "ls"})))
+		instB := sink.LastPublishedControl().InstanceID
+		a.HandleOutput(kimiEventFrame(t, "session_1", questionEvent("question_a")))
+		instA := sink.LastPublishedControl().InstanceID
+		// Answered controls must not be withdrawn.
+		a.Mu.Lock()
+		a.controls["approval_answered"] = publishedKimiControl(kimiControlApproval, "session_1", true)
+		a.Mu.Unlock()
+
+		a.SimulateExitForTest()
+		a.Stop()
+		unscoped, scoped := sink.cancelSnapshots()
+		assert.Empty(t, unscoped)
+		assert.Equal(t, []kimiInstanceCancelCall{
+			{requestID: "approval_b", instanceID: instB},
+			{requestID: "question_a", instanceID: instA},
+		}, scoped)
+
+		require.NoError(t, a.Wait())
+		unscoped, scoped = sink.cancelSnapshots()
+		assert.Empty(t, unscoped)
+		assert.Len(t, scoped, 2, "Wait after Stop must not withdraw controls a second time")
+	})
+
+	t.Run("Wait withdraws pending controls after unexpected exit", func(t *testing.T) {
+		t.Parallel()
+		sink := &kimiInstanceCancelSink{}
+		a := newOfflineKimiAgent(t, sink)
+		sink.UpdateSessionID("session_1")
+		a.HandleOutput(kimiEventFrame(t, "session_1", approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayGoalStart})))
+		inst := sink.LastPublishedControl().InstanceID
+
+		a.SimulateExitForTest()
+		require.NoError(t, a.Wait())
+		unscoped, scoped := sink.cancelSnapshots()
+		assert.Empty(t, unscoped)
+		assert.Equal(t, []kimiInstanceCancelCall{{requestID: "approval_1", instanceID: inst}}, scoped)
 	})
 }

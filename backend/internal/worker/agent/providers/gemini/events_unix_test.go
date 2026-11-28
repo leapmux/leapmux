@@ -109,7 +109,7 @@ func TestGeminiIdleReplayContentIsNotRendered(t *testing.T) {
 	})
 	sink := &agenttest.Sink{}
 	started, err := Start(t.Context(), agent.Options{
-		AgentID: "gemini-load-replay", HomeDir: home, WorkingDir: work, ResumeSessionID: geminiReplaySessionID,
+		AgentID: "gemini-load-replay", HomeDir: home, WorkingDir: work, Session: agent.ResumeSession(geminiReplaySessionID),
 		// A plain shell keeps the private PATH instead of loading a user's zsh startup configuration.
 		Shell: "/bin/sh", StartupTimeout: 30 * time.Second,
 		Options: optionmap.Map{agent.OptionIDModel: "gemini-2.5-pro", agent.OptionIDPermissionMode: "default"},
@@ -129,7 +129,7 @@ func TestGeminiIdleReplayContentIsNotRendered(t *testing.T) {
 	testutil.RequireEventually(t, func() bool { return a.HasAvailableCommand("memory") })
 	assert.Empty(t, geminiRows(t, sink.Messages()), "the replay stores nothing")
 
-	require.NoError(t, a.SendInput("OLDER_NATIVE_NEXT_PROMPT", nil))
+	require.NoError(t, agenttest.SendInput(a, "OLDER_NATIVE_NEXT_PROMPT", nil))
 	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
 
 	assert.Equal(t, []string{"text:OLDER_NATIVE_RESUME_CONFIRMED", "turn_end:0"}, geminiRows(t, sink.Messages()),

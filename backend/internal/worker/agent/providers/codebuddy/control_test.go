@@ -25,7 +25,7 @@ func permissionFixture(t *testing.T) (*Agent, *agenttest.ControlSink, *bytes.Buf
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(controls))
 	stdin := &bytes.Buffer{}
 	a.SetStdinForTest(agenttest.NopStdin(stdin))
-	require.NoError(t, a.SendInput("Run the scripted command.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the scripted command.", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"waiting-control","name":"Bash"}]}}`))
 	stdin.Reset()
 	return a, controls, stdin
@@ -74,6 +74,7 @@ func TestCodebuddyInterruptRefusesEachWaitingPermissionWithoutASecondStop(t *tes
 	a.HandleOutput(canUseTool("perm_b"))
 	a.HandleOutput(canUseTool("perm_a"))
 	require.Len(t, controls.PublishedControls(), 2)
+	agenttest.AssertPublishedControlKeys(t, codebuddyProvider{}, controls)
 
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
@@ -176,7 +177,7 @@ func TestCodebuddyFailedAnswerKeepsTheNativePermissionOpen(t *testing.T) {
 	a, _, _ := permissionFixture(t)
 	a.HandleOutput(canUseTool("perm_1"))
 	a.SetStdinForTest(agenttest.FailingStdin{})
-	require.Error(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)}))
 	a.mu.Lock()
 	_, open := a.controls["perm_1"]
 	a.mu.Unlock()
@@ -201,7 +202,7 @@ func TestCodebuddyPermissionInterruptSendsGlobalStopAfterTheNativeRunEnds(t *tes
 	rows := controls.Messages()
 	require.NotEmpty(t, rows)
 	assert.Equal(t, agent.MessageCompletionInterrupted, rows[len(rows)-1].Completion)
-	require.NoError(t, a.SendInput("Run the next turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the next turn.", nil))
 	a.HandleOutput([]byte(codebuddyResultFinished))
 	rows = controls.Messages()
 	assert.NotEqual(t, agent.MessageCompletionInterrupted, rows[len(rows)-1].Completion)
@@ -233,7 +234,7 @@ func TestCodebuddyInterruptRefusesNoPermissionThatNoLongerWaits(t *testing.T) {
 	for name, settle := range map[string]func(t *testing.T, a *Agent, controls *agenttest.ControlSink){
 		"the reader answered it": func(t *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.HandleOutput(canUseTool("perm_1"))
-			require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)}))
 		},
 		"the native turn ended": func(_ *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.HandleOutput(canUseTool("perm_1"))
@@ -282,9 +283,9 @@ func TestCodebuddyBypassApprovesPendingAndLaterTools(t *testing.T) {
 	for _, id := range []string{"question", "later-question"} {
 		assert.NotContains(t, peer.String(), `"request_id":"`+id+`"`, "Bypass must not answer a question")
 		answer := []byte(codebuddyControlAnswer(`{"allowed":true,"updatedInput":{"answers":{"Color":"Green"}}}`)(id))
-		require.NoError(t, a.SendRawInput(answer, agent.StopContext{}), "the question must remain answerable")
+		require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}), "the question must remain answerable")
 		assert.Contains(t, peer.String(), string(answer))
-		require.ErrorContains(t, a.SendRawInput(answer, agent.StopContext{}), "no longer pending")
+		require.ErrorContains(t, a.SendRawInput(agent.RawInput{Data: answer}), "no longer pending")
 	}
 }
 
@@ -295,7 +296,7 @@ func TestCodebuddyInterruptRefusesAQuestionBeforeTheCompletedAssistantFrame(t *t
 	a.sink = agent.NewProviderServices(controls)
 	stdin := &bytes.Buffer{}
 	a.SetStdinForTest(agenttest.NopStdin(stdin))
-	require.NoError(t, a.SendInput("Ask the scripted question.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Ask the scripted question.", nil))
 	beginCodebuddyModelStream(t, a, nil)
 	a.HandleOutput(codebuddyProgressFrame(t, map[string]any{
 		"type": "content_block_start", "index": 0,
@@ -319,10 +320,10 @@ func TestCodebuddyInterruptRefusesAQuestionBeforeTheCompletedAssistantFrame(t *t
 func TestCodebuddyRefusesAnUnknownOrRepeatedPermissionAnswer(t *testing.T) {
 	a, _, stdin := permissionFixture(t)
 	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Empty(t, stdinFrames(t, stdin))
 	a.HandleOutput(canUseTool("perm_1"))
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
+	assert.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Len(t, stdinFrames(t, stdin), 1)
 }

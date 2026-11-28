@@ -196,33 +196,68 @@ func handleWatchEvents(svc *Service) func(context.Context, channel.Caller, *leap
 // startup status it may have joined too late to see.
 func (svc *Service) replayTerminalCatchUp(
 	sink *replaySink,
-	termID string,
-	afterOffset int64,
+	interest *leapmuxv1.WatchTerminalEntry,
 	row terminalRecord,
 ) {
-	// The frontend's after_offset tells us how far it has already
-	// processed; ScreenSnapshotSince returns an incremental delta when the
-	// offset is inside the retained ring, or a full-state snapshot (with
+	termID := interest.GetTerminalId()
+	// The subscriber's after_offset tells us how far it has already processed.
+	// ScreenReplaySince (for ScreenGeometry=true) and ScreenSnapshotSince (for
+	// ScreenGeometry=false) return an incremental delta when the offset is
+	// inside the retained ring, or a full-state snapshot (with
 	// is_snapshot=true) when the subscriber has fallen behind or is
-	// cold-subscribing. A caller that is caught up gets (nil, _, false)
-	// and no event is sent.
-	data, endOffset, isSnapshot := svc.Terminals.ScreenSnapshotSince(termID, afterOffset)
-	if len(data) > 0 {
-		sink.send(&leapmuxv1.WatchEventsResponse{
-			Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
-				TerminalEvent: &leapmuxv1.TerminalEvent{
-					TerminalId: termID,
-					Event: &leapmuxv1.TerminalEvent_Data{
-						Data: &leapmuxv1.TerminalData{
-							Data:       data,
-							IsSnapshot: isSnapshot,
-							EndOffset:  endOffset,
-						},
-					},
-				},
-			},
-		})
+	// cold-subscribing. Every WatchEvents catch-up frame sets
+	// replay_complete=true even when data is empty so subscribers can order
+	// catch-up before live chunks.
+	var screen *leapmuxv1.TerminalData
+	if interest.GetScreenGeometry() {
+		if replay, ok := svc.Terminals.ScreenReplaySince(
+			termID,
+			interest.GetScreenEpoch(),
+			interest.GetAfterOffset(),
+			interest.GetAfterGeometryRevision(),
+		); ok {
+			screen = &leapmuxv1.TerminalData{
+				Data:           replay.Data,
+				EndOffset:      replay.EndOffset,
+				IsSnapshot:     replay.Snapshot,
+				ScreenTimeline: terminalScreenTimelineProto(&replay.Timeline),
+			}
+		}
+	} else if data, endOffset, isSnapshot, ok := svc.Terminals.ScreenSnapshotSince(termID, interest.GetAfterOffset()); ok {
+		screen = &leapmuxv1.TerminalData{
+			Data:       data,
+			EndOffset:  endOffset,
+			IsSnapshot: isSnapshot,
+		}
 	}
+	if screen == nil {
+		screen = &leapmuxv1.TerminalData{}
+		afterOffset := interest.GetAfterOffset()
+		if afterOffset <= 0 && len(row.Screen) > 0 {
+			screen.Data = row.Screen
+			screen.EndOffset = int64(len(row.Screen))
+			screen.IsSnapshot = true
+		} else if afterOffset > 0 {
+			// The client already holds output up to after_offset for this
+			// DB-only exited terminal. Sending row.Screen as a snapshot
+			// would reset the terminal buffer and wipe scrollback.
+			screen.EndOffset = afterOffset
+		}
+		if interest.GetScreenGeometry() {
+			// The stored screen predates this live buffer. Its replay header
+			// carries no native geometry cursor.
+			screen.ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{}
+		}
+	}
+	screen.ReplayComplete = true
+	sink.send(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
+			TerminalEvent: &leapmuxv1.TerminalEvent{
+				TerminalId: termID,
+				Event:      &leapmuxv1.TerminalEvent_Data{Data: screen},
+			},
+		},
+	})
 
 	// Replay current startup status so a subscriber that joins after
 	// READY / STARTUP_FAILED was broadcast still converges (the prior
@@ -238,6 +273,6 @@ func (svc *Service) replayTerminalCatchUp(
 	// derive runs inside the queue's lock for the same reason. The screen data
 	// above stays outside, because the client orders it by offset.
 	svc.Watchers.ReplayTerminalStatus(termID, sink, func() *leapmuxv1.TerminalEvent {
-		return svc.derivedTerminalStatusEvent(&row)
+		return svc.derivedTerminalStatusEvent(&row, interest.GetScreenGeometry())
 	})
 }

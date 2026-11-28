@@ -20,7 +20,7 @@ func TestStartReasonixResolvesResumedLaunchAliasesNatively(t *testing.T) {
 			t.Setenv("GO_REASONIX_TEST_RESUME_ALIAS", scenario)
 			installFakeReasonixCLI(t, filepath.Join(t.TempDir(), "args.txt"))
 			provider, err := Start(t.Context(), agent.Options{
-				AgentID: "reasonix-alias", ResumeSessionID: "reasonix-resume", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+				AgentID: "reasonix-alias", Session: agent.ResumeSession("reasonix-resume"), WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
 				Options: map[string]string{agent.OptionIDModel: "deepseek-flash"}, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 			}, agent.NewProviderServices(&agenttest.Sink{}))
 			if scenario == "invalid snapshot" {

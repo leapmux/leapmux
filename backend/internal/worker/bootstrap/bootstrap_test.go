@@ -305,6 +305,8 @@ func wireForTestWithKeypair(
 	require.NoError(t, err)
 
 	client := newTestHubClient(t, "http://127.0.0.1:0")
+	var w *Wiring
+	t.Cleanup(func() { w.WaitHandlers() })
 	t.Cleanup(client.Stop)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -322,7 +324,7 @@ func wireForTestWithKeypair(
 		DataDir:        shortWorkerDataDir(t),
 	}
 	adjust(&params)
-	w := Wire(params)
+	w = Wire(params)
 	if runtime.GOOS != "windows" {
 		factory := w.Service.ControlIPC.(*controlipc.Factory)
 		if factory.SocketDir != "" && factory.SocketDir != controlipc.SocketDir(params.DataDir) {
@@ -672,8 +674,7 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
 
 	// The wrapper must still do the delivery it wrapped.
-	assert.Eventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
-		5*time.Second, 10*time.Millisecond,
+	testutil.AssertEventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
 		"the identity nudge dropped the delivery it wraps")
 	assert.Equal(t, "alice", w.Service.OwnerUsername(userid.MustNew("user-1")),
 		"the delivery carries the owner's username to the service")

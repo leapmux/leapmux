@@ -51,7 +51,7 @@ func TestPiAbortRejectsAnAcknowledgementForAnotherCommand(t *testing.T) {
 			a.Mu.Unlock()
 			output := &bytes.Buffer{}
 			a.SetStdinForTest(agenttest.NopStdin(output))
-			require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My retained answer"}`), agent.StopContext{}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"select","value":"My retained answer"}`)}))
 			a.HandleOutput([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
 			frames := strings.Split(strings.TrimSpace(output.String()), "\n")
 			require.Len(t, frames, 2)

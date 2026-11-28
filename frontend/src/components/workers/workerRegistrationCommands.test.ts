@@ -25,6 +25,7 @@ describe('workerRegistrationCommands', () => {
     const command = workerRegistrationCommands({ hubUrl: literals, registrationKey: literals, shell: 'posix' })!
     const output = execFileSync('/bin/sh', ['-c', `leapmux() { printf '%s\\0' "$@"; }; ${command.register}`], { encoding: 'utf8' })
     expect(output.split('\0')).toEqual([
+      'daemon',
       'worker',
       'register',
       '--hub',
@@ -64,7 +65,7 @@ describe('workerRegistrationCommands', () => {
             : 'leapmux')
           copyFileSync(process.execPath, binary)
           writeFileSync(join(directory, 'package.json'), '{"type":"commonjs"}')
-          writeFileSync(join(directory, 'worker'), `const fs = require('node:fs'); const path = require('node:path'); fs.appendFileSync(process.env.LEAPMUX_ARGV_OUTPUT, JSON.stringify([path.basename(process.argv[1]), ...process.argv.slice(2)]) + '\\n'); process.stderr.write('external receiver diagnostic\\n'); process.exitCode = Number(process.env.LEAPMUX_ARGV_EXIT || 0);`)
+          writeFileSync(join(directory, 'daemon'), `const fs = require('node:fs'); const path = require('node:path'); fs.appendFileSync(process.env.LEAPMUX_ARGV_OUTPUT, JSON.stringify([path.basename(process.argv[1]), ...process.argv.slice(2)]) + '\\n'); process.stderr.write('external receiver diagnostic\\n'); process.exitCode = Number(process.env.LEAPMUX_ARGV_EXIT || 0);`)
           const output = join(directory, 'arguments.txt')
           const exitOutput = join(directory, 'exit.txt')
           const environment: NodeJS.ProcessEnv = {
@@ -101,6 +102,7 @@ describe('workerRegistrationCommands', () => {
               }
               commands.push(workerRegistrationCommands(inputs)!.register)
               expected.push([
+                'daemon',
                 'worker',
                 'register',
                 '--hub',
@@ -175,14 +177,14 @@ describe('workerRegistrationCommands', () => {
       registrationKey: 'key with spaces',
       shell: 'posix',
     })
-    expect(posix?.register).toBe(`leapmux worker register --hub 'https://hub.example/path' --registration-key 'key with spaces'`)
+    expect(posix?.register).toBe(`leapmux daemon worker register --hub 'https://hub.example/path' --registration-key 'key with spaces'`)
 
     const powershell = workerRegistrationCommands({
       hubUrl: 'https://hub.example/path',
       registrationKey: 'it\'s a key',
       shell: 'powershell',
     })
-    expect(powershell?.register).toContain(`$info.Arguments = 'worker register --hub "https://hub.example/path" --registration-key "it''s a key"'`)
+    expect(powershell?.register).toContain(`$info.Arguments = 'daemon worker register --hub "https://hub.example/path" --registration-key "it''s a key"'`)
     expect(powershell?.register).toContain('System.Diagnostics.ProcessStartInfo')
   })
 
@@ -192,7 +194,7 @@ describe('workerRegistrationCommands', () => {
       registrationKey: 'a\'b',
       shell: 'posix',
     }) ?? {}
-    expect(register).toBe(`leapmux worker register --hub 'unix:/tmp/leapmux hub.sock' --registration-key 'a'\\''b'`)
+    expect(register).toBe(`leapmux daemon worker register --hub 'unix:/tmp/leapmux hub.sock' --registration-key 'a'\\''b'`)
   })
 
   it('rejects prohibited control characters in every argument', () => {
@@ -221,7 +223,7 @@ describe('workerRegistrationCommands', () => {
       }) ?? {}
       expect(register).not.toContain('worker start')
       expect(register).not.toContain('\n')
-      expect(start).toBe('leapmux worker start')
+      expect(start).toBe('leapmux daemon worker start')
     }
   })
 

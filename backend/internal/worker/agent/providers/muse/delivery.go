@@ -10,6 +10,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type nativeParentInputStatus uint8
@@ -35,6 +36,7 @@ type nativeParentInputMatch struct {
 	Records        []json.RawMessage
 	IdempotencyKey string
 	InboxID        string
+	Receipt        agent.NativeInputReceipt
 	Reason         string
 }
 
@@ -129,22 +131,12 @@ func nativeInputEvidenceFailure(log *nativeLog, evidence nativeInputEvidence) st
 	return ""
 }
 
-// nativeInputString checks the JSON type. The backend does not use the body's
-// text to associate records or produce a rendered message.
-func nativeInputString(raw json.RawMessage) (string, bool) {
-	var value *string
-	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value == nil {
-		return "", false
-	}
-	return *value, true
-}
-
 func nativeInputOptionalString(fields map[string]json.RawMessage, key string) (string, bool, string) {
 	raw, present := fields[key]
 	if !present {
 		return "", false, ""
 	}
-	value, valid := nativeInputString(raw)
+	value, valid := providerkit.RawString(raw)
 	if !valid {
 		return "", true, "A native input argument has an invalid string value."
 	}
@@ -334,12 +326,61 @@ func nativeInputArgumentsFailure(raw string, source nativeInputSource, spawn nat
 		}
 	}
 	if raw, present := fields["interrupt"]; present {
-		var interrupt *bool
-		if json.Unmarshal(raw, &interrupt) != nil || interrupt == nil {
+		if providerkit.RawOptionalBool(raw) == nil {
 			return "The native parent input interrupt option is invalid."
 		}
 	}
 	return ""
+}
+
+type nativeChildLineage struct {
+	spawn        nativeInputEvidence
+	spawnControl nativeInputControl
+	binding      nativeInputEvidence
+	attestation  nativeInputEvidence
+}
+
+// resolveNativeChildLineage verifies the unique spawn, session-binding, and
+// run-attestation control records for target.
+func resolveNativeChildLineage(log *nativeLog, target nativeParentInputTarget) (nativeChildLineage, nativeParentInputStatus, string) {
+	spawn, spawnControl, count := selectNativeInputControl(log, contracts.MuseParentInputSpawnAccepted, func(control nativeInputControl) bool {
+		return control.SubagentID == target.SubagentID
+	})
+	if count == 0 {
+		return nativeChildLineage{}, nativeParentInputPending, "The native child spawn evidence is unavailable."
+	}
+	if count != 1 || spawnControl.ParentSessionID != target.ParentSessionID {
+		return nativeChildLineage{}, nativeParentInputInvalid, "The native child spawn evidence is ambiguous."
+	}
+	binding, _, count := selectNativeInputControl(log, contracts.MuseParentInputChildSessionBound, func(control nativeInputControl) bool {
+		return control.SubagentID == target.SubagentID && control.ChildSessionID == target.ChildSessionID
+	})
+	if count == 0 {
+		return nativeChildLineage{}, nativeParentInputPending, "The native child binding is unavailable."
+	}
+	if count != 1 {
+		return nativeChildLineage{}, nativeParentInputInvalid, "The native child binding is ambiguous."
+	}
+	attestation, _, count := selectNativeInputControl(log, contracts.MuseParentInputStartAttested, func(control nativeInputControl) bool {
+		return control.SubagentID == target.SubagentID && control.SubagentSessionID == target.ChildSessionID && control.RunStream == contracts.MuseParentInputRun+"/"+target.RunID
+	})
+	if count == 0 {
+		return nativeChildLineage{}, nativeParentInputPending, "The native child run attestation is unavailable."
+	}
+	if count != 1 {
+		return nativeChildLineage{}, nativeParentInputInvalid, "The native child run attestation is ambiguous."
+	}
+	for _, evidence := range []nativeInputEvidence{spawn, binding, attestation} {
+		if failure := nativeInputEvidenceFailure(log, evidence); failure != "" {
+			return nativeChildLineage{}, nativeParentInputInvalid, failure
+		}
+	}
+	return nativeChildLineage{
+		spawn:        spawn,
+		spawnControl: spawnControl,
+		binding:      binding,
+		attestation:  attestation,
+	}, nativeParentInputMatched, ""
 }
 
 // matchNativeParentInput proves the exact receipt and owned destination.
@@ -371,7 +412,7 @@ func matchNativeParentInput(log *nativeLog, drain storedRecord, target nativePar
 		return invalid("The native input delivery has no snapshot.")
 	}
 	var source nativeInputSource
-	if len(event.Snapshot.Source) == 0 || bytes.Equal(bytes.TrimSpace(event.Snapshot.Source), []byte("null")) || json.Unmarshal(event.Snapshot.Source, &source) != nil {
+	if !providerkit.RawPresent(event.Snapshot.Source) || json.Unmarshal(event.Snapshot.Source, &source) != nil {
 		return invalid("The native input delivery has an invalid source.")
 	}
 	if source.Source != contracts.MuseParentInputInputSource {
@@ -380,7 +421,7 @@ func matchNativeParentInput(log *nativeLog, drain storedRecord, target nativePar
 	if event.ItemID == "" || drainEvidence.envelope.CausationID != nil && *drainEvidence.envelope.CausationID != event.ItemID || event.Target != (nativeStream{Kind: contracts.MuseParentInputRun, ID: target.RunID}) || source.CommandID == "" || source.ParentSessionID != target.ParentSessionID || source.SubagentID != target.SubagentID {
 		return invalid("The native input delivery has a conflicting identity.")
 	}
-	if _, valid := nativeInputString(event.Snapshot.Body); !valid {
+	if _, valid := providerkit.RawString(event.Snapshot.Body); !valid {
 		return invalid("The native input delivery has no string body.")
 	}
 	if source.InputKind != contracts.MuseParentInputSendMessage && source.InputKind != contracts.MuseParentInputFollowupTask {
@@ -390,48 +431,24 @@ func matchNativeParentInput(log *nativeLog, drain storedRecord, target nativePar
 	if failure != "" {
 		return invalid(failure)
 	}
-	if human {
-		return inputOutcome(nativeParentInputHuman, "The worker owns the human child input.")
-	}
-	human, failure = nativeInputHumanIntake(log, source)
-	if failure != "" {
-		return invalid(failure)
-	}
-	if human {
-		if len(source.Caller) != 0 {
-			return invalid("The native input has conflicting caller provenance.")
-		}
-		return inputOutcome(nativeParentInputHuman, "The worker owns the admitted human child input.")
-	}
-	spawn, spawnControl, count := selectNativeInputControl(log, contracts.MuseParentInputSpawnAccepted, func(control nativeInputControl) bool { return control.SubagentID == target.SubagentID })
-	if count == 0 {
-		return pending("The native child spawn evidence is unavailable.")
-	}
-	if count != 1 || spawnControl.ParentSessionID != target.ParentSessionID {
-		return invalid("The native child spawn evidence is ambiguous.")
-	}
-	binding, _, count := selectNativeInputControl(log, contracts.MuseParentInputChildSessionBound, func(control nativeInputControl) bool {
-		return control.SubagentID == target.SubagentID && control.ChildSessionID == target.ChildSessionID
-	})
-	if count == 0 {
-		return pending("The native child binding is unavailable.")
-	}
-	if count != 1 {
-		return invalid("The native child binding is ambiguous.")
-	}
-	attestation, _, count := selectNativeInputControl(log, contracts.MuseParentInputStartAttested, func(control nativeInputControl) bool {
-		return control.SubagentID == target.SubagentID && control.SubagentSessionID == target.ChildSessionID && control.RunStream == contracts.MuseParentInputRun+"/"+target.RunID
-	})
-	if count == 0 {
-		return pending("The native child run attestation is unavailable.")
-	}
-	if count != 1 {
-		return invalid("The native child run attestation is ambiguous.")
-	}
-	for _, evidence := range []nativeInputEvidence{spawn, binding, attestation} {
-		if failure := nativeInputEvidenceFailure(log, evidence); failure != "" {
+	if !human {
+		human, failure = nativeInputHumanIntake(log, source)
+		if failure != "" {
 			return invalid(failure)
 		}
+		if human && len(source.Caller) != 0 {
+			return invalid("The native input has conflicting caller provenance.")
+		}
+	}
+	if human {
+		return nativeParentInputMatch{
+			Status:  nativeParentInputHuman,
+			Receipt: agent.NativeInputReceipt{SessionID: target.ChildSessionID, InputID: source.CommandID, TurnID: target.RunID},
+		}
+	}
+	lineage, lineageStatus, lineageReason := resolveNativeChildLineage(log, target)
+	if lineageStatus != nativeParentInputMatched {
+		return inputOutcome(lineageStatus, lineageReason)
 	}
 	receipts, failure := nativeInputReceipts(log, event.ItemID, target.SubagentID)
 	if failure != "" {
@@ -481,7 +498,7 @@ func matchNativeParentInput(log *nativeLog, drain storedRecord, target nativePar
 		if callMatches != 1 {
 			return invalid("The native parent call identity is ambiguous.")
 		}
-		if failure := nativeInputArgumentsFailure(*call.Args, source, spawnControl); failure != "" {
+		if failure := nativeInputArgumentsFailure(*call.Args, source, lineage.spawnControl); failure != "" {
 			return invalid(failure)
 		}
 
@@ -498,5 +515,5 @@ func matchNativeParentInput(log *nativeLog, drain storedRecord, target nativePar
 	}
 	identity := fmt.Sprintf("%q:%q:%q", target.ParentSessionID, target.ChildSessionID, event.ItemID)
 	sum := sha256.Sum256([]byte(identity))
-	return nativeParentInputMatch{Status: nativeParentInputMatched, Original: slices.Clone(drain.raw), Records: []json.RawMessage{slices.Clone(selectedOrigin.stored.raw), slices.Clone(selectedReceipt.evidence.stored.raw), slices.Clone(spawn.stored.raw), slices.Clone(binding.stored.raw), slices.Clone(attestation.stored.raw)}, IdempotencyKey: fmt.Sprintf("muse:child-input:%x", sum), InboxID: event.ItemID}
+	return nativeParentInputMatch{Status: nativeParentInputMatched, Original: slices.Clone(drain.raw), Records: []json.RawMessage{slices.Clone(selectedOrigin.stored.raw), slices.Clone(selectedReceipt.evidence.stored.raw), slices.Clone(lineage.spawn.stored.raw), slices.Clone(lineage.binding.stored.raw), slices.Clone(lineage.attestation.stored.raw)}, IdempotencyKey: fmt.Sprintf("muse:child-input:%x", sum), InboxID: event.ItemID}
 }

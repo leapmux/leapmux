@@ -14,7 +14,7 @@ import (
 func TestBuildUserMessagesEncodesNativeImageSource(t *testing.T) {
 	t.Parallel()
 	image := []byte{0x89, 'P', 'N', 'G', 0x00}
-	messages, err := buildUserMessages("Describe the image.", []*leapmuxv1.Attachment{{
+	messages, _, err := buildUserMessages("Describe the image.", []*leapmuxv1.Attachment{{
 		Filename: "shot.png", MimeType: "image/png", Data: image,
 	}})
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestBuildUserMessagesEncodesNativeImageSource(t *testing.T) {
 
 func TestBuildUserMessagesKeepsTextAttachmentBytes(t *testing.T) {
 	t.Parallel()
-	messages, err := buildUserMessages("Read the note.", []*leapmuxv1.Attachment{{
+	messages, _, err := buildUserMessages("Read the note.", []*leapmuxv1.Attachment{{
 		Filename: "notes.txt", MimeType: "text/plain", Data: []byte("unique-note-42"),
 	}})
 	require.NoError(t, err)
@@ -61,7 +61,7 @@ func TestBuildUserMessagesRejectsInvalidImages(t *testing.T) {
 		{Filename: "empty.png", MimeType: "image/png"},
 		{Filename: "unsupported.heic", MimeType: "image/heic", Data: []byte{1, 2, 3}},
 	} {
-		_, err := buildUserMessages("Describe it.", []*leapmuxv1.Attachment{attachment})
+		_, _, err := buildUserMessages("Describe it.", []*leapmuxv1.Attachment{attachment})
 		require.Error(t, err, "the native Letta message must reject %s", attachment.Filename)
 	}
 }

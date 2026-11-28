@@ -118,13 +118,13 @@ func TestStartCursorCLI_LoadSessionUsesResumeID(t *testing.T) {
 	installFakeCursorCLI(t, "load")
 
 	provider, err := Start(context.Background(), agent.Options{
-		AgentID:         "cursor-load",
-		HomeDir:         home,
-		WorkingDir:      t.TempDir(),
-		ResumeSessionID: "cursor-resume",
-		Shell:           testutil.TestShell(),
-		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		AgentID:       "cursor-load",
+		HomeDir:       home,
+		WorkingDir:    t.TempDir(),
+		Session:       agent.ResumeSession("cursor-resume"),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 

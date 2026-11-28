@@ -28,7 +28,7 @@ func TestSDKInputRoutesSessionFrames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, _, stdin := newGoalAgent(t)
-			require.NoError(t, a.SendRawInput([]byte(tc.raw), agent.StopContext{}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(tc.raw)}))
 			var frame map[string]json.RawMessage
 			require.NoError(t, json.Unmarshal([]byte(stdin.String()), &frame))
 			if tc.want == "" {

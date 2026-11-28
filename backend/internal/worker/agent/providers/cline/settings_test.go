@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // updates returns the `updates` of every session.update_connection.
@@ -387,19 +388,19 @@ func TestASendDuringARebuildIsRefusedAsBusy(t *testing.T) {
 		r.agent.UpdateSettings(options(agent.OptionIDPermissionMode, contracts.ClinePermissionModePlan))
 	}()
 	detachID := <-detached
-	err := r.agent.SendInput("Hi.", nil)
+	_, err := r.agent.SendInput("Hi.", nil)
 	require.ErrorIs(t, err, agent.ErrAgentBusy, "the message waits for the rebuild")
 	var busy *agent.AgentBusyError
 	require.ErrorAs(t, err, &busy)
 	assert.False(t, busy.ActiveTurnSteerable, "no run takes a steer during the rebuild")
-	require.ErrorIs(t, r.agent.SteerInput("Hi.", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Hi."}), agent.ErrAgentBusy)
 	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	assert.Empty(t, r.hub.commandsNamed(commandRunAbort), "the detached session has no run to abort")
 	assert.Empty(t, r.hub.commandsNamed(commandSessionSendInput), "nothing reaches the detached runtime")
 	r.hub.reply(detachID, fakeReply{})
 	<-updated
 	assert.False(t, r.turnActive(), "the rebuild releases the input queue")
-	require.NoError(t, r.agent.SendInput("Hi.", nil), "the next message runs on the new runtime")
+	require.NoError(t, agenttest.SendInput(r.agent, "Hi.", nil), "the next message runs on the new runtime")
 }
 
 // A move from Auto-approve to Act and back during one turn leaves the runtime
@@ -501,7 +502,7 @@ func TestARefusedRebuildBetweenTurnsKeepsTheOldMode(t *testing.T) {
 	assert.Equal(t, sessionID, r.sessionID())
 	assert.False(t, r.turnActive(), "the failed rebuild releases the input queue")
 	assert.Equal(t, contracts.ClinePermissionModeAct, r.sink.LastSettingsRefresh().PermissionMode, "the stored value is the one that runs")
-	require.NoError(t, r.agent.SendInput("Hi.", nil), "the session in its old mode takes the next message")
+	require.NoError(t, agenttest.SendInput(r.agent, "Hi.", nil), "the session in its old mode takes the next message")
 }
 
 // A request that states nothing changes nothing, and confirms every value.

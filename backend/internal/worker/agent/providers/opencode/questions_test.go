@@ -20,7 +20,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,12 +73,9 @@ func TestOpenCodeQuestions_PublishedPayloadDoesNotWithholdTheAnswer(t *testing.T
 		return len(published) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
 
+	agenttest.AssertPublishedControlKeys(t, FamilyProvider{}, sink)
 	answer := []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`)
-	resolved := acp.Provider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       published[0].RequestID,
-		RequestPayload:  published[0].Payload,
-		ResponseContent: answer,
-	})
+	resolved := agenttest.ResolveAnswer(FamilyProvider{}, published[0].Payload, published[0].RequestID, agent.ControlAnswer{Content: answer})
 	assert.False(t, resolved.Withhold, "the answer reaches the daemon")
 	assert.Equal(t, answer, resolved.Content)
 }
@@ -102,11 +98,14 @@ func TestOpenCodeQuestions_AnswersThroughTheDaemonRoute(t *testing.T) {
 			sink := &agenttest.ControlSink{}
 			questions, ctx := bridgeFakeDaemon(t, daemon, sink)
 			daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+			var published []agenttest.ControlRequestRecord
 			require.Eventually(t, func() bool {
-				return len(sink.PublishedControls()) == 1
+				published = sink.PublishedControls()
+				return len(published) == 1
 			}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
+			require.NotEmpty(t, published[0].InstanceID)
 
-			handled, err := questions.answer(ctx, []byte(tc.frame))
+			handled, err := questions.answer(ctx, agent.RawInput{Data: []byte(tc.frame), ControlInstanceID: published[0].InstanceID})
 			require.NoError(t, err)
 			assert.True(t, handled, "the bridge takes the frame instead of the stdio stream")
 			answers := daemon.Answers()
@@ -122,6 +121,75 @@ func TestOpenCodeQuestions_AnswersThroughTheDaemonRoute(t *testing.T) {
 	}
 }
 
+func TestOpenCodeQuestions_RefusesMissingOrMismatchedInstanceID(t *testing.T) {
+	t.Parallel()
+	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	sink := &agenttest.ControlSink{}
+	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
+	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	var published []agenttest.ControlRequestRecord
+	require.Eventually(t, func() bool {
+		published = sink.PublishedControls()
+		return len(published) == 1
+	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
+	require.NotEmpty(t, published[0].InstanceID)
+
+	frame := []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`)
+	handled, err := questions.answer(ctx, agent.RawInput{Data: frame})
+	assert.True(t, handled)
+	require.ErrorIs(t, err, agent.ErrControlInstanceUnstated)
+	assert.Empty(t, daemon.Answers())
+
+	handled, err = questions.answer(ctx, agent.RawInput{Data: frame, ControlInstanceID: "stale-instance"})
+	assert.True(t, handled)
+	require.ErrorIs(t, err, agent.ErrControlInstanceReplaced)
+	assert.Empty(t, daemon.Answers())
+
+	handled, err = questions.answer(ctx, agent.RawInput{Data: frame, ControlInstanceID: published[0].InstanceID})
+	assert.True(t, handled)
+	require.NoError(t, err)
+	require.Len(t, daemon.Answers(), 1)
+}
+
+type openCodeInstanceCancelSink struct {
+	agenttest.ControlSink
+	mu        sync.Mutex
+	instances []string
+}
+
+func (s *openCodeInstanceCancelSink) CancelControlRequestInstance(requestID, instanceID string) {
+	s.mu.Lock()
+	s.instances = append(s.instances, requestID+":"+instanceID)
+	s.mu.Unlock()
+	s.ControlSink.CancelControlRequestInstance(requestID, instanceID)
+}
+
+func (s *openCodeInstanceCancelSink) canceledInstances() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.instances...)
+}
+
+func TestOpenCodeQuestions_WithdrawPassesPublishedInstanceID(t *testing.T) {
+	t.Parallel()
+	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	sink := &openCodeInstanceCancelSink{}
+	bridgeFakeDaemon(t, daemon, sink)
+	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	var published []agenttest.ControlRequestRecord
+	require.Eventually(t, func() bool {
+		published = sink.PublishedControls()
+		return len(published) == 1
+	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
+	require.NotEmpty(t, published[0].InstanceID)
+
+	daemon.Send("data: {\"id\":\"evt_2\",\"type\":\"" + contracts.OpenCodeEventQuestionReplied + "\",\"properties\":{\"requestID\":\"que_1\"}}\n\n")
+	require.Eventually(t, func() bool {
+		return len(sink.canceledInstances()) == 1
+	}, 3*time.Second, 5*time.Millisecond, "withdraw cancels the published instance")
+	assert.Equal(t, []string{published[0].RequestID + ":" + published[0].InstanceID}, sink.canceledInstances())
+}
+
 // Every other control answer belongs to the ACP stream. A bridge that claimed one
 // would swallow every permission decision the same agent makes.
 func TestOpenCodeQuestions_LeavesEveryOtherFrameToTheStream(t *testing.T) {
@@ -134,7 +202,7 @@ func TestOpenCodeQuestions_LeavesEveryOtherFrameToTheStream(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"session/prompt","params":{}}`,
 		`not json at all`,
 	} {
-		handled, err := questions.answer(ctx, []byte(frame))
+		handled, err := questions.answer(ctx, agent.RawInput{Data: []byte(frame)})
 		assert.False(t, handled, frame)
 		assert.NoError(t, err, frame)
 	}
@@ -149,14 +217,19 @@ func TestOpenCodeQuestions_ReportsARefusedAnswer(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
 	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	var published []agenttest.ControlRequestRecord
 	require.Eventually(t, func() bool {
-		return len(sink.PublishedControls()) == 1
+		published = sink.PublishedControls()
+		return len(published) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
 	daemon.Mu.Lock()
 	daemon.FailNext = 1
 	daemon.Mu.Unlock()
 
-	handled, err := questions.answer(ctx, []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`))
+	handled, err := questions.answer(ctx, agent.RawInput{
+		Data:              []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`),
+		ControlInstanceID: published[0].InstanceID,
+	})
 	assert.True(t, handled)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "404")
@@ -170,11 +243,16 @@ func TestOpenCodeQuestions_RefusesAnUnreadableAnswer(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
 	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	var published []agenttest.ControlRequestRecord
 	require.Eventually(t, func() bool {
-		return len(sink.PublishedControls()) == 1
+		published = sink.PublishedControls()
+		return len(published) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
 
-	handled, err := questions.answer(ctx, []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{}}`))
+	handled, err := questions.answer(ctx, agent.RawInput{
+		Data:              []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{}}`),
+		ControlInstanceID: published[0].InstanceID,
+	})
 	assert.True(t, handled)
 	require.Error(t, err)
 	assert.Empty(t, daemon.Answers())
@@ -210,11 +288,16 @@ func TestOpenCodeQuestions_WithdrawsOnlyOnce(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
 	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	var published []agenttest.ControlRequestRecord
 	require.Eventually(t, func() bool {
-		return len(sink.PublishedControls()) == 1
+		published = sink.PublishedControls()
+		return len(published) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
 
-	handled, err := questions.answer(ctx, []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`))
+	handled, err := questions.answer(ctx, agent.RawInput{
+		Data:              []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`),
+		ControlInstanceID: published[0].InstanceID,
+	})
 	require.NoError(t, err)
 	require.True(t, handled)
 	daemon.Send("data: {\"id\":\"evt_2\",\"type\":\"" + contracts.OpenCodeEventQuestionReplied + "\",\"properties\":{\"requestID\":\"que_1\"}}\n\n")
@@ -259,8 +342,8 @@ func TestOpenCodeQuestions_RetiresACardTheDaemonNoLongerHolds(t *testing.T) {
 		return len(sink.PublishedControls()) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the waiting question reaches the reader")
 
-	// The daemon still holds it, so a second list re-announces the card and retires
-	// nothing.
+	// The daemon still holds it, so a second list keeps the existing card
+	// without re-announcing or retiring it.
 	questions.publishPending(ctx)
 	assert.Empty(t, sink.CanceledControls())
 
@@ -284,9 +367,7 @@ func TestOpenCodeQuestions_KeepsEveryCardWhenTheListIsUnreadable(t *testing.T) {
 		return len(sink.PublishedControls()) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the waiting question reaches the reader")
 
-	questions.mu.Lock()
-	questions.baseURL = "http://" + net.JoinHostPort(openCodeQuestionHost, "1")
-	questions.mu.Unlock()
+	questions.daemon.setBaseURL("http://" + net.JoinHostPort(openCodeQuestionHost, "1"))
 	questions.publishPending(ctx)
 	assert.Empty(t, sink.CanceledControls())
 }
@@ -394,7 +475,7 @@ func TestOpenCodeQuestions_RefusesAnEventOverTheLimit(t *testing.T) {
 func TestOpenCodeQuestions_ZeroValueTakesNothing(t *testing.T) {
 	t.Parallel()
 	var questions openCodeQuestions
-	handled, err := questions.answer(context.Background(), []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[[]]}}`))
+	handled, err := questions.answer(context.Background(), agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[[]]}}`)})
 	assert.False(t, handled)
 	assert.NoError(t, err)
 }
@@ -543,7 +624,8 @@ func TestOpenCodeQuestions_ReconnectUsesTheInjectedClock(t *testing.T) {
 	trap := clock.Trap().NewTimer(QuestionsReconnectTag)
 	var closeOnce sync.Once
 	closeTrap := func() { closeOnce.Do(trap.Close) }
-	questions := &openCodeQuestions{baseURL: server.URL}
+	questions := &openCodeQuestions{}
+	questions.daemon.setBaseURL(server.URL)
 	questions.Configure(&agenttest.ControlSink{})
 	done := make(chan struct{})
 	go func() { questions.run(ctx, clock); close(done) }()
@@ -630,6 +712,7 @@ func TestOpenCodeAnswersAQuestionThroughTheBridge(t *testing.T) {
 	opencodetest.AssertAnswersAQuestionThroughTheBridge(t, a, EventRoute, QuestionRoot,
 		func(ctx context.Context, sink agent.ControlServices, baseURL string) {
 			a.SetContextForTest(ctx)
+			a.SetSessionIDForTest(opencodetest.FakeQuestionSessionID)
 			a.BeginQuestionsForTest(ctx, sink, "agent-1", baseURL)
 		})
 }
@@ -637,4 +720,49 @@ func TestOpenCodeAnswersAQuestionThroughTheBridge(t *testing.T) {
 func TestOpenCodeRcMarkerNeverReachesTheDaemon(t *testing.T) {
 	t.Parallel()
 	opencodetest.AssertRcMarkerNeverReachesTheDaemon(t, "opencode", "OPENCODE_CLIENT", openCodeQuestionToolEnv, ACPArgs())
+}
+
+func openCodeQuestionEventPayload(t *testing.T, properties any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"type": "question.asked", "properties": properties})
+	require.NoError(t, err)
+	return payload
+}
+
+func TestIsOpenCodeQuestionEvent(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isOpenCodeQuestionEvent([]byte(`{"type":"question.asked","properties":{"questions":[]}}`)))
+	assert.True(t, isOpenCodeQuestionEvent([]byte(`{"type":"question.asked"}`)), "the type alone decides")
+	for _, payload := range []string{
+		`{"type":"question.replied","properties":{"requestID":"que_1"}}`,
+		`{"type":"permission.asked","properties":{"id":"per_1"}}`,
+		`{"method":"requestPermission","params":{"toolCall":{"toolCallId":"tc-1"}}}`,
+		`{"type":7}`,
+		`{}`,
+		`not json`,
+	} {
+		assert.False(t, isOpenCodeQuestionEvent([]byte(payload)), payload)
+	}
+}
+
+func TestOpenCodeQuestionID(t *testing.T) {
+	t.Parallel()
+	id, ok := openCodeQuestionID(openCodeQuestionEventPayload(t, map[string]any{"id": "que_1", "questions": []any{}}))
+	assert.True(t, ok)
+	assert.Equal(t, "que_1", id)
+
+	for name, payload := range map[string][]byte{
+		"no id":                         openCodeQuestionEventPayload(t, map[string]any{"questions": []any{}}),
+		"an empty id":                   openCodeQuestionEventPayload(t, map[string]any{"id": ""}),
+		"an id that is a number":        openCodeQuestionEventPayload(t, map[string]any{"id": 7}),
+		"properties that are no object": openCodeQuestionEventPayload(t, "que_1"),
+		"an id outside the properties":  []byte(`{"type":"question.asked","id":"que_1","properties":{}}`),
+		"a permission with an id":       []byte(`{"type":"permission.asked","properties":{"id":"per_1"}}`),
+		"a reply to the question":       []byte(`{"type":"question.replied","properties":{"id":"que_1"}}`),
+		"no JSON":                       []byte(`not json`),
+	} {
+		id, ok := openCodeQuestionID(payload)
+		assert.False(t, ok, name)
+		assert.Empty(t, id, name)
+	}
 }

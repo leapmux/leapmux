@@ -46,7 +46,7 @@ func TestRootInputProofUsesTheFinalSerializedPromptParams(t *testing.T) {
 	b.hooks.PromptParams = func(fields map[string]any) {
 		fields["prompt"] = []map[string]any{{"type": "text", "text": "the final packet"}}
 	}
-	require.NoError(t, b.SendInput("the original value", nil))
+	require.NoError(t, agenttest.SendInput(b, "the original value", nil))
 	require.Len(t, recorder.blocks, 1)
 	assert.JSONEq(t, `{"type":"text","text":"the final packet"}`, string(recorder.blocks[0]))
 	var request struct {
@@ -65,7 +65,7 @@ func TestRootInputProofRejectsAForeignSessionBeforeWriting(t *testing.T) {
 	recorder := &acpInputProofRecorder{writer: b.sink}
 	b.hooks.OpenRootTranscript = func(RootTranscriptStart, agent.ProviderServices) RootTranscript { return recorder }
 	b.hooks.PromptParams = func(fields map[string]any) { fields["sessionId"] = "foreign-session" }
-	require.ErrorContains(t, b.SendInput("the actual value", nil), "another session")
+	require.ErrorContains(t, agenttest.SendInput(b, "the actual value", nil), "another session")
 	assert.Empty(t, out.String())
 	assert.Empty(t, recorder.blocks)
 }

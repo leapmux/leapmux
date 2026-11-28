@@ -48,7 +48,13 @@ type openCodeCatalog struct {
 	defaultAgent string
 }
 
-const openCodeCatalogActivationPollTag = "opencode-catalog-activation-poll"
+const (
+	openCodeCatalogActivationPollTag        = "opencode-catalog-activation-poll"
+	openCodeCatalogActivationInitialBackoff = 50 * time.Millisecond
+	openCodeCatalogActivationMaxBackoff     = time.Second
+	openCodeDefaultModelWarmupBudget        = 15 * time.Second
+	openCodeRequestedModelWarmupBudget      = 3 * time.Second
+)
 
 func (info openCodeAgentInfo) selectableAsPrimary() bool {
 	return !info.Hidden && (info.Mode == "primary" || info.Mode == "all")
@@ -57,23 +63,89 @@ func (info openCodeAgentInfo) selectableAsPrimary() bool {
 // The stream greeting can arrive before the location's plugins finish activating.
 // OpenCode stops waiting after five seconds and reports that specific condition.
 // Keep waiting during startup so the catalog includes every enabled plugin.
+// A 200 {"data": null} response from /api/model/default is retried only within
+// openCodeDefaultModelWarmupBudget so unconfigured setups fail fast instead of
+// waiting out the full startup timeout. When an explicit requestedModel is not
+// yet present in a freshly booted catalog (OpenCode v2.4+ briefly serves built-in
+// models before custom config providers finish loading), keep polling within
+// openCodeRequestedModelWarmupBudget before returning the catalog as-is.
 func awaitOpenCodeCatalog(ctx context.Context, rpc openCodeRPC, clock quartz.Clock, timeout time.Duration) (openCodeCatalog, error) {
+	return awaitOpenCodeCatalogWithModel(ctx, rpc, clock, timeout, "")
+}
+
+func awaitOpenCodeCatalogWithModel(ctx context.Context, rpc openCodeRPC, clock quartz.Clock, timeout time.Duration, requestedModel string) (openCodeCatalog, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	startupDeadline := clock.Now().Add(timeout)
+	var defaultModelDeadline time.Time
+	var requestedModelDeadline time.Time
+	delay := openCodeCatalogActivationInitialBackoff
 	for {
 		catalog, err := loadOpenCodeCatalog(ctx, rpc)
-		if !openCodePluginActivationPending(err) {
-			return catalog, err
+		if err == nil {
+			if requestedModel == "" || catalog.findModel(requestedModel) != nil {
+				return catalog, nil
+			}
+			now := clock.Now()
+			if requestedModelDeadline.IsZero() {
+				requestedModelDeadline = now.Add(openCodeRequestedModelWarmupBudget)
+				delay = openCodeCatalogActivationInitialBackoff
+			}
+			remaining := requestedModelDeadline.Sub(now)
+			if remaining <= 0 {
+				return catalog, nil
+			}
+			startupRemaining := startupDeadline.Sub(now)
+			if startupRemaining <= 0 {
+				return catalog, nil
+			}
+			wait := min(delay, remaining, startupRemaining)
+			timer := clock.NewTimer(wait, openCodeCatalogActivationPollTag)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return openCodeCatalog{}, ctx.Err()
+			case <-timer.C:
+			}
+			delay = min(delay*2, openCodeCatalogActivationMaxBackoff)
+			continue
 		}
-		timer := clock.NewTimer(time.Second, openCodeCatalogActivationPollTag)
+		isDefaultModelPending := errors.Is(err, errOpenCodeDefaultModelPending)
+		if !isDefaultModelPending && !openCodePluginActivationPending(err) {
+			return openCodeCatalog{}, err
+		}
+		now := clock.Now()
+		wait := delay
+		if isDefaultModelPending {
+			if defaultModelDeadline.IsZero() {
+				defaultModelDeadline = now.Add(openCodeDefaultModelWarmupBudget)
+			}
+			remaining := defaultModelDeadline.Sub(now)
+			if remaining <= 0 {
+				return openCodeCatalog{}, errOpenCodeNoDefaultModel
+			}
+			wait = min(wait, remaining)
+		}
+		startupRemaining := startupDeadline.Sub(now)
+		if startupRemaining <= 0 {
+			return openCodeCatalog{}, errors.Join(err, context.DeadlineExceeded)
+		}
+		wait = min(wait, startupRemaining)
+		timer := clock.NewTimer(wait, openCodeCatalogActivationPollTag)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return openCodeCatalog{}, errors.Join(err, ctx.Err())
 		case <-timer.C:
 		}
+		delay = min(delay*2, openCodeCatalogActivationMaxBackoff)
 	}
 }
+
+var (
+	errOpenCodeDefaultModelPending = errors.New("default model not ready yet")
+	errOpenCodeNoDefaultModel      = errors.New("OpenCode reported no default model configured")
+)
 
 func openCodePluginActivationPending(err error) bool {
 	var status *providerkit.HTTPStatusError
@@ -93,8 +165,12 @@ func openCodePluginActivationPending(err error) bool {
 func loadOpenCodeCatalog(ctx context.Context, rpc openCodeRPC) (openCodeCatalog, error) {
 	var catalog openCodeCatalog
 	// Model endpoints wait for plugin activation; the agent endpoint reads immediately.
+	// OpenCode v2.4+ can also return 200 {"data": null} briefly before models finish loading.
 	model, err := openCodeData[openCodeModelInfo](ctx, rpc, http.MethodGet, "/api/model/default", nil)
 	if err != nil {
+		if errors.Is(err, errOpenCodeNoData) {
+			return openCodeCatalog{}, fmt.Errorf("read the OpenCode default model: %w: %w", errOpenCodeDefaultModelPending, err)
+		}
 		return openCodeCatalog{}, fmt.Errorf("read the OpenCode default model: %w", err)
 	}
 	catalog.defaultModel = openCodeModelRef{ProviderID: model.ProviderID, ID: model.ID}

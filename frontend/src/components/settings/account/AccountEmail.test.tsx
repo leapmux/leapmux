@@ -236,8 +236,8 @@ describe('AccountEmail', () => {
  * administrator therefore landed unverified with no route to a confirmed
  * address -- silently disabling account recovery, the worker-instructions mail
  * and the CLI-credential notice for the one account that most needs them, while
- * `docs/using/accounts.md` told the operator to "verify it from Preferences,
- * Account".
+ * `site/content/docs/using/accounts-and-apps.md` (formerly `docs/using/accounts.md`)
+ * told the operator to "verify it from Preferences, Account".
  */
 // The field survives a full-document round trip, because one account shape is
 // sent on one every time it changes its address: an account with no password

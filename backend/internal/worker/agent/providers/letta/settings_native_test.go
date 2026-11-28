@@ -493,7 +493,7 @@ func TestLettaInputWaitsForTheSettingsTransaction(t *testing.T) {
 	info := fake.nextCommand(t)
 	require.Equal(t, "app_server_info", info["type"])
 	sent := make(chan error, 1)
-	go func() { sent <- a.SendInput("Use the newly selected effort.", nil) }()
+	go func() { sent <- agenttest.SendInput(a, "Use the newly selected effort.", nil) }()
 	replyLettaSettings(t, fake, info, map[string]any{"backend": "local"})
 	read := fake.nextCommand(t)
 	require.Equal(t, "agent_retrieve", read["type"], "input must not enter the native settings transaction")

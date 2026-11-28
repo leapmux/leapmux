@@ -151,36 +151,7 @@ func resolveCreationDestination(state *leapmuxv1.UserCrdtState, placement *leapm
 	}
 	tile := placement.GetTileId()
 	if placement.GetFirstLeaf() != nil {
-		children := BuildLiveChildrenIndex(state)
-		visited := map[string]bool{}
-		var firstLeaf func(string) string
-		firstLeaf = func(nodeID string) string {
-			if visited[nodeID] {
-				return ""
-			}
-			visited[nodeID] = true
-			node := state.GetNodes()[nodeID]
-			if node == nil || !HLCIsZero(node.GetTombstoneAt()) {
-				return ""
-			}
-			if node.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_LEAF {
-				return nodeID
-			}
-			ordered := slices.Clone(children[nodeID])
-			slices.SortFunc(ordered, func(a, b string) int {
-				if c := strings.Compare(state.GetNodes()[a].GetPosition().GetValue(), state.GetNodes()[b].GetPosition().GetValue()); c != 0 {
-					return c
-				}
-				return strings.Compare(a, b)
-			})
-			for _, child := range ordered {
-				if leaf := firstLeaf(child); leaf != "" {
-					return leaf
-				}
-			}
-			return ""
-		}
-		tile = firstLeaf(workspace.GetRootNodeId())
+		tile = FirstLiveLayoutLeaf(state.GetNodes(), BuildLiveChildrenIndex(state), workspace.GetRootNodeId())
 	}
 	resolved, alive := resolveTileWorkspace(state, tile, registeredRoots(state))
 	if tile == "" || !alive || resolved != placement.GetWorkspaceId() || !tileIsLeaf(state, tile) {

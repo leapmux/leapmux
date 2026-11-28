@@ -56,7 +56,7 @@ func startWithClock(ctx context.Context, opts agent.Options, sink agent.Provider
 			ResumeMethod: acp.MethodSessionLoad,
 		},
 		NewAgent: func() *Agent {
-			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir}), resumedSession: opts.ResumeSessionID}
+			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir}), resumedSession: opts.Session.ResumeID()}
 		},
 		Base: func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {
@@ -93,8 +93,18 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		PromptParams:           diracPromptParams,
 		ExtraMethod:            a.handleExtraMethod,
 		SessionMetadataHandler: a.observeDiracNotice,
-		ClearProviderState:     a.clearChildState,
-		BeforeWaitCleanup:      a.beforeWaitCleanup,
+		PromptEnded: func(error, bool) acp.PromptEnding {
+			a.resolvePendingDiracSteers(agent.SteerOutcomeDropped)
+			return acp.PromptEnding{}
+		},
+		ClearProviderState: func() {
+			a.resolvePendingDiracSteers(agent.SteerOutcomeUncertain)
+			a.clearChildState()
+		},
+		BeforeWaitCleanup: func() {
+			a.resolvePendingDiracSteers(agent.SteerOutcomeUncertain)
+			a.beforeWaitCleanup()
+		},
 		// Decode the effective profile the launch observed before opening a
 		// native session, so the pre-stop checkpoint reads the root Dirac
 		// actually used rather than the Worker's assumed one.

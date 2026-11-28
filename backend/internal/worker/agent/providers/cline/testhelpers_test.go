@@ -93,7 +93,7 @@ func newRig(t *testing.T, configure ...func(*rigConfig)) *rig {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	sessionID, err := a.openSession(ctx, a.settings, cfg.opts.ResumeSessionID)
+	sessionID, err := a.openSession(ctx, a.settings, cfg.opts.Session.ResumeID())
 	require.NoError(t, err)
 	r.waitSubscribed(t, sessionID)
 	return r
@@ -212,7 +212,7 @@ func eventEnvelope(t *testing.T, sessionID, event string, payload any) []byte {
 // returns the request id of the send.
 func (r *rig) startTurn(t *testing.T, text string) string {
 	t.Helper()
-	require.NoError(t, r.agent.SendInput(text, nil))
+	require.NoError(t, agenttest.SendInput(r.agent, text, nil))
 	command, ok := r.hub.waitCommand(commandSessionSendInput)
 	require.True(t, ok, "the send reaches the hub")
 	return command.RequestID

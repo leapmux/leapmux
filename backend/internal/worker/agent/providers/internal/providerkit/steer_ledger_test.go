@@ -256,3 +256,93 @@ func TestSteerLedgerSettlesUncertaintyInOrder(t *testing.T) {
 	assert.Equal(t, []string{"steer-echoed:1", "steer-uncertain:1", "steer-echoed:1", "steer-dropped:1"}, sink.TurnLifecycle())
 	assert.Empty(t, ledger.Pending())
 }
+
+func TestIdentifiedSteerLedgerMatchesEchoesWithAndWithoutBoundTurn(t *testing.T) {
+	t.Parallel()
+	var ledger IdentifiedSteerLedger
+	ledger.Add(agent.SteerResolution{
+		InputID: "in-bound", AttemptID: "att-1",
+		Receipt: agent.NativeInputReceipt{SessionID: "s1", TurnID: "t1", InputID: "cmd-1"},
+	})
+	ledger.Add(agent.SteerResolution{
+		InputID: "in-open", AttemptID: "att-2",
+		Receipt: agent.NativeInputReceipt{SessionID: "s1", InputID: "cmd-2"},
+	})
+
+	// Incomplete echo receipts never match.
+	_, ok := ledger.TakeEcho(agent.NativeInputReceipt{SessionID: "", TurnID: "t1", InputID: "cmd-1"})
+	assert.False(t, ok)
+	_, ok = ledger.TakeEcho(agent.NativeInputReceipt{SessionID: "s1", TurnID: "", InputID: "cmd-1"})
+	assert.False(t, ok)
+	_, ok = ledger.TakeEcho(agent.NativeInputReceipt{SessionID: "s1", TurnID: "t1", InputID: ""})
+	assert.False(t, ok)
+
+	// Wrong turn does not match a turn-bound entry.
+	_, ok = ledger.TakeEcho(agent.NativeInputReceipt{SessionID: "s1", TurnID: "t2", InputID: "cmd-1"})
+	assert.False(t, ok)
+
+	// Matching turn resolves and removes the entry.
+	got, ok := ledger.TakeEcho(agent.NativeInputReceipt{SessionID: "s1", TurnID: "t1", InputID: "cmd-1"})
+	require.True(t, ok)
+	assert.Equal(t, "in-bound", got.InputID)
+	assert.Equal(t, agent.SteerOutcomeEchoed, got.Outcome)
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: "s1", TurnID: "t1", InputID: "cmd-1"}, got.Receipt)
+	_, ok = ledger.TakeEcho(agent.NativeInputReceipt{SessionID: "s1", TurnID: "t1", InputID: "cmd-1"})
+	assert.False(t, ok)
+
+	// Unbound turn entry matches any turn and records the echoed turn ID.
+	got, ok = ledger.TakeEcho(agent.NativeInputReceipt{SessionID: "s1", TurnID: "t9", InputID: "cmd-2"})
+	require.True(t, ok)
+	assert.Equal(t, "in-open", got.InputID)
+	assert.Equal(t, "t9", got.Receipt.TurnID)
+}
+
+func TestIdentifiedSteerLedgerTakeUnechoedForgetAndReset(t *testing.T) {
+	t.Parallel()
+	var ledger IdentifiedSteerLedger
+	t1 := ledger.Add(agent.SteerResolution{
+		InputID: "a", Receipt: agent.NativeInputReceipt{SessionID: "s1", TurnID: "turn-1", InputID: "c1"},
+	})
+	t2 := ledger.Add(agent.SteerResolution{
+		InputID: "b", Receipt: agent.NativeInputReceipt{SessionID: "s1", TurnID: "turn-2", InputID: "c2"},
+	})
+	ledger.Add(agent.SteerResolution{
+		InputID: "c", Receipt: agent.NativeInputReceipt{SessionID: "s2", TurnID: "turn-1", InputID: "c3"},
+	})
+
+	ledger.Forget(t1)
+	assert.Empty(t, ledger.TakeUnechoed("s1", "turn-1"))
+
+	remainingS1 := ledger.TakeUnechoed("s1", "")
+	require.Len(t, remainingS1, 1)
+	assert.Equal(t, "b", remainingS1[0].InputID)
+	assert.Empty(t, ledger.TakeUnechoed("s1", ""))
+
+	ledger.Reset()
+	assert.Empty(t, ledger.TakeUnechoed("s2", ""))
+	t4 := ledger.Add(agent.SteerResolution{
+		InputID: "d", Receipt: agent.NativeInputReceipt{SessionID: "s1", TurnID: "turn-3", InputID: "c4"},
+	})
+	assert.Greater(t, t4, t2)
+}
+
+func TestIdentifiedSteerLedgerConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	var ledger IdentifiedSteerLedger
+	var wg sync.WaitGroup
+	for i := range 50 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			receipt := agent.NativeInputReceipt{SessionID: "s1", TurnID: "t1", InputID: string(rune('a' + i%26))}
+			ticket := ledger.Add(agent.SteerResolution{InputID: receipt.InputID, Receipt: receipt})
+			if i%2 == 0 {
+				ledger.TakeEcho(receipt)
+			} else {
+				ledger.Forget(ticket)
+			}
+		}(i)
+	}
+	wg.Wait()
+	_ = ledger.TakeUnechoed("s1", "")
+}

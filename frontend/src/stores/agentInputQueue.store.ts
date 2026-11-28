@@ -11,9 +11,20 @@ interface AgentInputQueueState {
  */
 export function createAgentInputQueueStore(isLiveAgent: (agentId: string) => boolean = () => true) {
   const [state, setState] = createStore<AgentInputQueueState>({ byAgent: {} })
+  const applyListeners = new Set<(agentId: string, snapshot: AgentInputQueueSnapshot) => void>()
 
   return {
     state,
+
+    /**
+     * Call `listener` with each snapshot that `apply` stores, whatever brought
+     * it: an RPC response or a broadcast. Returns the function that removes
+     * the listener.
+     */
+    onApply(listener: (agentId: string, snapshot: AgentInputQueueSnapshot) => void): () => void {
+      applyListeners.add(listener)
+      return () => applyListeners.delete(listener)
+    },
 
     /** Apply `agentId`'s snapshot. The carrier states the agent, as the snapshot does not. */
     apply(agentId: string, snapshot: AgentInputQueueSnapshot | undefined): boolean {
@@ -29,6 +40,8 @@ export function createAgentInputQueueStore(isLiveAgent: (agentId: string) => boo
       setState('byAgent', produce((queues) => {
         queues[agentId] = snapshot
       }))
+      for (const listener of applyListeners)
+        listener(agentId, snapshot)
       return true
     },
 

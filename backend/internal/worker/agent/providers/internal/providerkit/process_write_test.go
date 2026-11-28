@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -147,6 +148,93 @@ func TestStdinWriteAfterStopStillReportsItsOwnError(t *testing.T) {
 	require.NoError(t, p.WriteStdin([]byte("after-stop\n")))
 	p.writeStdinDetached([]byte("detached-after-stop\n"), "probe")
 	assert.Equal(t, []string{"after-stop", "detached-after-stop"}, writer.Frames())
+}
+
+func TestStdinWriteCancellationRevokesItsObserver(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	stdin := newGatedStdin(0, nil)
+	t.Cleanup(func() { close(stdin.release) })
+	p := &Process{agentID: "agent", stdin: stdin}
+	p.writeStdinDetached([]byte("first\n"), "hold the writer")
+	select {
+	case <-stdin.entered:
+	case <-ctx.Done():
+		t.Fatal("the first write did not reach stdin")
+	}
+
+	p.stdinMu.Lock()
+	queue := p.stdinQueue
+	p.stdinMu.Unlock()
+	observed := false
+	result := make(chan error, 1)
+	go func() { result <- p.writeStdin([]byte("second\n"), func() { observed = true }) }()
+	var frame stdinFrame
+	select {
+	case frame = <-queue:
+	case <-ctx.Done():
+		t.Fatal("the observed write did not enter the stdin queue")
+	}
+	// The writer can claim a frame just before close and run its observer after
+	// the caller processes that close. Hold the claimed frame to fix the order.
+	p.closeStdin()
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, errStdinClosed)
+	case <-ctx.Done():
+		t.Fatal("stdin close did not release the waiting caller")
+	}
+	require.NotNil(t, frame.beforeWrite)
+	frame.beforeWrite()
+	assert.False(t, observed, "a finished write cannot admit new output ownership")
+}
+
+func TestWriteStdinReturnsRealResultWhenCloseRacesAfterClaim(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		written   int
+		writeErr  error
+		wantErr   error
+		uncertain bool
+	}{
+		{name: "completed write", written: 6},
+		{name: "partial write", written: 3, writeErr: errors.New("broken pipe"), wantErr: agent.ErrDeliveryUncertain, uncertain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := testutil.DeadlineContext(t)
+			stdin := newGatedStdin(tc.written, tc.writeErr)
+			p := &Process{agentID: "agent", stdin: stdin}
+			observed := false
+			result := make(chan error, 1)
+			go func() {
+				result <- p.writeStdin([]byte("frame\n"), func() { observed = true })
+			}()
+			select {
+			case <-stdin.entered:
+			case <-ctx.Done():
+				t.Fatal("the write did not reach stdin")
+			}
+			// Closing stdin after the writer already claimed the frame and entered Write
+			// must not make writeStdin discard the real write result and report errStdinClosed.
+			p.closeStdin()
+			close(stdin.release)
+			select {
+			case err := <-result:
+				assert.True(t, observed)
+				if tc.wantErr == nil {
+					require.NoError(t, err)
+				} else {
+					require.ErrorIs(t, err, tc.wantErr)
+				}
+				assert.Equal(t, tc.uncertain, errors.Is(err, agent.ErrDeliveryUncertain))
+				assert.NotErrorIs(t, err, errStdinClosed)
+			case <-ctx.Done():
+				t.Fatal("writeStdin did not return after stdin write finished")
+			}
+		})
+	}
 }
 
 // A child that stops reading its stdin must not stall the goroutine that drains

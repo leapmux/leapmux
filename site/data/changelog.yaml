@@ -1,0 +1,141 @@
+# Curated LeapMux release and development milestones (most recent first).
+# Rendered by /changelog/ (changelog-list shortcode) and / (changelog-strip shortcode).
+entries:
+  - date: "2026-11-29"
+    label: "2026-11-29"
+    title: "CLI v2, Native Session Forking, Agent Skills & Docs Overhaul"
+    summary: "Redesigned the CLI around top-level commands, added native session forking and bundled Agent Skills, revoked deregistered Workers immediately, and overhauled the documentation site."
+    highlights:
+      - "Unified top-level `leapmux` (`lmx`) CLI with zero-friction targeting (`self`, `parent`, `children`, and server-side 4+ character ID prefixes), `agent send/open --wait`, `--output-schema` retries, durable `--request-id` receipts, resumable `leapmux events` checkpoints, `leapmux tree`, `leapmux doctor`, and automatic `.leapmux/tmp/` git exclusion"
+      - "Provider-native conversation-history forking (`leapmux agent fork`) across 10 providers (plus `--fresh` for clean clones) and cross-Worker parent-child lineage for `leapmux agent wait children` and `leapmux agent tree`"
+      - "Six bundled offline Agent Skills (`leapmux`, `leapmux-delegate`, `leapmux-review`, `leapmux-council`, `leapmux-handoff`, and `leapmux-help`) with `leapmux skill` management (`install`, `uninstall`, `status`, and `diff`), per-Worker auto-sync, and Preferences UI controls"
+      - "Immediate bearer-token and RPC revocation on Worker deregistration, Sign in with Apple `form_post` authentication with `leapmux admin idp rotate-secret`, elevated CLI `leapmux admin user` commands, and hardened reverse-proxy samples that block `/metrics` and strip spoofed forwarding headers"
+      - "Redesigned documentation site with chunked Pagefind search, 2x Retina dual-theme screenshots and workflow videos with live CLI replay, `/download/` and `/changelog/` pages, interactive table filters, and clean Markdown exports (`/docs/.../index.md`, `/llms.txt`, `/llms-small.txt`, and `/llms-full.txt`)"
+
+  - date: "2026-11-24"
+    label: "2026-11-24"
+    title: "Database Encryption at Rest, Post-Quantum Forward Secrecy & Unified Desktop Sessions"
+    summary: "Encrypted Hub database columns uniformly at rest, added ephemeral post-quantum forward secrecy to E2EE channels, and unified Tauri desktop sessions for Remote-Hub mode."
+    highlights:
+      - "Uniform encryption at rest for eligible Hub database columns, including workspaces, sessions, CRDT state, and OAuth metadata"
+      - "Ephemeral ML-KEM post-quantum forward secrecy in E2EE channel handshakes and rekeys, plus hardened Worker key-pinning trust"
+      - "Bundled frontend in the Tauri desktop app with unified sessions for full native IPC in Remote-Hub mode, plus confirmation dialogs before quitting or switching busy Solo mode"
+      - "Clickable local file, directory, and inline image links in Markdown, `Cmd/Ctrl+Enter` to resume paused input queues, selected-Worker login-shell agent launches, and ZCode v2 credential support"
+
+  - date: "2026-11-13"
+    label: "2026-11-13"
+    title: "Antigravity CLI Provider, Native Services & Off-Thread Performance"
+    summary: "Added Antigravity CLI as the 31st coding-agent provider, introduced native OS service management, migrated Workers to outbound WebSockets, and moved heavy browser work off the main thread."
+    highlights:
+      - "Antigravity CLI as the 31st coding-agent provider, plus explicit-approval recovery for stale Codex logins"
+      - "Explicit daemon lifecycle commands and native OS startup service management (`launchd`, `systemd`, and Windows Service)"
+      - "Outbound WebSocket Worker connections for reverse-proxy compatibility, durable tab publication, and trust-on-first-use (TOFU) Worker public-key pinning"
+      - "Off-main-thread web workers for Markdown parsing, Myers diffs, and E2EE channel cryptography"
+
+  - date: "2026-10-29"
+    label: "2026-10-29"
+    title: "30 Coding-Agent Providers, Feature Matrix & Scheduled Sends"
+    summary: "Expanded support to 30 coding-agent providers with an E2E-verified feature matrix, scheduled input-queue sends, and audio attachments."
+    highlights:
+      - "Twenty new coding-agent providers: Amp, Cline, CodeBuddy Code, Codewhale, Command Code, DeepSeek Harness, Dirac, Factory Droid, Fast Agent, Gemini CLI, Grok Build, Junie, Kimi Code, Kiro, Letta Code, MiMo Code, Muse Code, Oh My Pi, Qoder CLI, and Qwen Code"
+      - "Executable, E2E-verified coding-agent feature matrix covering capabilities across every supported provider"
+      - "Scheduled message sends and visible automatic retries in the agent input queue, plus Codex Approve for Me and Full Access permission presets"
+      - "Audio attachments, native child-agent workflows, and explicit consent guards before deleting git worktree checkouts"
+
+  - date: "2026-09-10"
+    label: "2026-09-10"
+    title: "Durable Input Queue, Quake Terminal, Session Goals & Desktop Tray"
+    summary: "Added a Worker-backed durable agent input queue, a directory-scoped Quake terminal, provider-neutral session goals, and desktop system-tray integration."
+    highlights:
+      - "Worker-backed durable input queue with keyboard steering, automatic agent session resumption after Worker restarts, and a selectable session-resume list"
+      - "Directory-scoped Quake-mode drop-down terminal, combined Goals & To-dos section, and image tabs"
+      - "Desktop system-tray icon, configurable close and minimize actions, start-at-login support, and Open in External App from any workspace row"
+      - "ZCode native coding-agent provider, smart and bypass permission presets per provider, and Solo Hub network access controls"
+
+  - date: "2026-08-31"
+    label: "2026-08-31"
+    title: "Subagents, Custom Themes, Mobile Touch UI, Passkeys & OAuth 2.1"
+    summary: "Launched first-class subagent tabs, customizable themes, a rebuilt mobile touch UI, passkey sign-in, and a Hub OAuth 2.1 authorization server."
+    highlights:
+      - "Dedicated subagent tabs, Background Tasks sidebar, ACP terminal hosting, and sortable file trees"
+      - "Customizable UI, terminal, and syntax-highlighting themes"
+      - "Rebuilt mobile touch UI with phone tabs, touch drag-and-drop, long-press context menus, and safe-area dialogs"
+      - "Passkey sign-in, self-service account recovery with SMTP verification, ALTCHA bot protection, and Hub OAuth 2.1 authorization for scoped CLI and third-party app access"
+
+  - date: "2026-07-28"
+    label: "2026-07-28"
+    title: "In-Band Forward-Secret E2EE Rekeying & Single-Tenant Hardening"
+    summary: "Added seamless in-band forward-secret key rotation for long-lived E2EE channels, upgraded syntax highlighting, and simplified Hub tenancy."
+    highlights:
+      - "In-band `Noise_NK` transport-key rotation with fresh Diffie-Hellman and ML-KEM forward secrecy so long-lived tunnels stay open during rekeys"
+      - "Lazy-loaded syntax highlighting across 332 languages and a sequence-space chat scroll rail with previews"
+      - "Simplified Hub tenancy to personal user ownership with live stream fencing when account privileges change"
+
+  - date: "2026-06-27"
+    label: "2026-06-27"
+    title: "Documentation Site, Virtualized Chat & Dynamic Model Discovery"
+    summary: "Launched the public documentation site at `leapmux.dev`, virtualized long chat histories, and added dynamic Claude Code model discovery."
+    highlights:
+      - "Public documentation site at `leapmux.dev` with `llms.txt` and OpenGraph cards"
+      - "Virtualized chat history with anchored message paging and DOM height measurement for large conversations"
+      - "Dynamic Claude Code model discovery, unified agent option groups, animated thinking-token counters, and the Reasonix ACP provider"
+
+  - date: "2026-05-23"
+    label: "2026-05-23"
+    title: "Control CLI, CRDT Workspace Sync, Grid Layouts & Cross-Provider To-dos"
+    summary: "Introduced the programmable remote-control CLI with CRDT workspace synchronization, tiling grid layouts, persistent to-do lists, and remote file downloads."
+    highlights:
+      - "Programmable remote-control CLI backed by CRDT multi-writer workspace and layout sync, plus CLI installation embedded in desktop app bundles"
+      - "Grid layouts in the tiling manager, persistent cross-provider to-do lists, and git branch switching and deletion workflows"
+      - "Streamed file downloads from remote Workers and in-place terminal restart on `Enter` after exit"
+      - "SMTP email delivery and signed, notarized macOS desktop builds"
+
+  - date: "2026-04-29"
+    label: "2026-04-29"
+    title: "Native Windows Support, Pi Agent & External Editor Integration"
+    summary: "Shipped native Windows support with ConPTY terminals, added the Pi coding agent, and introduced external editor launching and terminal session resume."
+    highlights:
+      - "Native Windows support across the desktop app, Hub, Worker, and ConPTY terminals using named-pipe IPC"
+      - "Pi coding-agent provider and live settings synchronization across open tabs"
+      - "First-admin setup flow replacing default credentials, asynchronous tab startup and closure, and Open in External Editor support"
+      - "Byte-offset terminal resume and sticky xterm mode restoration across reconnects"
+
+  - date: "2026-04-14"
+    label: "2026-04-14"
+    title: "Tauri Desktop App, OAuth/OIDC Auth, E2EE Tunnels & Custom Shortcuts"
+    summary: "Migrated the desktop app to Tauri, overhauled Hub authentication with cookie sessions and OAuth/OIDC, added desktop E2EE tunnels, and introduced customizable shortcuts."
+    highlights:
+      - "Tauri desktop application combining a Rust native shell with a Go sidecar"
+      - "HTTP-only cookie sessions, Argon2id password hashing, OAuth/OIDC single sign-on, and a hierarchical admin CLI with soft-delete"
+      - "End-to-end encrypted TCP port-forwarding and SOCKS5 tunnels in the desktop app"
+      - "User-customizable keyboard shortcut system and on-disk plan persistence"
+
+  - date: "2026-03-30"
+    label: "2026-03-30"
+    title: "Multi-Provider Agents, Floating Windows & File Attachments"
+    summary: "Expanded LeapMux from Claude Code to a multi-provider platform with Codex and ACP agents, detachable floating windows, and image and PDF chat attachments."
+    highlights:
+      - "Multi-provider architecture adding OpenAI Codex plus ACP support for OpenCode, Gemini CLI, GitHub Copilot, Cursor, Goose, and Kilo"
+      - "Detachable floating windows alongside tiled layouts and hierarchical message threading with span lines"
+      - "Five-way git mode selector for branch and worktree creation, plus image and PDF attachments in chat"
+      - "Keep-awake support and automatic retry on transient API errors"
+
+  - date: "2026-03-12"
+    label: "2026-03-12"
+    title: "Hybrid Post-Quantum E2EE, Multi-Workspace UI & First Desktop App"
+    summary: "Introduced hybrid post-quantum end-to-end encrypted client-to-Worker channels, multi-workspace navigation, a git diff viewer, and the initial desktop app."
+    highlights:
+      - "End-to-end encrypted (`Noise_NK`) client-to-Worker channels upgraded with hybrid post-quantum key exchange so the Hub relays ciphertext only"
+      - "Initial desktop application supporting local Solo and remote Distributed modes"
+      - "Multi-workspace support with cross-workspace tab moves and a git-grouped workspace tab tree"
+      - "Git-aware file browser with an integrated diff viewer"
+
+  - date: "2026-02-22"
+    label: "2026-02-22"
+    title: "Initial Release: Multi-Agent Coding Multiplexer"
+    summary: "Launched LeapMux as a web-based multiplexer for running parallel Claude Code sessions, git worktrees, remote terminals, and file browsing from one interface."
+    highlights:
+      - "Centralized web UI and Hub/Worker architecture for running multiple Claude Code agents in parallel across local and remote machines"
+      - "Git worktree isolation for parallel branches, integrated remote terminals, and a file viewer with image zoom and hex view"
+      - "Interactive chat UI with thinking blocks, plan approval with context clearing, permission controls, quote-and-reply, file `@mention` insertion, and rate-limit countdowns"
+      - "Multi-variant Docker images and QR code access URLs"

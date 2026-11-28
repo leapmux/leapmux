@@ -35,12 +35,10 @@ type TokenInfo struct {
 	//
 	// It exists because those two are not always the same id. A terminal TAB
 	// advertises itself as TabID, so this merely repeats it. A QUAKE terminal
-	// cannot: it has no CRDT tab, so TabID identifies a neighbouring tab in the same
-	// working directory instead (see the Factory's TerminalSpawning), which is
-	// what keeps `leapmux control agent ...` and every workspace/tile
-	// derivation working inside the panel. Without this field the shell the
-	// user is actually typing in would have no name at all, so
-	// `terminal send` / `terminal get` could not address it.
+	// cannot: it has no CRDT tab, so its TabID is empty (see the Factory's
+	// TerminalSpawning). Without this field the shell the user is actually
+	// typing in would have no name at all, so `terminal send` / `terminal get`
+	// could not address it.
 	TerminalID        string
 	TabType           leapmuxv1.TabType // Determines which inner-RPC the CLI uses to derive working_dir / etc.
 	IssuedAt          time.Time

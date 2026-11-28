@@ -1121,6 +1121,18 @@ func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, reg bgTas
 	if err != nil {
 		return "", fmt.Errorf("get parent agent for child spawn: %w", err)
 	}
+	if parent.ClosedAt.Valid {
+		return "", fmt.Errorf("the parent agent tab is closed: %w", agent.ErrChildIdentityRefused)
+	}
+	if s.rootAgentID != s.agentID {
+		live, err := reg.queries.CanWatchAgentHistory(ctx, s.rootAgentID)
+		if err != nil {
+			return "", fmt.Errorf("check root agent for child spawn: %w", err)
+		}
+		if !live {
+			return "", fmt.Errorf("the root agent tab is closed: %w", agent.ErrChildIdentityRefused)
+		}
+	}
 	childID := id.Generate()
 	// The `agents` row must never hold a blank title: it is the tab label the
 	// user reads when the subagent transcript opens, and nothing rewrites it

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -170,7 +169,7 @@ func TestAgent_StartAndStop(t *testing.T) {
 	require.NoError(t, err, "mockStart")
 
 	// Send a valid assistant NDJSON message that HandleOutput will persist.
-	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n"), agentapi.StopContext{}), "SendRawInput")
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}` + "\n")}), "SendRawInput")
 
 	// Wait for the message to be processed by HandleOutput and persisted via the sink.
 	testutil.AssertEventually(t, func() bool {
@@ -202,7 +201,7 @@ func TestAgent_SendInputAfterStop(t *testing.T) {
 	agent.Stop()
 	_ = agent.Wait()
 
-	assert.Error(t, agent.SendInput("should fail", nil), "expected error sending input after stop")
+	assert.Error(t, agenttest.SendInput(agent, "should fail", nil), "expected error sending input after stop")
 }
 
 func TestAgent_AgentID(t *testing.T) {
@@ -297,7 +296,7 @@ func TestAgent_InitMessageFlowsThrough(t *testing.T) {
 		"session ID should match the init message")
 
 	// Send additional input (an assistant message) and verify it flows through too.
-	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"reply"}}`+"\n"), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(`{"type":"assistant","message":{"role":"assistant","content":"reply"}}` + "\n")}))
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() >= 1
 	}, "expected additional output after input")
@@ -327,27 +326,27 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 
 	// 1. User text echo — resets counter to 0.
 	userEcho := `{"type":"user","message":{"role":"user","content":"Run pwd"}}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(userEcho), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(userEcho)}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 2. Assistant with tool_use — counter should become 1.
 	assistantToolUse := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pwd"}}]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(assistantToolUse), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(assistantToolUse)}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 3. Tool result (user type, array content) — should NOT reset counter.
 	toolResult := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"/home/user"}]}}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolResult), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(toolResult)}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 4. Assistant with text (no tool_use) — counter stays 1.
 	assistantText := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The current directory is /home/user"}]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(assistantText), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(assistantText)}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 5. The result keeps its original bytes and stores the tool count separately.
 	resultMsg := `{"type":"result","subtype":"turn_end"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(resultMsg), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(resultMsg)}))
 
 	testutil.AssertEventually(t, func() bool {
 		msgs := sink.Messages()
@@ -408,7 +407,7 @@ func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
 
 	// Send a tool_use (assistant) message with tool name "Grep".
 	toolUseMsg := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_test123","name":"Grep","input":{"pattern":"foo"}}]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(toolUseMsg)}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > initialCount
@@ -421,7 +420,7 @@ func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
 
 	// Send a tool_result (user) message referencing the same tool_use_id.
 	toolResultMsg := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_test123","content":"Found 3 files"}]},"session_id":"test-session","uuid":"uuid2","tool_use_result":{"mode":"files_with_matches","filenames":["a.go","b.go","c.go"],"numFiles":3}}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(toolResultMsg)}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > initialCount+1
@@ -460,7 +459,7 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 		`{"type":"tool_use","id":"toolu_A","name":"Grep","input":{"pattern":"foo"}},` +
 		`{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}}` +
 		`]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(toolUseMsg)}))
 
 	testutil.AssertEventually(t, func() bool {
 		return len(sink.OpenSpans()) >= 2
@@ -475,7 +474,7 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 		`{"type":"tool_result","tool_use_id":"toolu_A","content":"match found"},` +
 		`{"type":"tool_result","tool_use_id":"toolu_B","content":"file list"}` +
 		`]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(toolResultMsg)}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.ClosedSpanCount() >= 2
@@ -507,7 +506,7 @@ func TestAgent_ParallelToolResultMarksLaterSelfDisplayingControlResponse(t *test
 		`{"type":"tool_use","id":"toolu_A","name":"Bash","input":{"command":"ls"}},` +
 		`{"type":"tool_use","id":"toolu_B","name":"AskUserQuestion","input":{"question":"Proceed?"}}` +
 		`]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(toolUseMsg)}))
 
 	testutil.AssertEventually(t, func() bool {
 		return len(sink.OpenSpans()) >= 2
@@ -518,7 +517,7 @@ func TestAgent_ParallelToolResultMarksLaterSelfDisplayingControlResponse(t *test
 		`{"type":"tool_result","tool_use_id":"toolu_B","content":"Yes, continue."}` +
 		`]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
 	messageCountBeforeResult := len(sink.Messages())
-	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg), agentapi.StopContext{}))
+	require.NoError(t, agent.SendRawInput(agentapi.RawInput{Data: []byte(toolResultMsg)}))
 
 	testutil.AssertEventually(t, func() bool {
 		msgs := sink.Messages()
@@ -808,7 +807,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	a.startOutputReader(scanner)
 
 	// Send a valid assistant NDJSON message to trigger output after delimiter.
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n"), agentapi.StopContext{}))
+	require.NoError(t, a.SendRawInput(agentapi.RawInput{Data: []byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}` + "\n")}))
 
 	// Wait for output to arrive via the sink.
 	testutil.AssertEventually(t, func() bool {
@@ -905,7 +904,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	a.startOutputReader(scanner)
 
 	// Send a valid assistant NDJSON message to trigger post-preamble output.
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n"), agentapi.StopContext{}))
+	require.NoError(t, a.SendRawInput(agentapi.RawInput{Data: []byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}` + "\n")}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > 0
@@ -1232,7 +1231,11 @@ func TestClaudeStopAndWaitJoinThePendingReaderReservation(t *testing.T) {
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"final","is_api_error_message":true,"message":{"content":[{"type":"text","text":"EOF error"}]}}`))
 		// ReadOutput reports process exit before the reader reserves its final write.
 		close(processDone)
-		go a.flushHeldAPIError()
+		readerReturned := make(chan struct{})
+		go func() {
+			defer close(readerReturned)
+			a.flushHeldAPIError()
+		}()
 		<-sink.reserving
 		waited := make(chan error, 1)
 		stopped := make(chan struct{})
@@ -1251,6 +1254,9 @@ func TestClaudeStopAndWaitJoinThePendingReaderReservation(t *testing.T) {
 		close(sink.resume)
 		require.NoError(t, <-waited)
 		<-stopped
+		// Stop and Wait join the reservation. The reader can still be draining
+		// the blocked queue, and another flush would return while it runs.
+		<-readerReturned
 		var rowsAtSentinel []agenttest.Message
 		queue.Append(agentapi.OutputWrite{Label: "verify reader ordering", Run: func() error {
 			rowsAtSentinel = sink.Messages()

@@ -2,120 +2,112 @@
 title: "Glossary"
 description: "Short, alphabetical definitions of the terms used throughout the LeapMux manual, each linking to the chapter that covers it in depth."
 type: docs
-weight: 4
+weight: 7
 ---
 
-Short definitions of the terms you will meet throughout the LeapMux manual. Each entry links to the chapter that covers the term in depth. Terms are listed alphabetically.
+Short, alphabetical definitions of terms used throughout the LeapMux manual. Each entry links to the chapter that covers the topic in depth.
 
 ## A
 
 ### Active client (presence)
 
-The client connection that owns the turn-end notification sound for a workspace. The role follows your most recent input and is broadcast on the per-user events stream. When an agent finishes a turn, only that client plays the sound; if no client is active, every client plays it. See [Device Sync](/docs/using/device-sync/).
+The client connection that owns the turn-end notification sound for a workspace. The role follows your most recent input and broadcasts over your account's event stream. When an agent finishes a turn, only the active client plays the sound; if no client is active, every connected client plays it. See [Workspaces — Live sync across devices](/docs/using/workspaces/#live-sync-across-devices).
 
 ### Agent
 
-A coding agent: a CLI assistant (Claude Code, Codex, Cursor, GitHub Copilot, OpenCode, Pi, Kilo, Goose, Reasonix, ZCode, Codewhale, Kimi Code, MiMo Code, Qwen Code, Oh My Pi, Grok Build, Kiro, Amp, Cline, CodeBuddy Code, Junie, Letta Code, Dirac, Qoder CLI, Factory Droid, Fast Agent, Command Code, DeepSeek Harness, Gemini CLI, Muse Code, Antigravity CLI) that LeapMux launches and hosts on a Worker, one process per agent tab. You chat with it, watch its tool calls render inline, set its model and effort, and resume it across restarts. See [Coding Agents](/docs/using/coding-agents/).
+A coding agent — one of {{< agent-provider-count >}} supported coding-assistant CLIs hosted by LeapMux on a Worker, one process per agent tab. You chat with it, inspect inline tool calls and diffs, adjust its model and reasoning effort, and resume it across restarts. See [Coding Agents](/docs/using/coding-agents/) and [Supported Agents](/docs/reference/supported-agents/).
 
 ### App
 
-A program that asks a LeapMux Hub for access to an account on it. Every app is a registration the Hub holds — a name, the addresses an authorization may return to, and a ceiling on the permissions it may ask for. A private app is visible to its registering user alone; a hub-wide app is visible to everybody. The control CLI is an app, registered like any other. See [App Authorization](/docs/admin/app-authorization/) and [Connected Apps](/docs/using/connected-apps/).
+A program that requests access to an account on a LeapMux Hub. Every app has a registration on the Hub defining its display name, allowed redirect URIs, and permission ceiling. A private app is visible only to its registering user; a hub-wide app is visible to every user. The `leapmux` control CLI is a built-in app. See [App Authorization](/docs/admin/app-authorization/) and [Accounts & Connected Apps](/docs/using/accounts-and-apps/).
 
 ### App credential
 
-One token pair a **connection** holds: an access token that renews itself and a refresh token behind it. An app holds one per machine it runs on, labelled by its **installation name**, so signing one laptop out leaves the rest working. A credential is **minted** when the app is authorized and **revoked** from its own row in **Preferences → Apps → Connected apps**. See [Connected Apps](/docs/using/connected-apps/#ending-an-apps-access) and [App credentials](/docs/admin/security/#app-credentials).
+One OAuth token pair held by a **connection**: a short-lived access token and a rotating refresh token. An app holds one credential per machine, labeled by its **installation name**, so revoking one laptop leaves other machines active. Revoke individual credentials under **Preferences → Apps → Connected apps**. See [Accounts & Connected Apps](/docs/using/accounts-and-apps/) and [Security & Authentication](/docs/admin/security-and-auth/).
 
 ### App registration
 
-The Hub's record of one **app**: its name, its redirect addresses, the permission ceiling it may ask for, whether an administrator vouched for it, and whether it may run the **step-up** ceremony. The ceiling and the step-up flag are read at every request rather than only at the consent, so removing either takes it from the credentials the app already holds. It is **registered** and **deleted** from **Preferences → Apps**, and every write to it needs a recently proven factor. See [App Authorization](/docs/admin/app-authorization/).
+The Hub's record of an **app**: its display name, redirect URIs, permission ceiling, verification state, and whether it may request **step-up** elevation. The Hub evaluates the permission ceiling and elevation setting on every request, so tightening either applies immediately to existing credentials. Manage registrations under **Preferences → Apps**. See [App Authorization](/docs/admin/app-authorization/).
 
 ## C
 
 ### Channel (E2EE)
 
-The end-to-end-encrypted connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — but never decrypted — by the Hub. One channel is opened per Worker and reused: all of that Worker's agent transcripts, terminal streams, and file requests share the same channel, kept separate by correlation IDs. The initiator normally requests an encrypted in-band rekey after one hour or when nonce usage requires it. A successful rekey refreshes the transport keys without closing the channel or repeating the Hub's channel authorization. If the current key epoch reaches the 70-minute hard limit, the client closes the channel and must complete a new handshake before reuse. A change in the expected user also requires a new channel. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+The end-to-end encrypted (E2EE) connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — never decrypted — by the Hub. One channel is opened per Worker and shared across all agent transcripts, terminal streams, and file requests on that Worker. The client periodically rotates transport keys in-band without closing the channel, or opens a fresh handshake when a key epoch expires. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Cryptography & Key Architecture](/docs/admin/cryptography/).
 
 ### Connection (app authorization)
 
-One account's live authorization of one **app**, across every machine that app runs on. It begins at the **consent screen** and ends with **Disconnect** in **Preferences → Apps → Connected apps**, which retires every **app credential** the connection holds at once. Not to be confused with **active client (presence)**, which is a connected client, not an authorization. See [Connected Apps](/docs/using/connected-apps/).
+One account's active authorization of an **app** across all machines where it runs. It starts at the **consent screen** and ends when you click **Disconnect** under **Preferences → Apps → Connected apps**, which revokes all **app credentials** under that connection at once. See [Accounts & Connected Apps](/docs/using/accounts-and-apps/).
 
 ### Consent screen
 
-The page a Hub renders when an app asks for access. It states the app's name, warns when no administrator vouched for it, and lists every permission as a sentence a person can act on -- *Type into your terminals, which runs any command on your machine*, never `terminal:write`. Approving needs a recently proven factor. See [Connected Apps](/docs/using/connected-apps/#authorizing-an-app).
+The Hub page displayed when an app requests access. It shows the app's name, warns when no administrator has verified it, and describes every requested permission in plain language (for example, *Type into your terminals, which runs any command on your machine*). Approving requires a recently proven factor. See [Accounts & Connected Apps](/docs/using/accounts-and-apps/).
+
+### Control CLI
+
+`leapmux` (and its short alias `lmx`): the command-line tool for driving a running Hub and its Workers from scripts or inside spawned tabs — managing workspaces, tabs, agents, terminals, layouts, files, git, and live events. External shells sign in with `leapmux auth login` or auto-discover a local `solo`, `dev`, or standalone `hub` socket; spawned tabs receive credentials automatically via `LEAPMUX_CONTROL_*` environment variables. See [CLI Guide](/docs/using/cli-guide/).
 
 ## D
 
 ### Delegation token
 
-A short-lived credential a Worker mints for the agent or terminal running in one of its tabs, so it can call `leapmux control` with no login. It carries the Worker owner's identity, reaches only that owner's Workers, holds no elevation, and is revoked when the tab closes. See [What a delegation token can reach](/docs/admin/security/#what-a-delegation-token-can-reach).
+A short-lived credential a Worker mints for an agent or terminal running inside one of its tabs so that process can call `leapmux` without a login. It acts as the Worker owner, reaches only that owner's Workers, cannot elevate, and is revoked when the tab closes. See [Security & Authentication](/docs/admin/security-and-auth/).
 
 ### Distributed mode
 
-Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode content is end-to-end encrypted while the Hub only relays it. The Hub is still trusted for identity; a browser trusts it for code as well. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+Running the Hub and one or more Workers as separate processes — typically the Hub on a shared server and Workers on developer machines — instead of a single all-in-one `solo` process. Traffic between clients and Workers is end-to-end encrypted while the Hub relays ciphertext. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Authentication](/docs/admin/security-and-auth/).
 
 ## E
 
 ### Effort (reasoning level)
 
-A per-agent setting that controls how much reasoning the agent applies. The available tiers are model-dependent — each model advertises its own supported set — and for the providers LeapMux manages the default is `auto`, which lets the CLI pick. You change effort after opening the agent, from the composer's Effort chip or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/).
+A per-agent setting that controls how much reasoning the model applies. Available tiers depend on the model; for managed providers, the default is `auto` (letting the CLI decide). Change effort mid-session from the composer's Effort chip or **[+]** menu. See [Coding Agents](/docs/using/coding-agents/).
 
 ## F
 
 ### Floating window
 
-A tab popped out of the tiled layout into a movable, resizable, opacity-adjustable overlay that floats on top of the main layout. A floating window is itself a small tiling tree you can split and grid (with no depth limit), and you can pop the tab back into the main layout. The default keyboard shortcut to pop out/in is `Cmd/Ctrl + Shift + O`. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+A tab popped out of the main tiled layout into a movable, resizable overlay with adjustable opacity. A floating window contains its own tiling tree (supporting splits and grids with no depth limit) and can be popped back into the main layout with `⌘⇧O` / `Ctrl+Shift+O`. See [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ### Frontend
 
-The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read. The **Worker** holds agent state, and the browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
+The web interface — running in your browser or bundled inside LeapMux Desktop — that renders workspaces, tiling layouts, agent chats, terminals, and the file browser. Workers hold authoritative agent and terminal state while the browser caches rendered messages locally in IndexedDB. One of the three core components alongside the **Hub** and **Worker**. See [Concepts & Topologies](/docs/getting-started/concepts/).
 
 ## G
 
 ### Grid
 
-A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with draggable resize handles between rows and columns. Making a grid moves the tile's existing tabs into the top-left cell. The grid's close button lives on its top-right anchor cell and closes the whole grid. Contrast with a **split**, which divides a tile into just two panes. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+A tile divided into a fixed `rows × cols` matrix of panes (up to 20 × 20) with draggable resize handles between rows and columns. Creating a grid moves existing tabs into the top-left cell; the grid close button lives on the top-right cell and closes the entire grid. Contrast with a **split** (two panes). See [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ## H
 
 ### Hub
 
-The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity**, and a browser trusts it for code. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The central service (`leapmux daemon hub start`) that authenticates users, stores accounts, workspaces, and tiling layouts, issues Worker registration keys, and relays end-to-end encrypted traffic between Frontends and Workers. Its default listen port is `4327`. See [Concepts & Topologies](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## I
 
 ### Input queue
 
-The Worker-owned queue every input to an agent passes through — messages, attachments, slash commands, plan executions, and answers to permission prompts. It survives page refreshes, reconnects and Worker restarts, and every device sees the same one. Items can be scheduled for a future send, reordered inside their reorder group, edited, deleted, retried, paused and **steered**; a provider's automatic retries appear in it as ordinary rows. See [The input queue](/docs/using/coding-agents/#the-input-queue).
+The Worker-owned queue that holds every input sent to an agent — messages, attachments, slash commands, plan executions, and permission answers. It survives page reloads, reconnects, and Worker restarts, and stays synchronized across all devices. You can reorder, edit, delete, schedule, pause, retry, and **steer** queued items. See [Coding Agents](/docs/using/coding-agents/).
 
 ### Installation name
 
-The per-machine label of one **app credential** — for example *trustin's MacBook*. An app holds one credential per machine it runs on; the installation name tells two rows of the same app apart. See [Connected Apps](/docs/using/connected-apps/).
-
-## L
-
-### LexoRank
-
-The string-based ordering scheme LeapMux uses to position tabs (and other ordered items) without renumbering everything when you reorder or insert. Each tab carries a LexoRank `position` string; a new tab gets a rank computed from its neighbours, so drag-to-reorder and "insert before/after" need only a single update. It is an implementation detail you rarely see directly. See [Tabs & Layout](/docs/using/tabs-and-layout/).
-
-## N
-
-### Noise_NK
-
-The Noise-protocol handshake pattern behind the E2EE channel: the Worker has a known static key the Frontend verifies. LeapMux extends it into a hybrid post-quantum handshake (see **Post-quantum encryption**). See [Security & Threat Model](/docs/admin/security/).
+The per-machine label attached to an **app credential** — for example, *Alice's MacBook*. Because an app holds one credential per machine, the installation name lets you distinguish machines in **Preferences → Apps → Connected apps**. See [Accounts & Connected Apps](/docs/using/accounts-and-apps/).
 
 ## P
 
 ### Permission (scope)
 
-One named thing an app may do, such as `file:read` or `terminal:write`. A grant is a set of them, and it only ever **subtracts** from what its owner can already do — an app granted `admin:users` on an ordinary account administers nothing. The Hub enforces a grant at its own boundary and the Worker enforces it again inside the encrypted channel. See [App Authorization](/docs/admin/app-authorization/#permissions).
+A specific capability an app may request, such as `file:read` or `terminal:write`. A grant only ever **narrows** what the owning account can already do — `admin:users` on a non-admin account grants no admin access. Both the Hub and the Worker enforce scopes. See [App Authorization](/docs/admin/app-authorization/).
 
 ### Permission mode
 
-A per-agent setting that controls when the agent asks before it acts. Examples include Claude Code Auto Mode, Goose Smart Approve, and each provider's bypass mode. Change it from the composer's mode chip or its **[+]** menu. That menu also offers the Smart permissions and Bypass permissions shortcuts, which select these values for you when the session supports them. A provider can carry a separate permission option group beside this axis, such as GitHub Copilot Assisted Approval. See [Coding Agents](/docs/using/coding-agents/).
+A per-agent setting that controls when the agent asks for approval before acting — such as Claude Code Auto Mode, Goose Smart Approve, or a provider's bypass mode. Change it from the composer's mode chip or **[+]** menu, which also offers **Smart permissions** and **Bypass permissions** shortcuts where supported. See [Coding Agents](/docs/using/coding-agents/).
 
 ### Post-quantum encryption
 
-The default E2EE mode (`post-quantum`): a hybrid handshake that combines classical and post-quantum cryptography, so the channel stays secure if one algorithm is later broken. The alternative `classic` mode authenticates the Worker with its static Module-Lattice-Based Key-Encapsulation Mechanism (ML-KEM) key. It omits the Stateless Hash-Based Digital Signature Algorithm (SLH-DSA) signature and post-quantum forward secrecy; the Worker still registers and advertises all three keys, because they are its identity. Set it on the Worker with `--encryption-mode`. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+The default E2EE mode (`post-quantum`), which uses a hybrid handshake combining classical and post-quantum cryptography so channels remain protected even if one family is later broken. The alternative `classic` mode omits post-quantum forward secrecy while still verifying the Worker's registered identity. Configure the mode on a Worker with `--encryption-mode`. See [Cryptography & Key Architecture](/docs/admin/cryptography/).
 
 ### Presence
 
@@ -123,77 +115,85 @@ See **Active client (presence)**.
 
 ### PTY
 
-A pseudo-terminal — the operating-system primitive behind a terminal tab. Each LeapMux terminal is a PTY running a real shell on the Worker, and its I/O and shell state live only on the Worker (the Hub never sees them). A PTY session stays attached across reconnects; across a Worker restart the shell cannot survive, but its last screen is preserved so the terminal can be restarted where it left off. See [Terminals](/docs/using/terminals/).
-
-## R
-
-### Registration key
-
-A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then pass it to `leapmux worker register --registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
-
-### Control CLI
-
-`leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/using/control-cli/).
+A pseudo-terminal — the operating-system primitive backing each LeapMux terminal tab. Every PTY runs a real shell on the Worker; its I/O stays encrypted end-to-end and never reaches the Hub in plaintext. See [Terminals](/docs/using/terminals/).
 
 ## Q
 
 ### Quake-mode terminal
 
-A shell that slides over the centre of the app for one working DIRECTORY, toggled with `Ctrl` and the key under `Esc` from any tab. It belongs to the directory rather than to a tab or a tile, so it costs the tab underneath no space. One shell per (Worker, working directory), shared by every tab in that directory and by every device; whether the panel is visible is per-device. It ends when the last tab working in its directory closes, or when you exit the shell. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
+A drop-down shell overlay scoped to one working directory, toggled with ``Ctrl+` `` (or `Ctrl` plus the key under `Esc`) from any tab. One shell is shared per `(Worker, working directory)` across all tabs in that directory and across your devices, while panel visibility stays per-device. It closes when you exit the shell or close the last tab in that directory. See [Terminals](/docs/using/terminals/).
+
+## R
+
+### Registration key
+
+A short-lived, single-use secret (5-minute lifetime) minted in the Hub's **Register worker** dialog and passed to `leapmux daemon worker register --registration-key`. Possessing a valid key authorizes the Worker immediately with no separate approval queue. See [Managing Workers](/docs/admin/managing-workers/).
 
 ## S
 
 ### Session (agent session)
 
-The persistent state of a running coding agent — its conversation history and process — kept in the Worker's local database so the agent survives browser reloads, Worker reconnects, and restarts. Reopening the agent's tab reattaches to the same session. (Distinct from a user **login session** in [Accounts & Authentication](/docs/using/accounts/).) See [Coding Agents](/docs/using/coding-agents/).
+The persistent conversation history and runtime state of a coding agent stored in the Worker's local database so it survives browser reloads, reconnects, and Worker restarts. Distinct from a user login session in [Accounts & Connected Apps](/docs/using/accounts-and-apps/). See [Coding Agents](/docs/using/coding-agents/).
 
 ### Service
 
-An entry in the service manager of the operating system — launchd, systemd, or Task Scheduler and the Service Control Manager on Windows — that `leapmux <mode> start` or `enable` creates. It keeps LeapMux running in the background, and starts it when you log in or when the computer starts. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
+An OS background service entry (launchd on macOS, systemd on Linux, or Task Scheduler / Service Control Manager on Windows) created by `leapmux daemon <mode> start` or `enable` to run LeapMux automatically at login or boot. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 ### Solo mode
 
-The single-user mode (`leapmux solo`) that runs a Hub and a Worker in one process. Its account, `solo`, starts without a password. Local IPC uses the account without a credential. TCP exposes only first-password setup until one caller claims the account. After setup, every TCP address requires sign-in. Binding a passwordless solo hub to a non-loopback address triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+The single-user mode (`leapmux up` or `leapmux daemon solo start`) that runs a Hub and a Worker in one process for one account (`solo`). Local IPC requires no credential, while TCP requires first-password setup and login thereafter. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Authentication](/docs/admin/security-and-auth/).
 
 ### Steering
 
-Handing the **input queue**'s first item to the turn an agent already runs, instead of letting it wait for the turn to end. It is how you correct an agent mid-thought. Offered by the queue row's **Steer** button and by `Cmd/Ctrl+Enter` on an empty composer, and only while the provider accepts one during a running ordinary turn. See [Steering](/docs/using/coding-agents/#steering).
+Delivering the **input queue**'s first waiting item into an agent's currently running turn rather than waiting for the turn to end. Trigger steering with the queue row's **Steer** button or by pressing `⌘Enter` / `Ctrl+Enter` on an empty composer while the provider supports mid-turn steering. See [Coding Agents](/docs/using/coding-agents/).
 
 ### Step-up
 
-A ceremony that proves a factor and opens a {{< duration elevation-window >}} window on an existing session or app credential. A web browser verifies a factor directly on the Hub’s page to elevate its own session. Remote-Hub Desktop sessions and app credentials issued through a browser use a loopback ceremony on the same machine. App credentials issued through device-code login or by an administrator use the device-code ceremony at `/oauth/step-up`. Both app-mediated ceremonies require the requesting app’s registration to allow elevation and a browser session with a current window to approve the request. Step-up issues no new credential. See [Session elevation](/docs/admin/security/#session-elevation).
+A verification ceremony that proves a factor (password or passkey) and opens an elevation window of {{< duration elevation-window >}} on an existing session or app credential without issuing a new token:
+
+- Browsers verify directly on the Hub.
+- Remote-Hub Desktop sessions and browser-issued CLI credentials use a local loopback ceremony (`GET /oauth/authorize?step_up=...`).
+- Device-code and admin-issued credentials call `POST /oauth/step-up` and approve on `/oauth/device`.
+
+See [Security & Authentication](/docs/admin/security-and-auth/).
 
 ## T
 
 ### Tab
 
-A single piece of content inside a tile. There are four kinds:
+One piece of content inside a tile. LeapMux has four tab types:
 
 - **Agent** — a coding-agent chat.
-- **Terminal** — a shell or pseudo-terminal (PTY).
-- **File** — a file viewer or diff.
-- **Image** — one image an agent returned, opened from its chat row so you can zoom it.
+- **Terminal** — an interactive shell (PTY).
+- **File** — a file viewer or git diff.
+- **Image** — an image returned by a tool call, opened for zoom and pan.
 
-Open Agent, Terminal, and File tabs from the tab bar. Open Image tabs from agent chats. Rename non-file tabs by double-clicking. Close tabs with the X or a middle-click. Drag tabs between tiles and workspaces. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+Open Agent, Terminal, and File tabs from the tab bar; open Image tabs from chat tool results. Double-click non-file tabs to rename them, close tabs with **X** or middle-click, and drag tabs between tiles and workspaces. See [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ### Tile (leaf / split / grid)
 
-A rectangular pane in the workspace's recursive tiling layout. A **leaf** tile is a single pane that shows a tab bar plus its active tab's content. A leaf can become a **split** (two side-by-side or stacked panes) or a **grid** (a `rows × cols` matrix); both nest, with draggable resize handles between panes and a depth cap of 3 in the main layout. The workspace's last remaining tile cannot be closed. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+A rectangular pane in a workspace's recursive tiling layout. A **leaf** tile shows a tab bar and its active tab, and can turn into a **split** (two panes) or a **grid** (`rows × cols`), nested up to depth 3 in the main layout. The last remaining tile in a workspace cannot be closed. See [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ### TOFU (trust on first use)
 
-The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a Hub that substitutes a Worker key in a channel your browser opens causes a mismatch. This does not stop a Hub opening its own channel or serving modified Frontend code. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. A desktop tunnel uses the account’s browser pin. On first contact, tunnel creation opens a browser channel and waits for it to verify and record the key. If the Hub reports a different key on reconnect, the tunnel stops and shows both fingerprints. Recreation requires a fresh key review and an explicit Create. The stored pin must still match the reviewed key when creation starts. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
+The key-pinning mechanism protecting Worker identity. On first connection to a Worker, the client stores the Worker's static public key and rejects any later handshake presenting a different key:
+
+- **Browser:** opens the **"Worker public key changed"** dialog showing 4-word fingerprints so you can **Reject** or **Accept** after out-of-band verification.
+- **CLI and cross-Worker:** abort automatically until you inspect and clear the stale pin.
+- **Desktop tunnels:** verify through the account's browser pin and stop with both fingerprints if a key changes on reconnect.
+
+See [Managing Workers](/docs/admin/managing-workers/) and [Security & Authentication](/docs/admin/security-and-auth/).
 
 ## W
 
 ### Worker
 
-A long-running daemon (`leapmux worker`) that runs on a developer machine and hosts agents, terminals, and file access for a workspace. A Worker dials the Hub outbound (so it works behind NAT with no inbound ports), registers with a registration key, and keeps agent and terminal state in its own local database. Its online/offline status reflects whether it currently holds a live connection to the Hub. See [Managing Workers](/docs/admin/managing-workers/) and [Running LeapMux](/docs/admin/running-leapmux/).
+A long-running daemon (`leapmux daemon worker start`) on a developer machine that hosts coding agents, terminals, and file access. Workers connect outbound to a Hub (requiring no inbound ports), register with a single-use registration key, and keep agent and terminal state in their own local SQLite database. See [Managing Workers](/docs/admin/managing-workers/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ### Workspace
 
-A named container for one tiling layout of tabs, owned by its creator. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own, with no sharing. See [Workspaces](/docs/using/workspaces/).
+A container with its own title and tiling layout of tabs, owned privately by its creator. Workspaces appear in the sidebar tree and keep their layout live-synced across devices through the Hub. See [Workspaces](/docs/using/workspaces/).
 
 ### Worktree
 
-A separate working directory of a git repository, on its own branch, that an agent or terminal runs in — so several agents can work the same repo on different branches without clobbering each other's files. You can open a tab in a new or existing worktree and create, switch, or push branches at open time; closing the last tab tied to a worktree raises a "Close last tab" dialog with dirty-worktree protection. See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+A separate working directory of a git repository checked out to its own branch so multiple agents can edit the same repository in parallel without overwriting each other's files. Closing the last tab tied to a worktree checks for uncommitted changes before offering cleanup. See [Worktrees & Branches](/docs/using/worktrees-and-branches/).

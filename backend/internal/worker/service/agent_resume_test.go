@@ -33,7 +33,7 @@ type startRecorder struct {
 	failFor map[string]bool
 	// extraEnv records the ExtraEnv each start was handed, keyed by agent id.
 	extraEnv map[string][]string
-	// resumeID records the ResumeSessionID each start was handed, keyed by agent
+	// resumeID records the Session.ResumeID() each start was handed, keyed by agent
 	// id. Without it a sweep that resumes nothing looks identical to one that
 	// resumes the right session, and the difference is the user's conversation.
 	resumeID map[string]string
@@ -63,7 +63,7 @@ func (r *startRecorder) install(svc *Service) {
 		r.mu.Lock()
 		r.started = append(r.started, opts.AgentID)
 		r.extraEnv[opts.AgentID] = opts.ExtraEnv
-		r.resumeID[opts.AgentID] = opts.ResumeSessionID
+		r.resumeID[opts.AgentID] = opts.Session.ResumeID()
 		r.startCtx[opts.AgentID] = ctx
 		fail := r.failFor[opts.AgentID]
 		block := r.block

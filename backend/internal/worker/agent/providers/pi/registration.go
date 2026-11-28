@@ -3,6 +3,7 @@ package pi
 import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -35,5 +36,6 @@ func Registration() agent.Registration {
 		PersistedOnlyOptionIDs: []string{OptionProvider},
 		EnvModelKey:            "LEAPMUX_PI_DEFAULT_MODEL",
 		EnvEffortKey:           "LEAPMUX_PI_DEFAULT_EFFORT",
+		AgentDir:               &agentdir.Spec{Prefix: "pi"},
 	}
 }

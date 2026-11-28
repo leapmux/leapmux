@@ -3,10 +3,57 @@
   This <style> is unlayered, so it wins over Hextra's @layer'd Tailwind utilities.
 */ -}}
 
+{{- /* Advertise llms.txt and per-page Markdown alternates for coding agents and LLM crawlers. */ -}}
+<link rel="llms-txt" href="{{ "llms.txt" | absURL }}">
+{{- with .OutputFormats.Get "markdown" }}
+<link rel="alternate" type="text/markdown" href="{{ .Permalink }}" title="{{ $.Title }} (Markdown)">
+{{- end }}
+
 {{- /* App code font: plain Hack (not the Nerd Font) from CDN; wired into
        --hx-font-mono in assets/css/custom.css. */ -}}
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css" integrity="sha384-FRSMcY2SDM+291M5kaR6Bg07BDALOmo3pAUMcFUdEZn93VwK+vqAfHQkzRwXpBTL" crossorigin="anonymous">
+
+{{- /* Load interactive shortcode scripts once in <head> (HTML-only, never leaking into RSS/Markdown). */ -}}
+{{- $widgetScripts := slice
+  (dict "asset" "js/site-media.js" "needed" (or (.HasShortcode "video-clip") (.HasShortcode "hero-showcase")))
+  (dict "asset" "js/cli-cast.js" "needed" (.HasShortcode "cli-cast"))
+  (dict "asset" "js/agent-ticker.js" "needed" (.HasShortcode "agent-ticker"))
+  (dict "asset" "js/table-filter.js" "needed" (.HasShortcode "table-filter"))
+  (dict "asset" "js/copy-prompt.js" "needed" (.HasShortcode "copy-prompt"))
+-}}
+{{- range $widgetScripts -}}
+  {{- if .needed -}}
+    {{- $js := resources.Get .asset -}}
+    {{- if not $js -}}
+      {{- errorf "head-end.html: missing resource %q" .asset -}}
+    {{- end -}}
+    {{- if hugo.IsProduction -}}{{- $js = $js | minify | fingerprint -}}{{- end -}}
+<script defer src="{{ $js.RelPermalink }}"{{ with $js.Data.Integrity }} integrity="{{ . }}"{{ end }}></script>
+  {{- end -}}
+{{- end -}}
+
+{{- /* Emit the Default (Dimidium) asciinema-player terminal theme from contracts/theme-default.json only on cli-cast pages. */ -}}
+{{- if .HasShortcode "cli-cast" -}}
+  {{- $theme := hugo.Data.theme_default -}}
+  {{- if not (and $theme $theme.light $theme.dark $theme.terminal $theme.terminal.light $theme.terminal.dark) -}}
+    {{- errorf "head-end.html: missing data/theme_default.json terminal theme contract" -}}
+  {{- end -}}
+  {{- $ansiKeys := slice "black" "red" "green" "yellow" "blue" "magenta" "cyan" "white" "brightBlack" "brightRed" "brightGreen" "brightYellow" "brightBlue" "brightMagenta" "brightCyan" "brightWhite" -}}
+  {{- $lightRules := slice
+    (printf "--term-color-foreground:%s;" (index $theme.light "--foreground"))
+    (printf "--term-color-background:%s;" (index $theme.light "--background"))
+  -}}
+  {{- $darkRules := slice
+    (printf "--term-color-foreground:%s;" (index $theme.dark "--foreground"))
+    (printf "--term-color-background:%s;" (index $theme.dark "--background"))
+  -}}
+  {{- range $idx, $key := $ansiKeys -}}
+    {{- $lightRules = $lightRules | append (printf "--term-color-%d:%s;" $idx (index $theme.terminal.light $key)) -}}
+    {{- $darkRules = $darkRules | append (printf "--term-color-%d:%s;" $idx (index $theme.terminal.dark $key)) -}}
+  {{- end -}}
+<style>.lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux{ {{- delimit $lightRules "" | safeCSS -}} }.dark .lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux{ {{- delimit $darkRules "" | safeCSS -}} }</style>
+{{- end -}}
 
 <style>
   /*

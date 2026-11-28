@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -54,9 +55,9 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 		shell = terminal.ResolveDefaultShell()
 	}
 	shellStartDir := expandTilde(r.GetShellStartDir())
-	workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
+	workingDir, err := svc.openGitWorkingDir(r.GetWorkingDir(), r.GetGitSetup(), caller)
 	if err != nil {
-		sendInvalidArgument(sender, err.Error())
+		sendValidationError(sender, err)
 		return
 	}
 
@@ -109,6 +110,10 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	// Answered before the id is minted, so the duplicate call
 	// creates no row, no startup entry and no goroutine.
 	if isQuake && svc.adoptExistingQuakeTerminal(sender, workingDir) {
+		return
+	}
+	if err := terminal.CheckInitialCommand(shell, r.GetInitialCommand()); err != nil {
+		sendInvalidArgument(sender, err.Error())
 		return
 	}
 
@@ -172,7 +177,24 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	if terminalTitle == "" {
 		terminalTitle = pickTerminalTitle()
 	}
-	runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: plan}, Options: terminal.Options{ID: terminalID, Shell: shell, WorkingDir: plan.PlannedWorkingDir, ShellStartDir: shellStartDir, Cols: uint16(cols), Rows: uint16(rows)}, Title: terminalTitle}
+	// The initial command travels in the runtime, so a creation that a later
+	// request or a Worker restart resumes runs it in the shell that the
+	// resumed startup spawns. adoptExistingQuakeTerminal answered before this
+	// line for a quake terminal that already runs, so that terminal never
+	// receives the command.
+	runtime := &terminalCreationRuntime{
+		Startup: creationStartupIntent{Plan: plan},
+		Options: terminalCreationOptions{
+			ID:             terminalID,
+			Shell:          shell,
+			WorkingDir:     plan.PlannedWorkingDir,
+			ShellStartDir:  shellStartDir,
+			Cols:           uint16(cols),
+			Rows:           uint16(rows),
+			InitialCommand: r.GetInitialCommand(),
+		},
+		Title: terminalTitle,
+	}
 	if isQuake {
 		var ok bool
 		startupCtx, startupHandle, ok = svc.registerQuakeTerminal(sender, QuakeTerminal{
@@ -208,7 +230,7 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 				return
 			}
 			runtime.Startup = intent
-			persistErr = op.persist(runtime, func(ctx context.Context, q *db.Queries) error {
+			persistErr = op.persist(runtime, func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 				return q.CreateTerminal(ctx, db.CreateTerminalParams(params))
 			})
 		}
@@ -237,9 +259,35 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	svc.finishTerminalCreation(op, caller, sender, runtime, startupCtx, startupHandle, isQuake)
 }
 
+// terminalCreationOptions holds the durable terminal launch parameters stored
+// in tab_creations.runtime_payload. Process-local fields on terminal.Options
+// are attached only when startup launches the shell.
+type terminalCreationOptions struct {
+	ID             string
+	Shell          string
+	WorkingDir     string
+	ShellStartDir  string
+	Cols           uint16
+	Rows           uint16
+	InitialCommand string
+}
+
+func (o terminalCreationOptions) terminalOptions(title string) terminal.Options {
+	return terminal.Options{
+		ID:             o.ID,
+		Shell:          o.Shell,
+		WorkingDir:     o.WorkingDir,
+		ShellStartDir:  o.ShellStartDir,
+		Title:          title,
+		Cols:           o.Cols,
+		Rows:           o.Rows,
+		InitialCommand: o.InitialCommand,
+	}
+}
+
 type terminalCreationRuntime struct {
 	Startup creationStartupIntent
-	Options terminal.Options
+	Options terminalCreationOptions
 	Title   string
 }
 
@@ -273,6 +321,12 @@ func (svc *Service) restoreTerminalCreation(op *creationOperation, sender channe
 	}
 	if row.StartupError != "" {
 		svc.finishCreationStartup(op, creationStartupOutcome{kind: creationStartupFailed, message: row.StartupError})
+		svc.replyCommittedCreation(op, sender)
+		return
+	}
+	if op.record.InitialCommandClaimed && runtime.Options.InitialCommand != "" {
+		const message = "the Worker stopped after claiming the initial command and cannot verify whether the initial command ran"
+		svc.finishCreationStartup(op, creationStartupOutcome{kind: creationStartupFailed, message: message})
 		svc.replyCommittedCreation(op, sender)
 		return
 	}
@@ -330,8 +384,19 @@ func (svc *Service) finishTerminalCreation(op *creationOperation, caller channel
 		}
 	}
 	spawnInfo := TerminalSpawnInfo{UserID: caller.UserID, WorkerID: svc.WorkerID, TabID: runtime.Options.ID, IsQuake: isQuake, WorkingDir: runtime.Startup.Plan.PlannedWorkingDir}
+	termOpts := runtime.Options.terminalOptions(runtime.Title)
+	if termOpts.InitialCommand != "" {
+		termOpts.InitialCommandDir = svc.DataDir
+		if op != nil {
+			termOpts.ReleaseInitialCommand = op.releaseTerminalInitialCommand
+		} else {
+			termOpts.ReleaseInitialCommand = func(_ context.Context, expose func() error) error {
+				return svc.authorizeTerminalCommandRelease(caller.UserID, expose)
+			}
+		}
+	}
 	start := func() {
-		go svc.runTerminalStartup(startupCtx, runtime.Options, spawnInfo, runtime.Startup.Plan, svc.makeTerminalOutputFn(runtime.Options.ID), svc.makeTerminalExitFn(), handle)
+		go svc.runTerminalStartup(startupCtx, termOpts, spawnInfo, runtime.Startup.Plan, svc.makeTerminalOutputFn(runtime.Options.ID), svc.makeTerminalExitFn(), handle)
 	}
 	if op == nil {
 		start()
@@ -341,6 +406,36 @@ func (svc *Service) finishTerminalCreation(op *creationOperation, caller channel
 	}
 	handedOff = true
 	sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{TerminalId: runtime.Options.ID, Title: runtime.Title, Publication: publication})
+}
+
+func (op *creationOperation) releaseTerminalInitialCommand(ctx context.Context, expose func() error) error {
+	owner, ok := userid.OwnerFilter(op.caller.UserID)
+	if !ok {
+		return errCreationOwnerMissing
+	}
+	svc := op.coordinator.svc
+	return svc.authorizeTerminalCommandRelease(op.caller.UserID, func() error {
+		claimed, err := svc.Queries.ClaimTerminalInitialCommand(ctx, db.ClaimTerminalInitialCommandParams{
+			UserID: owner, WorkerID: svc.WorkerID, TabID: op.key().tabID,
+			TabType: int64(leapmuxv1.TabType_TAB_TYPE_TERMINAL), PublishedState: creationPublished,
+		})
+		if err != nil {
+			return fmt.Errorf("record the initial command release: %w", err)
+		}
+		if claimed != 1 {
+			return errors.New("the initial command could not be claimed for this terminal creation")
+		}
+		return expose()
+	})
+}
+
+func (svc *Service) authorizeTerminalCommandRelease(owner userid.UserID, release func() error) error {
+	svc.ownerChangeMu.Lock()
+	defer svc.ownerChangeMu.Unlock()
+	if !callerIsWorkerOwner(svc, owner) {
+		return errors.New("the terminal creation owner no longer owns this Worker")
+	}
+	return release()
 }
 
 func (svc *Service) saveCreationTerminalResize(ctx context.Context, id string, cols, rows uint16) (bool, error) {
@@ -406,6 +501,7 @@ func (svc *Service) registerQuakeTerminal(
 			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 				TerminalId: existing.ID,
 				Title:      existing.Title,
+				Adopted:    true,
 			})
 			return nil, nil, false
 		}

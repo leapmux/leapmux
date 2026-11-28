@@ -16,10 +16,11 @@ import (
 )
 
 type claudePendingControl struct {
-	instanceID string
-	sessionID  string
-	agentID    string
-	toolUseID  string
+	instanceID   string
+	sessionID    string
+	nativeTurnID string
+	agentID      string
+	toolUseID    string
 	// elicitationServer and elicitationID identify one server's elicitation.
 	// A completion must match both values. Each MCP server assigns its own IDs.
 	elicitationServer string
@@ -81,9 +82,13 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	a.Mu.Lock()
 	record.sessionID = a.sessionID
+	if valid && record.agentID == "" {
+		record.nativeTurnID = a.claudeReplyTurnLocked(record.sessionID).InputID
+	}
 	if a.incomingControls == nil {
 		a.incomingControls = make(map[string]*claudePendingControl)
 	}
+	var replacedInstanceID string
 	if existing := a.incomingControls[envelope.RequestID]; existing != nil {
 		if existing.answering {
 			a.Mu.Unlock()
@@ -92,6 +97,9 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 		if bytes.Equal(existing.payload, content) {
 			record = existing
 		} else {
+			if existing.published {
+				replacedInstanceID = existing.instanceID
+			}
 			existing.publicationOnce.Do(func() { close(existing.publicationDone) })
 		}
 	}
@@ -103,10 +111,13 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	a.Mu.Unlock()
 	if bypass {
+		if replacedInstanceID != "" {
+			a.sink.CancelControlRequestInstance(envelope.RequestID, replacedInstanceID)
+		}
 		a.queuePermissionApprovals()
 		return
 	}
-	a.publishRegisteredControl(envelope.RequestID, record)
+	a.publishRegisteredControl(envelope.RequestID, record, replacedInstanceID)
 }
 
 func (a *Agent) canBypassControlLocked(record *claudePendingControl) bool {
@@ -115,8 +126,10 @@ func (a *Agent) canBypassControlLocked(record *claudePendingControl) bool {
 		record.sessionID == a.sessionID && len(record.automaticReply) > 0 && !record.automaticFailed
 }
 
-func (a *Agent) publishRegisteredControl(requestID string, record *claudePendingControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, InstanceID: record.instanceID, AgentSessionID: record.sessionID, Payload: record.payload})
+func (a *Agent) publishRegisteredControl(requestID string, record *claudePendingControl, replacedInstanceID string) {
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: requestID, InstanceID: record.instanceID, AgentSessionID: record.sessionID, NativeTurnID: record.nativeTurnID, Payload: record.payload,
+	})
 	a.Mu.Lock()
 	current := a.incomingControls[requestID] == record
 	if err == nil && !record.answered {
@@ -133,6 +146,9 @@ func (a *Agent) publishRegisteredControl(requestID string, record *claudePending
 	a.Mu.Unlock()
 	if cancel {
 		a.sink.CancelControlRequestInstance(requestID, record.instanceID)
+	}
+	if err != nil && replacedInstanceID != "" {
+		a.sink.CancelControlRequestInstance(requestID, replacedInstanceID)
 	}
 	if bypass {
 		a.queuePermissionApprovals()
@@ -180,7 +196,7 @@ func (a *Agent) approvePendingPermissions() {
 	}
 	a.Mu.Unlock()
 	for requestID, record := range publish {
-		a.publishRegisteredControl(requestID, record)
+		a.publishRegisteredControl(requestID, record, "")
 	}
 	for requestID, record := range claimed {
 		a.Mu.Lock()
@@ -198,7 +214,8 @@ func (a *Agent) approvePendingPermissions() {
 }
 
 // SendRawInput claims control answers and preserves every other native frame.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var frame struct {
 		Type     string `json:"type"`
 		Response struct {
@@ -208,11 +225,18 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if json.Unmarshal(data, &frame) != nil || frame.Type != claudeMsgTypeControlResponse {
 		return a.Process.SendRawInput(data, stop)
 	}
+	// Claude Code can ask again under a waiting request ID with another request,
+	// which replaces the answered instance (claudeCodeHandleControlRequest). It
+	// applies an answer to the request that the ID identifies now, so the answer goes
+	// only to the instance that it states (agent.RawInput.ControlInstanceID).
 	a.Mu.Lock()
 	record := a.incomingControls[frame.Response.RequestID]
 	a.Mu.Unlock()
 	if record == nil {
 		return fmt.Errorf("the Claude Code control request is no longer pending")
+	}
+	if err := agent.ControlInstanceRefusal(record.instanceID, input.ControlInstanceID); err != nil {
+		return err
 	}
 	ctx := a.Context()
 	if ctx == nil {
@@ -226,7 +250,14 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 		return a.ProcessExitError()
 	}
 	a.Mu.Lock()
-	if a.incomingControls[frame.Response.RequestID] != record || !record.published || record.answering || a.StoppedLocked() {
+	if current := a.incomingControls[frame.Response.RequestID]; current != record {
+		a.Mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return fmt.Errorf("the Claude Code control request is no longer pending")
+	}
+	if !record.published || record.answering || a.StoppedLocked() {
 		a.Mu.Unlock()
 		return fmt.Errorf("the Claude Code control request is no longer pending")
 	}
@@ -266,7 +297,7 @@ func (a *Agent) finishControlAnswer(requestID string, record *claudePendingContr
 		a.sink.CancelControlRequestInstance(requestID, record.instanceID)
 	}
 	if current && publish {
-		a.publishRegisteredControl(requestID, record)
+		a.publishRegisteredControl(requestID, record, "")
 	}
 }
 

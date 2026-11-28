@@ -1,23 +1,33 @@
+import type { ControlQuestion } from '../model/question'
+import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { AskUserQuestionContent } from './AskUserQuestionControl'
 import { createControlAnswerState } from './types'
-import '../providers/claude/plugin'
-import '../providers/zcode/plugin'
+
+/** A question request, as the Worker sends it for these questions. */
+function questionRequest(questions: ControlQuestion[]): ControlRequest {
+  return testControlRequest({
+    requestId: 'preview',
+    agentId: 'agent',
+    prompt: { kind: 'question', questions },
+  })
+}
 
 describe('question option previews', () => {
   it.each([false, true])('keeps the selected response when display details arrive (multiSelect=%s)', async (multiSelect) => {
     const answerState = createControlAnswerState()
     const [option, setOption] = createSignal({ label: '1. A — First', value: '1. A — First', preview: '' })
-    const request = { requestId: 'question', agentId: 'agent', payload: {} }
+    const request = testControlRequest({ requestId: 'question', agentId: 'agent' })
     const { getByRole } = render(() => (
       <AskUserQuestionContent
         request={request}
         answerState={answerState}
+        preservesSelectionNotes={false}
         questions={[
           {
             question: 'Choose',
@@ -42,27 +52,15 @@ describe('question option previews', () => {
     const answerState = createControlAnswerState()
     const { container, getByRole } = render(() => (
       <ControlRequestContent
-        agentProvider={AgentProvider.CLAUDE_CODE}
-        request={{
-          requestId: 'preview',
-          agentId: 'agent',
-          payload: {
-            request: {
-              tool_name: 'AskUserQuestion',
-              input: {
-                questions: [
-                  {
-                    question: 'Choose an implementation',
-                    multiSelect,
-                    options: [
-                      { label: 'Simple', description: 'One constant', preview: '```ts\nconst answer = 42\n```' },
-                    ],
-                  },
-                ],
-              },
-            },
+        request={questionRequest([
+          {
+            question: 'Choose an implementation',
+            multiSelect,
+            options: [
+              { label: 'Simple', description: 'One constant', preview: '```ts\nconst answer = 42\n```' },
+            ],
           },
-        }}
+        ])}
         answerState={answerState}
       />
     ))
@@ -76,58 +74,22 @@ describe('question option previews', () => {
     expect(answerState.selections()[0]).toEqual(['Simple'])
   })
 
-  it('recovers a ZCode preview from native question fields', async () => {
-    const text = '┌────────┐\n│ sample │\n└────────┘'
-    const { getByRole } = render(() => (
-      <ControlRequestContent
-        agentProvider={AgentProvider.ZCODE}
-        request={{
-          requestId: 'preview',
-          agentId: 'agent',
-          payload: {
-            request: { tool_name: 'AskUserQuestion', input: {} },
-            params: {
-              questions: [
-                {
-                  question: 'Choose a layout',
-                  options: [
-                    { label: 'Box', value: 'Box', preview: text },
-                  ],
-                },
-              ],
-            },
-          },
-        }}
-        answerState={createControlAnswerState()}
-      />
-    ))
-    await settleWorkerReplies()
-    expect(getByRole('region', { name: 'Box preview' }).textContent).toContain(text)
-  })
-
-  it.each([undefined, '', '   ', 12, null])('omits an unusable preview (%s)', (preview) => {
+  it.each([undefined, '', '   '])('omits an empty preview (%j)', (preview) => {
     const { queryByRole } = render(() => (
       <ControlRequestContent
-        agentProvider={AgentProvider.CLAUDE_CODE}
-        request={{
-          requestId: 'preview',
-          agentId: 'agent',
-          payload: {
-            request: {
-              tool_name: 'AskUserQuestion',
-              input: {
-                questions: [
-                  {
-                    question: 'Choose',
-                    options: [
-                      { label: 'A', preview },
-                    ],
-                  },
-                ],
+        request={questionRequest([
+          {
+            question: 'Choose',
+            options: [
+              {
+                label: 'A',
+                ...(preview === undefined
+                  ? {}
+                  : { preview }),
               },
-            },
+            ],
           },
-        }}
+        ])}
         answerState={createControlAnswerState()}
       />
     ))

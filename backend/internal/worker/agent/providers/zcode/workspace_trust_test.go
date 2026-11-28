@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // zcodeTestBundleDigest is the bundle digest of the test's hook admission.
@@ -359,20 +360,15 @@ func TestZCodeWithdrawingTheControlsRetiresTheTrustQuestion(t *testing.T) {
 	assert.Contains(t, sink.CanceledControls(), providerkit.WorkspaceTrustRequestID("sess-1"))
 }
 
-// The browser's decision on the question becomes the saved answer, and never a
-// ZCode frame.
+// The neutral allow or deny on the question becomes the saved answer, and never
+// a ZCode frame.
 func TestZCodeResolvesTheTrustAnswer(t *testing.T) {
 	t.Parallel()
-	payload, err := json.Marshal(map[string]any{
-		contracts.WorkspaceTrustFieldType:          contracts.WorkspaceTrustControlTypeQuestion,
-		contracts.WorkspaceTrustFieldPath:          "/tmp/zcode-workspace",
-		contracts.WorkspaceTrustFieldConfiguration: zcodeTrustedConfiguration,
-	})
-	require.NoError(t, err)
+	payload := providerkittest.WorkspaceTrustQuestionPayload(t, "/tmp/zcode-workspace", zcodeTrustedConfiguration)
 	requestID := providerkit.WorkspaceTrustRequestID("sess-1")
 	for behavior, decision := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		t.Run(behavior, func(t *testing.T) {
 			t.Parallel()
@@ -380,9 +376,7 @@ func TestZCodeResolvesTheTrustAnswer(t *testing.T) {
 				"subtype": "success", "request_id": requestID, "response": map[string]any{"behavior": behavior},
 			}})
 			require.NoError(t, err)
-			result := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestID: requestID, RequestPayload: payload, ResponseContent: content,
-			})
+			result := agenttest.ResolveAnswerInSession(zcodeProvider{}, payload, "sess-1", requestID, agent.ControlAnswer{Content: content})
 			require.Empty(t, result.Refusal())
 			var answer struct {
 				Response struct {
@@ -416,7 +410,7 @@ func TestZCodeTrustAnswersTheHookReview(t *testing.T) {
 		review:        [][]byte{zcodeCompleteWireLine(t, zcodeTestTopic, zcodeDeltaFrame(review))},
 		respondStatus: zcodeCommandAccepted,
 	})
-	require.NoError(t, a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust))))
 	requests := <-served
 
 	var methods []string
@@ -452,14 +446,14 @@ func TestZCodeTrustAnswersTheHookReview(t *testing.T) {
 // because ZCode raises no new delta for it.
 func TestZCodeTrustReadsAReviewThatIsAlreadyPending(t *testing.T) {
 	t.Parallel()
-	a, _, stdin := newZCodeTrustAgent(t, 1)
+	a, sink, stdin := newZCodeTrustAgent(t, 1)
 	review := zcodeTestReview(zcodeTestBundleDigest, zcodeTestReviewItem{"workspace-hook-0-UserPromptSubmit-0-0", "pending_trust"})
 	served := serveZCodeHookReview(t, a, stdin, zcodeHookReviewScript{
 		snapshot:      [][]byte{zcodeCompleteWireLine(t, zcodeTestTopic, zcodeSnapshotFrame(review))},
 		requestStatus: zcodeCommandAccepted,
 		respondStatus: zcodeCommandAccepted,
 	})
-	require.NoError(t, a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust))))
 	<-served
 	assert.True(t, zcodeHooksTrusted(t, a))
 }
@@ -469,7 +463,7 @@ func TestZCodeTrustReadsAReviewThatIsAlreadyPending(t *testing.T) {
 // not this trust's.
 func TestZCodeTrustReadsAFragmentedReview(t *testing.T) {
 	t.Parallel()
-	a, _, stdin := newZCodeTrustAgent(t, 1)
+	a, sink, stdin := newZCodeTrustAgent(t, 1)
 	review := zcodeTestReview(zcodeTestBundleDigest, zcodeTestReviewItem{"workspace-hook-0-UserPromptSubmit-0-0", "pending_trust"})
 	fragments := zcodeFragmentWireLines(t, "lf-review", zcodeDeltaFrame(review), 3)
 	served := serveZCodeHookReview(t, a, stdin, zcodeHookReviewScript{
@@ -482,7 +476,7 @@ func TestZCodeTrustReadsAFragmentedReview(t *testing.T) {
 		},
 		respondStatus: zcodeCommandAccepted,
 	})
-	require.NoError(t, a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust))))
 	requests := <-served
 	_, payload := zcodeCommandOf(t, requests[2])
 	assert.Equal(t, map[string]any{"action": "trust_selected", "reviewItemIds": []any{"workspace-hook-0-UserPromptSubmit-0-0"}}, payload["decision"])
@@ -491,13 +485,13 @@ func TestZCodeTrustReadsAFragmentedReview(t *testing.T) {
 // A review whose items all hold trust already needs no answer.
 func TestZCodeTrustOfAReviewWithNothingPendingSendsNoAnswer(t *testing.T) {
 	t.Parallel()
-	a, _, stdin := newZCodeTrustAgent(t, 1)
+	a, sink, stdin := newZCodeTrustAgent(t, 1)
 	review := zcodeTestReview(zcodeTestBundleDigest, zcodeTestReviewItem{"workspace-hook-0-Stop-0-0", "trusted_persistent"})
 	served := serveZCodeHookReview(t, a, stdin, zcodeHookReviewScript{
 		requestStatus: zcodeCommandAccepted,
 		review:        [][]byte{zcodeCompleteWireLine(t, zcodeTestTopic, zcodeDeltaFrame(review))},
 	})
-	require.NoError(t, a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust))))
 	requests := <-served
 	assert.Len(t, requests, 3, "a subscription, the request for the review, and the end of the subscription")
 	assert.True(t, zcodeHooksTrusted(t, a))
@@ -528,7 +522,7 @@ func TestZCodeTrustFailures(t *testing.T) {
 			t.Parallel()
 			a, sink, stdin := newZCodeTrustAgent(t, 1)
 			served := serveZCodeHookReview(t, a, stdin, tc.script(t))
-			err := a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust), agent.StopContext{})
+			err := a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust)))
 			require.ErrorContains(t, err, tc.want)
 			requests := <-served
 			assert.Equal(t, MethodConversationUnsubscribe, requests[len(requests)-1].Method)
@@ -541,9 +535,9 @@ func TestZCodeTrustFailures(t *testing.T) {
 // A subscription that ZCode refuses sends no command.
 func TestZCodeTrustWithARefusedSubscriptionSendsNoCommand(t *testing.T) {
 	t.Parallel()
-	a, _, stdin := newZCodeTrustAgent(t, 1)
+	a, sink, stdin := newZCodeTrustAgent(t, 1)
 	refuseZCodeRequest(t, a, stdin, MethodConversationSubscribe, -32601, "method not found")
-	err := a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust), agent.StopContext{})
+	err := a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust)))
 	require.ErrorContains(t, err, "subscribe to the ZCode conversation")
 	for _, request := range stdin.Requests(t) {
 		assert.NotEqual(t, MethodCommand, request.Method)
@@ -570,7 +564,7 @@ func TestZCodeTrustWithoutAReviewTimesOut(t *testing.T) {
 	served := serveZCodeHookReview(t, a, stdin, zcodeHookReviewScript{requestStatus: zcodeCommandAccepted})
 	result := make(chan error, 1)
 	go func() {
-		result <- a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust), agent.StopContext{})
+		result <- a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionTrust)))
 	}()
 	ctx := testutil.DeadlineContext(t)
 	assert.Equal(t, a.APITimeout(), testutil.WaitForTimer(t, ctx, trap))
@@ -590,7 +584,7 @@ func TestZCodeTrustWithoutAReviewTimesOut(t *testing.T) {
 func TestZCodeRejectLeavesTheHooksBlocked(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newZCodeTrustAgent(t, 1)
-	require.NoError(t, a.SendRawInput(zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionReject), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(providerkit.WorkspaceTrustRequestID("sess-1"), zcodeTrustAnswer(t, contracts.WorkspaceTrustDecisionReject))))
 	assert.Empty(t, stdin.Requests(t))
 	assert.False(t, zcodeHooksTrusted(t, a))
 	assert.Equal(t, []string{providerkit.WorkspaceTrustRequestID("sess-1")}, sink.CanceledControls())

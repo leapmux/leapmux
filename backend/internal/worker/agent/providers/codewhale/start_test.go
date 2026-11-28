@@ -62,7 +62,7 @@ func TestOpenThreadAppliesOnlyTheChangedSettingsToAResumedThread(t *testing.T) {
 	resumed := threadRecord{ID: testThreadID, Model: "deepseek-flash", Mode: contracts.CodewhaleModeAgent, PermissionPosture: contracts.CodewhalePostureAsk}
 	rt.respondJSON(http.MethodPost, threadPath(testThreadID, threadRouteResume), http.StatusOK, resumed)
 	a, _ := newTestAgent(t, rt)
-	opts := agent.Options{ResumeSessionID: testThreadID, Options: optionmap.Map{
+	opts := agent.Options{Session: agent.ResumeSession(testThreadID), Options: optionmap.Map{
 		agent.OptionIDModel:           "deepseek-flash",
 		contracts.CodewhaleOptionMode: contracts.CodewhaleModeAgent,
 		agent.OptionIDPermissionMode:  contracts.CodewhalePostureAsk,
@@ -95,7 +95,7 @@ func TestOpenThreadKeepsAResumedThreadWhenTheUpdateFails(t *testing.T) {
 	rt.respondStatus(http.MethodPatch, threadRoute, http.StatusBadRequest, "unknown model")
 	a, _ := newTestAgent(t, rt)
 
-	thread, err := a.openThread(agent.Options{ResumeSessionID: testThreadID, Options: optionmap.Map{agent.OptionIDModel: "a-model-nobody-has"}})
+	thread, err := a.openThread(agent.Options{Session: agent.ResumeSession(testThreadID), Options: optionmap.Map{agent.OptionIDModel: "a-model-nobody-has"}})
 	require.NoError(t, err)
 	assert.Equal(t, resumed, thread)
 	assert.Len(t, rt.requestsTo(http.MethodPatch, threadRoute), 1)
@@ -107,7 +107,7 @@ func TestOpenThreadFailsWhenTheResumeFails(t *testing.T) {
 	rt.respondStatus(http.MethodPost, threadPath(testThreadID, threadRouteResume), http.StatusNotFound, "thread not found")
 	a, _ := newTestAgent(t, rt)
 
-	_, err := a.openThread(agent.Options{ResumeSessionID: testThreadID, Options: optionmap.Map{agent.OptionIDModel: "deepseek-pro"}})
+	_, err := a.openThread(agent.Options{Session: agent.ResumeSession(testThreadID), Options: optionmap.Map{agent.OptionIDModel: "deepseek-pro"}})
 	assert.ErrorContains(t, err, "thread not found")
 	assert.Empty(t, rt.requestsTo(http.MethodPatch, threadRoute), "openThread applies nothing to a thread that did not resume")
 }

@@ -115,7 +115,7 @@ type Dispatcher struct {
 	cleanup *drain.Counter
 	// gate admits handlers while the worker is live and joins them, up to a
 	// limit, at shutdown. Every handler -- tracked or not -- counts: an untracked
-	// handler such as UpdateAgentSettings or SendControlResponse can reach
+	// handler such as UpdateAgentSettings or AnswerControl can reach
 	// the closed database, and the Cleanup wait in Shutdown ran once, so a
 	// later tracked Add was neither joined nor safe. CloseAdmission flips the gate, and the
 	// refusal of a closed gate states the shutdown instead of racing it.
@@ -359,6 +359,14 @@ func (d *Dispatcher) invoke(ctx context.Context, caller Caller, req *leapmuxv1.I
 			_ = w.SendError(int32(codes.Internal), "internal error")
 		}
 	}()
+	// A relayed call states the tab of the sibling Worker that made it. The
+	// caller takes it here, at the one choke point of every dispatch, so no
+	// handler reads a source that this check did not admit.
+	caller, err := caller.withSource(req.GetSource())
+	if err != nil {
+		_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+		return
+	}
 	h.fn(ctx, caller, req, w)
 }
 

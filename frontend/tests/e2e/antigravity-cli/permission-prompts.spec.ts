@@ -7,7 +7,7 @@ import { antigravityTest } from '../antigravity-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { cssAttributeValue } from '../helpers/cssAttribute'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseNativePermissionWrite, expectDeclinedToolRow, expectDeclinedToolRowAcrossReload } from '../helpers/nativePermission'
+import { createNativePermissionFileWrite, exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseNativePermissionWrite, expectDeclinedToolRow, expectDeclinedToolRowAcrossReload, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { bashToolCall, spawnSubagentToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
@@ -18,8 +18,8 @@ import { antigravityNativeToolResult, antigravityNativeToolResultContent } from 
 
 antigravityTest('requires a native permission decision before a real file change', async ({ native }) => {
   await exerciseNativePermissionWrite(native, {
-    // The saved answer displays the native permission decision as Allow.
-    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow'),
+    // The saved answer states the option that the decision chose.
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow once'),
   })
 })
 
@@ -51,7 +51,7 @@ antigravityTest('sends the exact native refusal after a Deny decision and keeps 
     },
     // The model receives the typed refusal. The visible tool row carries Antigravity's generic native error.
     viewProof: async () => {
-      await expect(savedControlAnswer(page)).toHaveText('Deny')
+      await expect(savedControlAnswer(page)).toHaveText('Reject')
       await expectDeclinedToolRowAcrossReload(native, callId, 'permission check failed for command')
     },
   })
@@ -108,7 +108,8 @@ antigravityTest('sends the reader\'s typed refusal reason in the native reply', 
     toolCall: bashToolCall(native.provider, 'antigravity-reason-write', `printf refused > ${quotePosixShellArgument(file)}`),
     route: 'native-reply',
     expectNotRun: () => expect(existsSync(file)).toBe(false),
-    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Deny'),
+    // The reason reached Antigravity in the answer, so the saved answer states it as the feedback that it sent.
+    viewProof: reason => expectSavedRefusalFeedback(native.page, reason),
   })
 })
 

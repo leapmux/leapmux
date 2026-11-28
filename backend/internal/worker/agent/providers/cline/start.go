@@ -121,11 +121,12 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 	}
 	sessionCtx, sessionCancel := context.WithTimeout(ctx, timeout)
 	defer sessionCancel()
-	sessionID, err := a.openSession(sessionCtx, a.settings, opts.ResumeSessionID)
+	resumeID := opts.Session.ResumeID()
+	sessionID, err := a.openSession(sessionCtx, a.settings, resumeID)
 	if err != nil {
 		a.Stop()
 		_ = a.Wait()
-		if opts.ResumeSessionID != "" {
+		if resumeID != "" {
 			return nil, err
 		}
 		return nil, a.FormatStartupError("session", err)

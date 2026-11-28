@@ -207,7 +207,7 @@ export async function attachMuseChildReadinessFailure(native: ManagedNativeScena
 }
 
 /** Start one real child and return its actual registry link and native tab. */
-export async function openMuseChild(native: ManagedNativeScenarioContext, held: boolean) {
+export async function openMuseChild(native: ManagedNativeScenarioContext, held: boolean, heldReply?: string) {
   const { page, modelScript } = native
   const parentId = await selectedAgentTabId(page)
   const childInput = modelScript.prompt(MUSE_CHILD_TASK)
@@ -232,6 +232,9 @@ export async function openMuseChild(native: ManagedNativeScenarioContext, held: 
       },
       once: true,
       respond: {
+        ...(heldReply === undefined
+          ? {}
+          : { text: heldReply }),
         ...(held
           ? { gate: MUSE_CHILD_GATE }
           : {}),

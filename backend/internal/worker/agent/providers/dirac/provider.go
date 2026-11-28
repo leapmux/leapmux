@@ -36,6 +36,9 @@ func (diracProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) e
 	return providerkit.ValidateTextAndImageAttachment("Dirac", attachment)
 }
 
+// SupportsFork reports that Dirac advertises ACP sessionCapabilities.fork.
+func (diracProvider) SupportsFork() bool { return true }
+
 // ListStoredSessions reads Dirac's own task-history store; see sessions.go.
 func (diracProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return diracStoredSessions(ctx, q)

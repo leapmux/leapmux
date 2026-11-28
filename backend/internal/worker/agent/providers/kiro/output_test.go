@@ -187,6 +187,55 @@ func TestKiroAgentStartedTurnOpensAndEnds(t *testing.T) {
 	assert.JSONEq(t, string(expected), string(ends[0].Content), "Kiro's own marker is the turn-end row")
 }
 
+func TestKiroSteerUsesTheMatchingAgentExecutionEnd(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		reason  string
+		outcome leapmuxv1.AgentInputTurnOutcome
+	}{
+		{"end_turn", leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED},
+		{"cancelled", leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED},
+		{"error", leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED},
+		{"unknown", leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("native-steer"))
+			a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindTurnStart, "messageId": "receiving-turn-start"}))
+			require.True(t, a.AgentTurnActive())
+			_, err := a.SteerInput(kiroTestSteer("read the checkpoint"))
+			require.NoError(t, err)
+			a.HandleOutput(kiroSteerInfo(t, kiroKindSteeringInjected, map[string]any{"messageId": "native-steer"}))
+			reports := sink.SteerResolutions()
+			require.Len(t, reports, 1)
+			assert.Equal(t, agent.NativeInputReceipt{
+				SessionID: kiroTestSession, InputID: "native-steer", TurnID: "receiving",
+			}, reports[0].Receipt)
+
+			a.HandleOutput(infoUpdate(t, map[string]any{
+				"kind": contracts.KiroKindTurnEnd, "messageId": "older-turn-end", "stopReason": "end_turn",
+			}))
+			assert.True(t, a.AgentTurnActive())
+			assert.Empty(t, turnEnds(sink.Messages()))
+
+			a.HandleOutput(messageChunk(t, "The checkpoint is ready.", agentInitiated))
+			a.HandleOutput(infoUpdate(t, map[string]any{
+				"kind": contracts.KiroKindTurnEnd, "messageId": "receiving-turn-end", "stopReason": tc.reason,
+			}))
+			assert.False(t, a.AgentTurnActive())
+			messages := sink.Messages()
+			assert.Equal(t, []string{"The checkpoint is ready."}, assembled(messages, agent.AssembledMessageKindText))
+			ends := turnEnds(messages)
+			require.Len(t, ends, 1)
+			assert.Equal(t, tc.outcome, ends[0].InputTurnOutcome)
+			if tc.outcome != 0 {
+				assert.Equal(t, "receiving", ends[0].NativeTurnID)
+				assert.Empty(t, ends[0].NativeInputID)
+			}
+		})
+	}
+}
+
 func TestKiroTurnMarkersOfALeapMuxPromptOpenNothing(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)

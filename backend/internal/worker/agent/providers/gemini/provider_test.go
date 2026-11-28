@@ -47,6 +47,7 @@ func TestGeminiControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.
 	a := &Agent{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, "session/request_permission")
+	agenttest.AssertPublishedControlKeys(t, geminiProvider{}, sink)
 }
 
 func TestGeminiPluginUsesNativePlanModeValues(t *testing.T) {

@@ -1,0 +1,12 @@
+{{- /*
+  Parse a page-bundle config file whose first line states its install path
+  as `# /<path>`. Returns a dict with "path" and "body" when valid, or false
+  otherwise. Single top-level return -- Hugo returning partials reject nested returns.
+*/ -}}
+{{- $lines := split (strings.TrimRight "\n" .Content) "\n" -}}
+{{- $first := index $lines 0 -}}
+{{- $result := false -}}
+{{- if hasPrefix $first "# /" -}}
+  {{- $result = dict "path" (strings.TrimPrefix "# " $first) "body" (strings.TrimLeft "\n" (delimit (after 1 $lines) "\n")) -}}
+{{- end -}}
+{{- return $result -}}

@@ -7,12 +7,13 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Copilot's native control answers.
 //
-// The browser sends the neutral approve/reject envelope that every provider's control
-// surface produces. This file turns one of those into the exact object the runtime's
+// AnswerControlRequest builds the neutral approve/reject envelope from the decision.
+// This file turns one of those into the exact object the runtime's
 // own remote procedure call takes, so the native vocabulary stays inside the provider
 // and the browser states a decision rather than a wire value.
 //
@@ -37,13 +38,40 @@ const copilotLocationKeyField = "locationKey"
 // copilotPermissionRequest is the part of a permission request that decides which
 // session-wide approval rule an "allow for this session" answer may carry.
 type copilotPermissionRequest struct {
-	Kind                    string `json:"kind"`
-	CanOfferSessionApproval bool   `json:"canOfferSessionApproval"`
-	ServerName              string `json:"serverName"`
-	ToolName                string `json:"toolName"`
-	Commands                []struct {
-		Identifier string `json:"identifier"`
-	} `json:"commands"`
+	Kind                    string
+	CanOfferSessionApproval bool
+	ServerName              string
+	ToolName                string
+	CommandIdentifiers      []string
+	HasInvalidCommand       bool
+}
+
+// readCopilotPermissionRequest extracts the approval-rule fields from a
+// permissionRequest object tolerantly so prompt option availability and
+// response resolution agree even when sibling fields are mistyped.
+func readCopilotPermissionRequest(fields map[string]json.RawMessage) copilotPermissionRequest {
+	if fields == nil {
+		return copilotPermissionRequest{}
+	}
+	req := copilotPermissionRequest{
+		Kind:                    providerkit.ObjectString(fields, "kind"),
+		CanOfferSessionApproval: providerkit.RawBool(fields["canOfferSessionApproval"]),
+		ServerName:              providerkit.ObjectString(fields, "serverName"),
+		ToolName:                providerkit.ObjectString(fields, "toolName"),
+	}
+	if commands, ok := providerkit.RawArray(fields["commands"]); ok {
+		req.CommandIdentifiers = make([]string, 0, len(commands))
+		for _, command := range commands {
+			cmdFields, ok := providerkit.RawObject(command)
+			identifier := providerkit.ObjectString(cmdFields, "identifier")
+			if !ok || identifier == "" {
+				req.HasInvalidCommand = true
+				break
+			}
+			req.CommandIdentifiers = append(req.CommandIdentifiers, identifier)
+		}
+	}
+	return req
 }
 
 // copilotSessionApproval builds the approval rule for a session-wide allow.
@@ -62,17 +90,10 @@ func copilotSessionApproval(request copilotPermissionRequest) map[string]any {
 		}
 		return map[string]any{"kind": "write"}
 	case "shell":
-		if !request.CanOfferSessionApproval || len(request.Commands) == 0 {
+		if !request.CanOfferSessionApproval || request.HasInvalidCommand || len(request.CommandIdentifiers) == 0 {
 			return nil
 		}
-		identifiers := make([]string, 0, len(request.Commands))
-		for _, command := range request.Commands {
-			if command.Identifier == "" {
-				return nil
-			}
-			identifiers = append(identifiers, command.Identifier)
-		}
-		return map[string]any{"kind": "commands", "commandIdentifiers": identifiers}
+		return map[string]any{"kind": "commands", "commandIdentifiers": request.CommandIdentifiers}
 	case "mcp":
 		if request.ServerName == "" {
 			return nil
@@ -83,7 +104,8 @@ func copilotSessionApproval(request copilotPermissionRequest) map[string]any {
 	}
 }
 
-// copilotControlDecision is the browser's answer, as the neutral envelope carries it.
+// copilotControlDecision is the answer that AnswerControlRequest built, as the neutral
+// envelope carries it.
 type copilotControlDecision struct {
 	allow bool
 	// message is the rejection reason, already normalized: the placeholder that a
@@ -91,8 +113,9 @@ type copilotControlDecision struct {
 	message string
 	// scope states how long an approval lasts. Empty is a single approval.
 	scope string
-	// answer is the text a question control submitted, and wasFreeform states
-	// whether the user typed it or selected one of the offered choices.
+	// answer is the text of a question's answer (copilotQuestionAnswer), and
+	// wasFreeform states whether the user typed it or selected one of the offered
+	// choices.
 	answer      string
 	wasFreeform bool
 }
@@ -133,13 +156,12 @@ func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilo
 		if !scoped {
 			return map[string]any{"kind": copilotDecisionApproveOnce}, ""
 		}
-		var request struct {
-			PermissionRequest copilotPermissionRequest `json:"permissionRequest"`
-		}
-		if json.Unmarshal(data, &request) != nil {
+		dataFields, ok := providerkit.RawObject(data)
+		if !ok {
 			return nil, agent.RefusalUnreadableRequest
 		}
-		approval := copilotSessionApproval(request.PermissionRequest)
+		reqFields, _ := providerkit.RawObject(dataFields["permissionRequest"])
+		approval := copilotSessionApproval(readCopilotPermissionRequest(reqFields))
 		if approval == nil {
 			return nil, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, decision.scope+" scope")
 		}
@@ -207,7 +229,7 @@ func copilotControlResponseContent(requestID string, answer any) ([]byte, error)
 	})
 }
 
-// copilotResolveControlAnswer translates the browser's decision for one stored
+// copilotResolveControlAnswer translates the neutral answer for one stored
 // request. It reports false when the stored request is not a Copilot control event,
 // so the caller can leave the response alone.
 func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.ControlResponseResolution, bool) {
@@ -217,7 +239,7 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
 	if eventType == contracts.CopilotEventElicitationRequested {
-		if native, ok := copilotElicitationAnswer(ctx.ResponseContent); ok {
+		if native, ok := copilotElicitationAnswer(ctx.ResponseContent, copilotElicitationMode(providerkit.RawFields(data))); ok {
 			content, err := copilotControlResponseContent(ctx.RequestID, native)
 			if err != nil {
 				result.Refuse(agent.RefusalUnencodableReply)
@@ -227,20 +249,15 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 			return result, true
 		}
 	}
-	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	_, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		// Not a decision this build can read. Withholding leaves the runtime waiting
 		// and the request answerable, which a frame it cannot parse would not.
 		slog.Warn("Copilot control response carried no decision", "request_id", ctx.RequestID)
 		result.Refuse(agent.RefusalNoDecision)
 		return result, true
 	}
-	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		slog.Warn("Copilot control response addressed another request", "answered", requestID, "stored", ctx.RequestID)
-		result.Refuse(agent.RefusalOtherRequest)
-		return result, true
-	}
-	decision := copilotControlDecision{allow: behavior == agent.ControlBehaviorAllow, message: message}
+	decision := copilotControlDecision{allow: behavior == contracts.ControlAnswerBehaviorAllow, message: message}
 	copilotReadDecisionFields(ctx.ResponseContent, &decision)
 	native, refusal := copilotNativeAnswer(eventType, data, decision)
 	if refusal != "" {
@@ -262,24 +279,30 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 
 // copilotControlEvent reports the event type and data of a stored Copilot control request.
 func copilotControlEvent(payload json.RawMessage) (string, json.RawMessage, bool) {
-	for _, eventType := range []string{
-		contracts.CopilotEventPermissionRequested,
-		contracts.CopilotEventUserInputRequested,
-		contracts.CopilotEventExitPlanModeRequested,
-		contracts.CopilotEventElicitationRequested,
-		contracts.CopilotEventAutoModeSwitchRequested,
-		contracts.CopilotEventSamplingRequested,
-	} {
-		if data, ok := copilotEventOfType(payload, eventType); ok {
-			return eventType, data, true
-		}
+	var frame copilotSessionEventFrame
+	if json.Unmarshal(payload, &frame) != nil || frame.Method != copilotMethodSessionEvent {
+		return "", nil, false
 	}
-	return "", nil, false
+	if copilotControlSpecForRequest(frame.Params.Event.Type) == nil {
+		return "", nil, false
+	}
+	return frame.Params.Event.Type, frame.Params.Event.Data, true
 }
 
-// copilotElicitationAnswer reads the shared elicitation form's own answer, which is
-// already the native shape: an action and the content the form produced.
-func copilotElicitationAnswer(content []byte) (any, bool) {
+// copilotElicitationMode is the MCP mode of an elicitation.requested: its
+// `mode`, or a form when it states none, as copilotElicitationPrompt reads it.
+func copilotElicitationMode(fields map[string]json.RawMessage) string {
+	if mode, ok := providerkit.RawString(fields["mode"]); ok {
+		return mode
+	}
+	return contracts.MCPElicitationModeForm
+}
+
+// copilotElicitationAnswer reads the elicitation answer, which is already
+// the native shape: an action, and for the accept of a form the content
+// that the form produced. An accept in any other mode, such as a URL that
+// the user visited, carries no content, as MCP defines it.
+func copilotElicitationAnswer(content []byte, mode string) (any, bool) {
 	var envelope struct {
 		Response struct {
 			Response struct {
@@ -294,6 +317,12 @@ func copilotElicitationAnswer(content []byte) (any, bool) {
 	answer := envelope.Response.Response
 	switch answer.Action {
 	case contracts.MCPElicitationActionAccept:
+		if mode != contracts.MCPElicitationModeForm {
+			if len(answer.Content) != 0 {
+				return nil, false
+			}
+			return map[string]any{"action": answer.Action}, true
+		}
 		if len(answer.Content) == 0 {
 			return nil, false
 		}
@@ -305,10 +334,10 @@ func copilotElicitationAnswer(content []byte) (any, bool) {
 	}
 }
 
-// copilotReadDecisionFields reads the fields a control surface adds beside the
+// copilotReadDecisionFields reads the fields that AnswerControlRequest adds beside the
 // neutral behavior: the approval scope, and a question's own answer.
 //
-// Every field is optional, so a control that offers none leaves the decision as its
+// Every field is optional, so an answer that states none leaves the decision as its
 // behavior alone.
 func copilotReadDecisionFields(content []byte, decision *copilotControlDecision) {
 	var envelope struct {

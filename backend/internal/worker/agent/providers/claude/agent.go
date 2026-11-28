@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -34,6 +34,9 @@ type Agent struct {
 	inputMu              sync.Mutex
 	turnEndRevision      uint64
 	turnInputRevision    uint64
+	inputReply           *claudeInputReply
+	pendingSteers        map[string]*claudePendingSteer
+	nextSteerOrder       uint64
 	inferredTurnEvidence *claudeInferredTurnEvidence
 	// sessionStateReported records that this CLI publishes
 	// `system`/`session_state_changed`. Once it does, the output heuristic
@@ -306,6 +309,7 @@ func (a *Agent) Wait() error {
 
 func (a *Agent) finishClaudeProcessExit() {
 	a.joinFinalHoldReservation()
+	a.retireClaudeInputReply()
 	a.withdrawControls()
 	completion := a.ProcessExitCompletion()
 	discarding := a.IsDiscardingOutput()
@@ -473,8 +477,8 @@ func (a *Agent) noteInterruptRequested() bool {
 }
 
 // SendInput writes a user message to the agent's stdin.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, "")
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendClaudeInput(nil, content, attachments)
 }
 
 // PublishTurnActive republishes the Worker-visible turn state from turnActive,
@@ -531,21 +535,36 @@ func (a *Agent) publishesSessionState() bool {
 	return a.sessionStateReported
 }
 
-// noteSessionIdle applies the CLI's own idle report.
+// prepareSessionIdle applies the CLI's idle state at the current output position.
 //
 // An idle is stale after a later native busy state or while a sent input awaits its result.
 // Claude can emit idle before it reads that input. Accepting that idle would release the queue into the new turn.
-// Every other idle clears the turn and any unused stop note.
-func (a *Agent) noteSessionIdle(busyRevision uint64, sink agent.TurnServices) {
+// The returned operation retains any unfinished reports for an output retry.
+func (a *Agent) prepareSessionIdle(busyRevision uint64, sink agent.ProviderServices, observedSteers []*claudePendingSteer) func() error {
 	a.Mu.Lock()
 	if a.awaitedInputRevision != 0 || a.nativeBusyRevision != busyRevision {
 		a.Mu.Unlock()
-		return
+		return nil
 	}
+	pending := a.takeObservedClaudeSteersLocked(observedSteers)
 	retired := a.disarmTurnLocked()
 	a.Mu.Unlock()
-	a.cancelControls(retired)
-	a.publishTurnActive(sink)
+	reports := make([]func() error, 0, len(pending))
+	for _, steer := range pending {
+		reports = append(reports, sink.CaptureSteerResolution(steer.unconfirmedResolution()))
+	}
+	return func() error {
+		for len(reports) > 0 {
+			if err := reports[0](); err != nil {
+				return err
+			}
+			reports[0] = nil
+			reports = reports[1:]
+		}
+		a.cancelControls(retired)
+		a.publishTurnActive(sink)
+		return nil
+	}
 }
 
 // disarmTurnLocked keeps the idle check and the turn change under the same lock.
@@ -565,6 +584,11 @@ func (a *Agent) recordClaudeResultEdgeLocked() map[string]string {
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+var _ agent.SteerSurvivor = (*Agent)(nil)
+
+func (*Agent) SteerRowAtEcho() bool       { return true }
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // SupportsSteering always reports true. The Claude Code stream-json protocol
 // accepts a priority:"next" user message during any turn, so the capability
@@ -579,90 +603,188 @@ func (a *Agent) SupportsSteering() bool { return true }
 // image as unsupported, and the worker sends that input as the next turn, where
 // the CLI reads every block. The refusal depends on the input alone, so it
 // comes before the turn check.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	for _, attachment := range agent.ClassifyAttachments(attachments) {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	classified := agent.ClassifyAttachments(request.Attachments)
+	for _, attachment := range classified {
 		if attachment.Kind != contracts.AttachmentMediaKindText && attachment.Kind != contracts.AttachmentMediaKindImage {
-			return fmt.Errorf("%w: a steered turn of Claude Code keeps text and images only, so %q goes in the next turn",
+			return agent.NativeInputReceipt{}, fmt.Errorf("%w: a steered turn of Claude Code keeps text and images only, so %q goes in the next turn",
 				agent.ErrSteeringUnsupported, attachment.Filename)
 		}
 	}
-	a.Mu.Lock()
-	active := a.turnActive
-	a.Mu.Unlock()
-	if !active {
-		return agent.ErrNoActiveTurn
-	}
-	return a.sendInput(content, attachments, "next")
+	return agent.NativeInputReceipt{}, a.steerClaudeInput(request, classified)
 }
 
-func (a *Agent) sendInput(content string, attachments []*leapmuxv1.Attachment, priority string) error {
-	return a.sendInputForSession(nil, content, attachments, priority)
-}
-
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, priority string) error {
-	// Serialize input writes without blocking state updates or Stop on the process mutex.
-	defer a.PublishTurnActive()
-	a.inputMu.Lock()
-	defer a.inputMu.Unlock()
+func marshalClaudeUserInput(inputID, priority, content string, classified []agent.ClassifiedAttachment) ([]byte, error) {
 	msg := UserInputMessage{
 		Type:     MessageTypeUser,
+		UUID:     inputID,
 		Priority: priority,
 		Message: UserInputContent{
 			Role: "user",
 		},
 	}
-
-	if classified := agent.ClassifyAttachments(attachments); len(classified) == 0 {
+	if len(classified) == 0 {
 		// Plain text uses the protocol's string content. A list that holds only
 		// nil entries carries no attachment, so it is plain text too.
 		msg.Message.Content = content
 	} else {
 		msg.Message.Content = buildClaudeContentBlocks(content, classified)
 	}
-
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshal input: %w", err)
+		return nil, fmt.Errorf("marshal input: %w", err)
 	}
+	return append(data, '\n'), nil
+}
 
-	data = append(data, '\n')
+func (a *Agent) sendClaudeInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	defer a.PublishTurnActive()
+	inputID := uuid.NewString()
+	data, err := marshalClaudeUserInput(inputID, "", content, agent.ClassifyAttachments(attachments))
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	// Serialize input writes without blocking state updates or Stop on the process mutex.
+	a.inputMu.Lock()
+	defer a.inputMu.Unlock()
+
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	inferredTurnPending := !a.sessionStateReported && a.inferredTurnEvidence != nil && a.inferredTurnEvidence.pending > 0
-	if priority == "" && (a.turnActive || inferredTurnPending) {
+	if a.turnActive || inferredTurnPending {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	endRevision := a.turnEndRevision
 	a.turnInputRevision++
-	inputRevision := a.turnInputRevision
-	if priority == "" {
-		a.awaitedInputRevision = inputRevision
+	a.awaitedInputRevision = a.turnInputRevision
+	retired := a.inputReply
+	a.inputReply = nil
+	var reply *claudeInputReply
+	if a.sessionID != "" {
+		reply = &claudeInputReply{receipt: agent.NativeInputReceipt{SessionID: a.sessionID, InputID: inputID}}
+		a.inputReply = reply
 	}
 	a.Mu.Unlock()
+	a.retireUnprovedClaudeReply(retired)
 	writeErr := a.WriteStdin(data)
 	a.Mu.Lock()
-	if priority == "next" && writeErr == nil && !a.StoppedLocked() && a.turnEndRevision == endRevision {
-		// Do not wait again for a result that arrived during the write.
-		a.awaitedInputRevision = inputRevision
+	var receipt agent.NativeInputReceipt
+	if reply != nil {
+		if writeErr == nil || reply.acknowledged {
+			receipt = reply.receipt
+		} else if a.inputReply == reply {
+			a.inputReply = nil
+		}
 	}
-	if priority == "" && a.turnEndRevision == endRevision {
-		if writeErr == nil && !a.StoppedLocked() {
+	delivered := writeErr == nil || receipt.InputID != ""
+	if a.turnEndRevision == endRevision {
+		if delivered && !a.StoppedLocked() {
 			a.turnActive = true
 		} else if !a.turnActive {
 			a.awaitedInputRevision = 0
 		}
 	}
 	a.Mu.Unlock()
-	if writeErr != nil {
-		return fmt.Errorf("write stdin: %w", writeErr)
+	if !delivered {
+		return agent.NativeInputReceipt{}, fmt.Errorf("write stdin: %w", writeErr)
+	}
+	return receipt, nil
+}
+
+func (a *Agent) checkClaudeSteerStateLocked() error {
+	if a.StoppedLocked() {
+		return fmt.Errorf("agent is stopped")
+	}
+	if !a.turnActive {
+		return agent.ErrNoActiveTurn
+	}
+	if a.sessionID == "" {
+		return agent.ErrInputSessionChanged
+	}
+	return nil
+}
+
+func (a *Agent) steerClaudeInput(request agent.SteerRequest, classified []agent.ClassifiedAttachment) error {
+	defer a.PublishTurnActive()
+	// Fast-check turn state before base64-encoding attachments or marshaling stdin.
+	a.Mu.Lock()
+	if err := a.checkClaudeSteerStateLocked(); err != nil {
+		a.Mu.Unlock()
+		return err
+	}
+	a.Mu.Unlock()
+
+	inputID := uuid.NewString()
+	data, err := marshalClaudeUserInput(inputID, "next", request.Content, classified)
+	if err != nil {
+		return err
+	}
+
+	a.inputMu.Lock()
+	defer a.inputMu.Unlock()
+
+	a.Mu.Lock()
+	if err := a.checkClaudeSteerStateLocked(); err != nil {
+		a.Mu.Unlock()
+		return err
+	}
+	endRevision := a.turnEndRevision
+	a.turnInputRevision++
+	inputRevision := a.turnInputRevision
+	var steer *claudePendingSteer
+	if request.InputID != "" && request.AttemptID != "" {
+		a.nextSteerOrder++
+		steer = &claudePendingSteer{
+			order: a.nextSteerOrder,
+			resolution: agent.SteerResolution{
+				InputID: request.InputID, AttemptID: request.AttemptID,
+				Receipt: agent.NativeInputReceipt{SessionID: a.sessionID, InputID: inputID},
+			},
+		}
+		if a.pendingSteers == nil {
+			a.pendingSteers = make(map[string]*claudePendingSteer)
+		}
+		a.pendingSteers[inputID] = steer
+	}
+	a.Mu.Unlock()
+
+	writeErr := a.WriteStdin(data)
+	a.Mu.Lock()
+	delivered := writeErr == nil || (steer != nil && steer.acknowledged)
+	if steer != nil {
+		if delivered {
+			if !steer.acknowledged {
+				stillPending := a.pendingSteers[inputID] == steer && !a.StoppedLocked() &&
+					a.sessionID == steer.resolution.Receipt.SessionID &&
+					(a.turnActive || a.turnEndRevision == endRevision)
+				if !stillPending {
+					if a.pendingSteers[inputID] == steer {
+						delete(a.pendingSteers, inputID)
+					}
+					a.Mu.Unlock()
+					return fmt.Errorf("%w: Claude turn settled while writing steer", agent.ErrDeliveryUncertain)
+				}
+				steer.written = true
+			}
+		} else if a.pendingSteers[inputID] == steer {
+			delete(a.pendingSteers, inputID)
+		}
+	}
+	if delivered && !a.StoppedLocked() && a.turnEndRevision == endRevision {
+		// Do not wait again for a result that arrived during the write.
+		a.awaitedInputRevision = inputRevision
+	}
+	a.Mu.Unlock()
+	if !delivered {
+		return fmt.Errorf("%w: write Claude steer: %w", agent.ErrDeliveryUncertain, writeErr)
 	}
 	return nil
 }
@@ -734,6 +856,6 @@ func claudeBase64Block(blockType string, attachment agent.ClassifiedAttachment) 
 	}
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments, "")
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendClaudeInput(&sessionID, content, attachments)
 }

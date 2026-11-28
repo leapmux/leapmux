@@ -13,7 +13,7 @@ import { createStore, produce, unwrap } from 'solid-js/store'
 import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
 import { invalidateMessageClassificationCache } from '~/components/chat/messageClassifier'
 import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
@@ -143,6 +143,7 @@ export function createChatStore() {
   // The window uses those stores only for shared window changes.
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
   const messageObservers = new Map<string, Set<(message: AgentChatMessage) => void>>()
+  const storedUserMessageObservers = new Set<(row: { agentId: string, messageId: string }) => void>()
   const windowObservers = new Map<string, Set<(change: ChatWindowChange) => void>>()
   function notifyObservers<Value>(observers: Set<(value: Value) => void> | undefined, agentId: string, value: Value): void {
     for (const observer of observers ?? []) {
@@ -154,8 +155,11 @@ export function createChatStore() {
       }
     }
   }
-  const notifyMessageObservers = (agentId: string, message: AgentChatMessage) =>
+  const notifyMessageObservers = (agentId: string, message: AgentChatMessage) => {
     notifyObservers(messageObservers.get(agentId), agentId, message)
+    if (message.source === MessageSource.USER && message.seq > 0n && storedUserMessageObservers.size > 0)
+      notifyObservers(storedUserMessageObservers, agentId, { agentId, messageId: message.id })
+  }
   const notifyWindowObservers = (agentId: string, change: ChatWindowChange) =>
     notifyObservers(windowObservers.get(agentId), agentId, change)
 
@@ -694,6 +698,14 @@ export function createChatStore() {
 
     subscribeMessages(agentId: string, observer: (message: AgentChatMessage) => void): () => void {
       return subscribeTo(messageObservers, agentId, observer)
+    },
+
+    /** Observe stored user rows from live updates and fetched history across agents. */
+    subscribeStoredUserMessages(observer: (row: { agentId: string, messageId: string }) => void): () => void {
+      storedUserMessageObservers.add(observer)
+      return () => {
+        storedUserMessageObservers.delete(observer)
+      }
     },
 
     subscribeWindowChanges(agentId: string, observer: (change: ChatWindowChange) => void): () => void {

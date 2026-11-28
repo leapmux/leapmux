@@ -551,3 +551,310 @@ func TestRegistryGetRaceDiscardsTheDuplicate(t *testing.T) {
 	}
 	assert.Equal(t, n-1, losers)
 }
+
+// LayoutEventWake lives on the Registry rather than the Manager, so a waiter
+// captures a valid wake channel before any Manager loads and continues to wake
+// even after SweepIdle evicts the Manager.
+func TestRegistryLayoutEventWakeSurvivesIdleEviction(t *testing.T) {
+	userID := registryUserID(8)
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		if err := m.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(time.Millisecond))
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	// 1. Wake before any manager is loaded.
+	chBefore, releaseBefore := registry.LayoutEventWake(userID.String())
+	defer releaseBefore()
+	registry.SignalLayoutEvents(userID.String())
+	select {
+	case <-chBefore:
+	default:
+		t.Fatal("LayoutEventWake did not close on SignalLayoutEvents before manager load")
+	}
+
+	// 2. Load a manager, capture a wake channel, evict the manager, then signal.
+	_, err := registry.Get(t.Context(), userID.String())
+	require.NoError(t, err)
+	chAcrossEvict, releaseAcrossEvict := registry.LayoutEventWake(userID.String())
+	defer releaseAcrossEvict()
+	require.Eventually(t, func() bool {
+		registry.SweepIdle()
+		_, loaded := registry.Loaded(userID.String())
+		return !loaded
+	}, 30*time.Second, 2*time.Millisecond, "manager must be evicted by SweepIdle")
+
+	registry.SignalLayoutEvents(userID.String())
+	select {
+	case <-chAcrossEvict:
+	default:
+		t.Fatal("LayoutEventWake did not close across SweepIdle eviction")
+	}
+}
+
+// WorkerInventoryWake lives on the Registry rather than the Manager, so a
+// waiter wakes on BroadcastWorkersChanged before any Manager loads, across
+// SweepIdle eviction, and on Shutdown.
+func TestRegistryWorkerInventoryWakeSurvivesUnloadedAndEviction(t *testing.T) {
+	var factoryCalls atomic.Int32
+	userID := registryUserID(10)
+	otherUserID := registryUserID(11)
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		factoryCalls.Add(1)
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		if err := m.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(time.Millisecond))
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	// 1. Nil registry and blank userID return nil with a safe release callback.
+	var nilReg *crdt.Registry
+	nilCh, nilRelease := nilReg.WorkerInventoryWake(userID.String())
+	assert.Nil(t, nilCh)
+	assert.NotPanics(t, nilRelease)
+	blankCh, blankRelease := registry.WorkerInventoryWake("")
+	assert.Nil(t, blankCh)
+	assert.NotPanics(t, blankRelease)
+
+	// 2. Wake before any manager is loaded, without invoking the factory.
+	chBeforeA, releaseBeforeA := registry.WorkerInventoryWake(userID.String())
+	defer releaseBeforeA()
+	chBeforeB, releaseBeforeB := registry.WorkerInventoryWake(userID.String())
+	defer releaseBeforeB()
+	otherCh, releaseOther := registry.WorkerInventoryWake(otherUserID.String())
+	defer releaseOther()
+	require.NotNil(t, chBeforeA)
+	assert.Equal(t, chBeforeA, chBeforeB, "concurrent callers share one wake channel")
+
+	registry.BroadcastWorkersChanged(userID.String())
+	assert.Zero(t, factoryCalls.Load(), "BroadcastWorkersChanged must not bootstrap a manager")
+	select {
+	case <-chBeforeA:
+	default:
+		t.Fatal("WorkerInventoryWake did not close on BroadcastWorkersChanged before manager load")
+	}
+	select {
+	case <-otherCh:
+		t.Fatal("BroadcastWorkersChanged woke a different user's channel")
+	default:
+	}
+
+	// Subsequent call returns a fresh open channel.
+	chNext, releaseNext := registry.WorkerInventoryWake(userID.String())
+	defer releaseNext()
+	select {
+	case <-chNext:
+		t.Fatal("WorkerInventoryWake returned an already-closed channel after prior wake")
+	default:
+	}
+
+	// 3. Load a manager, capture a wake channel, evict the manager, then broadcast.
+	_, err := registry.Get(t.Context(), userID.String())
+	require.NoError(t, err)
+	require.Equal(t, int32(1), factoryCalls.Load())
+	chAcrossEvict, releaseAcrossEvict := registry.WorkerInventoryWake(userID.String())
+	defer releaseAcrossEvict()
+	require.Eventually(t, func() bool {
+		registry.SweepIdle()
+		_, loaded := registry.Loaded(userID.String())
+		return !loaded
+	}, 30*time.Second, 2*time.Millisecond, "manager must be evicted by SweepIdle")
+
+	registry.BroadcastWorkersChanged(userID.String())
+	assert.Equal(t, int32(1), factoryCalls.Load(), "BroadcastWorkersChanged must not re-bootstrap an evicted manager")
+	select {
+	case <-chAcrossEvict:
+	default:
+		t.Fatal("WorkerInventoryWake did not close across SweepIdle eviction")
+	}
+
+	// 4. Shutdown closes any pending wake channel and prevents future registrations.
+	chShutdown, releaseShutdown := registry.WorkerInventoryWake(userID.String())
+	defer releaseShutdown()
+	registry.Shutdown(5 * time.Second)
+	select {
+	case <-chShutdown:
+	default:
+		t.Fatal("WorkerInventoryWake did not close on Shutdown")
+	}
+	select {
+	case <-otherCh:
+	default:
+		t.Fatal("other user's WorkerInventoryWake did not close on Shutdown")
+	}
+
+	postWorkerCh, postWorkerRelease := registry.WorkerInventoryWake(userID.String())
+	assert.Nil(t, postWorkerCh, "WorkerInventoryWake must return nil after Shutdown")
+	assert.NotPanics(t, postWorkerRelease)
+	postLayoutCh, postLayoutRelease := registry.LayoutEventWake(userID.String())
+	assert.Nil(t, postLayoutCh, "LayoutEventWake must return nil after Shutdown")
+	assert.NotPanics(t, postLayoutRelease)
+}
+
+func TestRegistryWakeReleaseCleansUpEntriesWithoutDisturbingActiveOrNewerWaiters(t *testing.T) {
+	userID := registryUserID(12).String()
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		return m, m.Bootstrap(ctx)
+	}, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	for _, tc := range []struct {
+		name   string
+		wake   func(string) (<-chan struct{}, func())
+		signal func(string)
+	}{
+		{
+			name:   "worker inventory wake",
+			wake:   registry.WorkerInventoryWake,
+			signal: registry.BroadcastWorkersChanged,
+		},
+		{
+			name:   "layout event wake",
+			wake:   registry.LayoutEventWake,
+			signal: registry.SignalLayoutEvents,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chA, relA := tc.wake(userID)
+			chB, relB := tc.wake(userID)
+			require.NotNil(t, chA)
+			require.Equal(t, chA, chB, "concurrent waiters must share one entry")
+
+			// Releasing one waiter (even twice) must leave the active waiter's entry intact.
+			relA()
+			relA()
+			chC, relC := tc.wake(userID)
+			assert.Equal(t, chB, chC, "releasing one waiter must not delete an entry held by another waiter")
+
+			// Releasing the last active waiters deletes the map entry, so the next subscriber gets a new channel.
+			relB()
+			relC()
+			chFresh, relFresh := tc.wake(userID)
+			require.NotNil(t, chFresh)
+			assert.NotEqual(t, chB, chFresh, "releasing the last waiter must delete the map entry")
+
+			// Signaling replaces the entry; a late release of the old waiter must not delete the newer entry.
+			tc.signal(userID)
+			select {
+			case <-chFresh:
+			default:
+				t.Fatal("signal must close active wake channel")
+			}
+			chNew, relNew := tc.wake(userID)
+			defer relNew()
+			relFresh()
+			chSameNew, relSameNew := tc.wake(userID)
+			defer relSameNew()
+			assert.Equal(t, chNew, chSameNew, "late release of a signaled entry must not delete a newer entry")
+
+			tc.signal(userID)
+			select {
+			case <-chNew:
+			default:
+				t.Fatal("newer wake entry must remain active after late release of prior waiter")
+			}
+		})
+	}
+}
+
+type nonAdvancingOutbox struct {
+	lists atomic.Int32
+}
+
+func (o *nonAdvancingOutbox) ListPendingLifecycleOutbox(_ context.Context, userID string) ([]crdt.LifecycleOutboxRow, error) {
+	o.lists.Add(1)
+	payload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpRename, WorkspaceID: "ws-stuck", NewTitle: "Same",
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return []crdt.LifecycleOutboxRow{{ID: 42, UserID: userID, OpType: crdt.LifecycleOpRename, Payload: payload}}, nil
+}
+
+func (o *nonAdvancingOutbox) MarkLifecycleOutboxConsumed(context.Context, int64, time.Time) error {
+	return nil
+}
+
+func (o *nonAdvancingOutbox) ConsumeLifecycleOutboxWithLayoutFact(context.Context, crdt.LifecycleOutboxRow, time.Time, *leapmuxv1.LayoutEventFact) error {
+	return nil
+}
+
+func TestRegistryLifecycleDrainEdgeCases(t *testing.T) {
+	userID := registryUserID(9)
+
+	// 1. Nil outbox or blank userID returns an already-closed drain with nil error.
+	noOutbox := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		return m, m.Bootstrap(ctx)
+	}, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { noOutbox.Shutdown(5 * time.Second) })
+	d := noOutbox.StartLifecycleDrain(userID.String())
+	select {
+	case <-d.Done():
+		assert.NoError(t, d.Err())
+	default:
+		t.Fatal("StartLifecycleDrain without outbox must complete immediately")
+	}
+
+	// 2. Caller context cancellation unblocks DrainLifecycle while the shared
+	// flight finishes for another waiter.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	outbox := &gatedOutbox{entered: entered, release: release}
+	reg := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		return m, m.Bootstrap(ctx)
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(outbox))
+	t.Cleanup(func() {
+		releaseOnce()
+		reg.Shutdown(5 * time.Second)
+	})
+
+	dBlank := reg.StartLifecycleDrain("")
+	<-dBlank.Done()
+	assert.NoError(t, dBlank.Err())
+
+	cancelCtx, cancel := context.WithCancel(t.Context())
+	cancelDone := make(chan error, 1)
+	go func() {
+		cancelDone <- reg.DrainLifecycle(cancelCtx, userID.String())
+	}()
+	<-entered
+	enteredOnce.Do(func() {})
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- reg.DrainLifecycle(t.Context(), userID.String())
+	}()
+
+	cancel()
+	require.ErrorIs(t, <-cancelDone, context.Canceled)
+
+	releaseOnce()
+	require.NoError(t, <-secondDone)
+
+	// 3. Shutdown makes subsequent StartLifecycleDrain return ErrRegistryClosed.
+	reg.Shutdown(5 * time.Second)
+	closedDrain := reg.StartLifecycleDrain(userID.String())
+	<-closedDrain.Done()
+	assert.ErrorIs(t, closedDrain.Err(), crdt.ErrRegistryClosed)
+
+	// 4. Non-advancing leading row ID stops after two passes instead of looping forever.
+	stuckOutbox := &nonAdvancingOutbox{}
+	stuckReg := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		return m, m.Bootstrap(ctx)
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(stuckOutbox))
+	t.Cleanup(func() { stuckReg.Shutdown(5 * time.Second) })
+	require.NoError(t, stuckReg.DrainLifecycle(t.Context(), userID.String()))
+	assert.Equal(t, int32(2), stuckOutbox.lists.Load(), "non-advancing outbox must stop on the second pass")
+}

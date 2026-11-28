@@ -35,6 +35,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/service"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/util/drain"
@@ -59,6 +60,19 @@ type Params struct {
 	Name     string
 	HomeDir  string
 	DataDir  string
+
+	// ControlCLI is the absolute path of the program that serves
+	// `leapmux control` for this worker. Wire links it into a directory of this
+	// worker process (see controlipc.CLIDirectory). Each process that the
+	// worker spawns with remote control then receives the link in
+	// LEAPMUX_CONTROL_CLI and its directory first on PATH, so the CLI in a tab
+	// matches its worker. A login shell's profile can still move or drop the
+	// PATH entry; see controlenv.Apply.
+	//
+	// "" links nothing, and spawns get neither. An entry point passes its own
+	// executable only when that executable serves the CLI: the `leapmux`
+	// binary does, and the desktop sidecar and a test binary do not.
+	ControlCLI string
 
 	// AuthToken is the worker's own credential, used to mint the per-user
 	// delegation bearers that cross-worker calls and spawned-agent hub calls
@@ -121,7 +135,7 @@ type Wiring struct {
 const handlerDrainTimeout = 5 * time.Second
 
 // WaitHandlers joins the dispatcher's handlers within one shutdown budget,
-// which the shutdown deadline caps.
+// which the shutdown deadline caps. The journal remains writable until then.
 //
 // It lives on Wiring because worker.Run holds no dispatcher. The deferred call
 // in Run orders it after client.Stop, so the goodbye still travels on the live
@@ -133,9 +147,11 @@ func (w *Wiring) WaitHandlers() {
 	}
 	// Each wait logs its own expiry (drain.Counter), so the wrapper adds none:
 	// one expired wait is one Warn, not two.
-	if w.dispatcher.WaitHandlers(w.Service.ShutdownDeadline.Cap(handlerDrainTimeout)) {
+	handlersFinished := w.dispatcher.WaitHandlers(w.Service.ShutdownDeadline.Cap(handlerDrainTimeout))
+	if handlersFinished {
 		slog.Info("worker handlers joined")
 	}
+	w.Service.FinalizeSemanticEvents(handlersFinished)
 }
 
 // Shutdown drains the worker and then flushes everything that drain wrote to
@@ -218,6 +234,9 @@ func Wire(p Params) *Wiring {
 	}
 
 	svc := service.New(service.Config{
+		CheckNotificationWorkspace: func(ctx context.Context, workspaceID string) error {
+			return p.Client.CheckNotificationWorkspace(ctx, p.AuthToken, workspaceID)
+		},
 		ResolveTabPublication: func(ctx context.Context, request *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
 			return p.Client.ResolveTabPublication(ctx, p.AuthToken, request)
 		},
@@ -245,7 +264,12 @@ func Wire(p Params) *Wiring {
 		MaxMessageSize:      p.MaxMessageSize,
 		ShutdownDeadline:    p.ShutdownDeadline,
 	})
+	svc.EnableSemanticEvents()
+	if err := terminal.ReapInitialCommandLaunches(p.DataDir); err != nil {
+		slog.Warn("remove abandoned terminal command handoffs failed", "error", err)
+	}
 	svc.RestoreState()
+	svc.SyncConfiguredSkills()
 
 	// WatchEvents stream teardown owns UnwatchAll via watchSession.OnCancel
 	// (stream cancel / channel releaseAll). Do not also wire UnwatchAll here
@@ -358,18 +382,31 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 		hubBridge = controlipc.NewHubUnaryBridge(p.Client.Endpoint(), delegation)
 	}
 
+	var hubURL string
+	if p.Client != nil && p.Client.Endpoint() != nil {
+		hubURL = p.Client.Endpoint().URL()
+	}
 	factory := &controlipc.Factory{
 		WorkerID:      p.WorkerID,
 		Dispatcher:    dispatcher,
 		CrossWorker:   cwClient,
+		Sources:       svc,
 		HubBridge:     hubBridge,
 		HubStreams:    hubStreams,
 		Streams:       svc,
 		Delegation:    delegation,
 		OwnerUsername: svc.OwnerUsername,
+		HubURL:        hubURL,
 	}
 	if err := factory.PrepareSocketDirectory(p.DataDir); err != nil {
 		slog.Warn("control socket directory unavailable", "data_directory", p.DataDir, "error", err)
+	}
+	// A failure here degrades only the CLI: the spawns keep their remote control
+	// and advertise no LEAPMUX_CONTROL_CLI.
+	if p.ControlCLI != "" {
+		if err := factory.PrepareCLIDirectory(p.DataDir, p.ControlCLI); err != nil {
+			slog.Warn("control CLI unavailable to spawned processes", "executable", p.ControlCLI, "data_directory", p.DataDir, "error", err)
+		}
 	}
 	return factory
 }
@@ -476,7 +513,15 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// through a cleanup path (the per-exit handler keeps the state for a possible
 	// relaunch).
 	periodicCtx, cancelPeriodic := context.WithCancel(p.Ctx)
-	periodicLoops := append(startRetentionLoops(periodicCtx, p.DB, p.DataDir), svc.StartOrphanSweepLoop(periodicCtx))
+	periodicLoops := []<-chan struct{}{
+		// Hard-delete agents and terminals closed longer than retention, and
+		// inputs removed from a queue longer than the queue's own retention.
+		service.StartCleanupLoop(periodicCtx, queries, svc.InputQueue),
+		// Roll up old plan year directories (`<data_dir>/plans/<YYYY>/`) into
+		// per-year zip files.
+		service.StartPlanArchiveLoop(periodicCtx, p.DataDir, queries),
+		svc.StartOrphanSweepLoop(periodicCtx),
+	}
 
 	// Hand Shutdown a way to stop every loop. Their teardowns are not registered
 	// with svc.Cleanup, a deregistered worker calls Shutdown BEFORE p.Ctx ends,
@@ -555,20 +600,6 @@ func nudgeOnNewOwner(svc *service.Service, nudge func()) func(*leapmuxv1.WorkerI
 		}
 		return !svc.RegisteredBy().IsZero()
 	}
-}
-
-// startRetentionLoops starts the two data-retention loops, and returns the
-// channels that close after each one stops.
-func startRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) []<-chan struct{} {
-	// Hard-delete agents and terminals closed for longer than the
-	// retention period.
-	cleanupStopped := service.StartCleanupLoop(ctx, db.New(sqlDB))
-
-	// Roll up old plan year directories (`<data_dir>/plans/<YYYY>/`) into
-	// per-year zip files.
-	planArchiveStopped := service.StartPlanArchiveLoop(ctx, dataDir, db.New(sqlDB))
-
-	return []<-chan struct{}{cleanupStopped, planArchiveStopped}
 }
 
 // BuildTabSync enumerates every hosted tab from the caller's database snapshot.

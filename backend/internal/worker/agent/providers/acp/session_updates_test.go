@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
@@ -25,7 +24,7 @@ func TestSessionStateUpdatesStoreNoRow(t *testing.T) {
 			c.out.appendAssistant("before", "answer")
 			raw, err := json.Marshal(map[string]string{"sessionUpdate": kind})
 			require.NoError(t, err)
-			assert.False(t, c.handleUpdate(acpUpdateHeader{SessionUpdate: kind}, raw))
+			assert.False(t, c.handleUpdate(acpUpdateHeader{SessionUpdate: kind}, raw, "", "", nil))
 			assert.Empty(t, sink.Messages())
 			assert.Empty(t, sink.PersistedNotifications())
 			assert.Empty(t, sink.ProgressUpdates())

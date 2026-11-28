@@ -174,6 +174,8 @@ message ListAppsRequest {
   // only), and PRIVATE for the caller's own registrations, so a surface that
   // draws one reach does not fetch and discard the other.
   AppVisibility visibility = 3;
+  // Narrow to apps whose client_id starts with this prefix (exact match when a full id).
+  string id_prefix = 4;
 }
 
 message ListAppsResponse {

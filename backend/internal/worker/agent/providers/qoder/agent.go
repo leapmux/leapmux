@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -37,6 +39,8 @@ type Agent struct {
 	outputStyles             []string // The styles that the initialize reply lists, under mu.
 	runningOutputStyle       string   // The style that the initialize reply reports, under mu.
 	active                   bool
+	inputReply               *inputReply
+	queuedSteers             map[string]*inputReply
 	turnOrder                providerkit.TurnSeq
 	activityRev              uint64
 	capabilities             []string
@@ -104,8 +108,10 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 
 func (a *Agent) setTurnActive(active bool) {
 	a.mu.Lock()
+	var unfinished *inputReply
 	a.active = active
 	if !active {
+		unfinished, a.inputReply = a.inputReply, nil
 		// Clear the stop flag when a turn ends without a result.
 		// A stop, process exit, or failed send can cause that end.
 		// An interrupt can also arrive after handleResult reads the flag.
@@ -115,57 +121,75 @@ func (a *Agent) setTurnActive(active bool) {
 	a.activityRev++
 	seq := a.turnOrder.NextTurnSeq()
 	a.mu.Unlock()
+	a.finishUnprovedInput(unfinished)
 	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, seq)
 }
 
-// SendInput delivers one user message over stdin.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+// SendInput delivers one user message over stdin and returns the identity that
+// Qoder reports in its command lifecycle.
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInputForSession(nil, content, attachments)
 }
 
-// SendInputForSession validates the session while constructing the request.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+// SendInputForSession validates the session while constructing the request and
+// returns the identity that Qoder reports in its command lifecycle.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInputForSession(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	if a.IsStopped() {
-		return fmt.Errorf("the Qoder process is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Qoder process is stopped")
 	}
 	userContent, err := qoderUserContent(content, attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	a.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.active {
 		a.mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
+	}
+	var commandID string
+	var receipt agent.NativeInputReceipt
+	var reply *inputReply
+	if a.sessionID != "" {
+		id, err := uuid.NewRandom()
+		if err != nil {
+			a.mu.Unlock()
+			return agent.NativeInputReceipt{}, fmt.Errorf("create the Qoder command ID: %w", err)
+		}
+		commandID = id.String()
+		receipt = agent.NativeInputReceipt{SessionID: a.sessionID, InputID: commandID, TurnID: commandID}
+		reply = &inputReply{receipt: receipt}
+		a.inputReply = reply
 	}
 	a.active = true
 	a.activityRev++
 	a.mu.Unlock()
 	a.PublishTurnActive()
 
-	raw, err := marshalUserFrame(userContent)
+	raw, err := marshalUserFrame(userContent, commandID)
 	if err != nil {
-		a.setTurnActive(false)
-		return err
+		a.abandonInputReply(reply)
+		return agent.NativeInputReceipt{}, err
 	}
-	if err := a.SendRawInput(raw, agent.StopContext{}); err != nil {
-		a.setTurnActive(false)
-		return providerkit.ClassifyJSONRPCDeliveryError("user", err)
+	if err := a.SendRawInput(agent.RawInput{Data: raw}); err != nil {
+		a.abandonInputReply(reply)
+		return agent.NativeInputReceipt{}, err
 	}
-	return nil
+	return receipt, nil
 }
 
 // marshalUserFrame encodes one stream-json user frame that carries content.
-func marshalUserFrame(content any) ([]byte, error) {
+func marshalUserFrame(content any, commandID string) ([]byte, error) {
 	return json.Marshal(UserInputMessage{
 		Type:    contracts.QoderFrameKindUser,
+		UUID:    commandID,
 		Message: UserInputContent{Role: "user", Content: content},
 	})
 }
@@ -222,27 +246,39 @@ func qoderUserContent(content string, attachments []*leapmuxv1.Attachment) (any,
 // The runtime accepts these user frames without capability discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
+// SteerRowAtEcho puts the input in the transcript when Qoder reads it.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd keeps a steer pending while another command finishes.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
+
 // SteerInput sends one user frame during the active turn, with its attachments.
 // Qoder keeps queued content unchanged and reads it when the queued prompt starts its own turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	content, attachments := request.Content, request.Attachments
 	if a.IsStopped() {
-		return fmt.Errorf("the Qoder process is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Qoder process is stopped")
 	}
 	userContent, err := qoderUserContent(content, attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	a.mu.Lock()
-	active := a.active
-	a.mu.Unlock()
-	if !active {
-		return agent.ErrNoActiveTurn
-	}
-	raw, err := marshalUserFrame(userContent)
+	commandID, steer, err := a.prepareQueuedSteer(request)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return a.SendRawInput(raw, agent.StopContext{})
+	raw, err := marshalUserFrame(userContent, commandID)
+	if err != nil {
+		a.forgetQueuedSteer(commandID, steer)
+		return agent.NativeInputReceipt{}, err
+	}
+	if err := a.SendRawInput(agent.RawInput{Data: raw}); err != nil {
+		if !errors.Is(err, agent.ErrDeliveryUncertain) {
+			a.forgetQueuedSteer(commandID, steer)
+		}
+		return agent.NativeInputReceipt{}, err
+	}
+	return agent.NativeInputReceipt{}, nil
 }
 
 // Interrupt aborts the running turn with Qoder's own interrupt control request.

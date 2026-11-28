@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -248,12 +247,28 @@ func (a *Agent) ActiveChildTurnState(key string) agent.TurnState {
 	return agent.TurnState{Active: active, Steerable: active}
 }
 func (a *Agent) SendChildInput(key string, input agent.ChildInput) (agent.ChildInputResult, error) {
-	return agent.ChildInputResult{StartsTurn: true}, a.childInput(key, input.Content, input.Attachments, false)
+	receipt, err := a.childInput(key, input, false, "")
+	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
-func (a *Agent) SteerChildInput(key, text string, attachments []*leapmuxv1.Attachment) error {
-	return a.childInput(key, text, attachments, true)
+
+func (a *Agent) SteerChildInput(key string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	_, err := a.childInput(key, agent.ChildInput{InputID: request.InputID, Content: request.Content, Attachments: request.Attachments}, true, request.AttemptID)
+	return agent.NativeInputReceipt{}, err
 }
-func (a *Agent) childInput(key, text string, attachments []*leapmuxv1.Attachment, steer bool) error {
+
+// ChildSteerPolicy holds the steer row until echo and keeps an admitted note until its receiving run is proved.
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
+
+type museChildInputCommand struct {
+	inputID        string
+	steerAttemptID string
+	proved         bool
+	provedReceipt  agent.NativeInputReceipt
+}
+
+func (a *Agent) childInput(key string, input agent.ChildInput, steer bool, steerAttemptID string) (agent.NativeInputReceipt, error) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.stateMu.Lock()
@@ -262,55 +277,102 @@ func (a *Agent) childInput(key, text string, attachments []*leapmuxv1.Attachment
 	projectionReady := child != nil && child.childViewPrefix == childViewPrefixReady && (child.projection == nil || child.projection.failed == nil && len(child.projection.frames) == 0 && len(child.projection.heads) == 0)
 	a.stateMu.Unlock()
 	if child == nil || a.IsStopped() {
-		return agent.ErrChildRouteNotReady
+		return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 	}
 	if !projectionReady {
 		a.requestChildView(id)
-		return agent.ErrChildRouteNotReady
+		return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 	}
-	for _, attachment := range agent.ClassifyAttachments(attachments) {
+	var body strings.Builder
+	body.WriteString(input.Content)
+	for _, attachment := range agent.ClassifyAttachments(input.Attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText {
-			return fmt.Errorf("the Muse host child messages accept text attachments only")
+			return agent.NativeInputReceipt{}, fmt.Errorf("the Muse host child messages accept text attachments only")
 		}
-		text += "\n\n" + providerkit.BuildInlineTextAttachmentBlock(attachment)
+		body.WriteString("\n\n")
+		body.WriteString(providerkit.BuildInlineTextAttachmentBlock(attachment))
 	}
-	text = strings.TrimSpace(text)
+	text := strings.TrimSpace(body.String())
 	if text == "" {
-		return fmt.Errorf("the Muse child message is empty")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Muse child message is empty")
 	}
 	method := methodChildFollowup
 	if steer {
 		if !busy {
-			return agent.ErrNoActiveTurn
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 		}
 		method = methodChildSend
 	} else if busy {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	// Muse 1.4.13 can refuse a human follow-up after a parent-driven follow-up,
 	// even when the result is drained. Reading that drained result again does
 	// not change eligibility, so the input queue must retain the native refusal.
-	err := a.commandChild(key, method, map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID, "body": text})
-	if err == nil {
-		a.requestChildView(id)
+	params := map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID, "body": text}
+	var tracked *museChildInputCommand
+	commandID, err := a.commandChild(key, method, input.InputID, params, func(commandID string) error {
+		a.stateMu.Lock()
+		defer a.stateMu.Unlock()
+		if !a.currentSessionState(id, child) {
+			return agent.ErrChildRouteNotReady
+		}
+		if !steer || steerAttemptID != "" {
+			if child.childInputCommands == nil {
+				child.childInputCommands = make(map[string]*museChildInputCommand)
+			}
+			tracked = &museChildInputCommand{inputID: input.InputID, steerAttemptID: steerAttemptID}
+			child.childInputCommands[commandID] = tracked
+		}
+		return nil
+	})
+	var proved bool
+	var provedReceipt agent.NativeInputReceipt
+	if tracked != nil {
+		a.stateMu.Lock()
+		proved = tracked.proved
+		provedReceipt = tracked.provedReceipt
+		if err != nil && !proved && child.childInputCommands[commandID] == tracked {
+			delete(child.childInputCommands, commandID)
+		}
+		a.stateMu.Unlock()
 	}
-	return err
+	if err != nil {
+		if proved {
+			delete(a.uncertainChildCommands, key)
+			a.requestChildView(id)
+			if steer {
+				return agent.NativeInputReceipt{}, nil
+			}
+			return provedReceipt, nil
+		}
+		return agent.NativeInputReceipt{}, err
+	}
+	a.requestChildView(id)
+	if proved && !steer {
+		return provedReceipt, nil
+	}
+	return agent.NativeInputReceipt{SessionID: id, InputID: commandID}, nil
 }
 
 // The caller holds sendMu. A retry with the same target, method and body keeps
-// the native command UUID until the host confirms admission or refusal.
-func (a *Agent) commandChild(key, method string, params map[string]any) error {
+// the native command UUID for the same Worker input until the host replies.
+func (a *Agent) commandChild(key, method, inputID string, params map[string]any, register func(string) error) (string, error) {
 	encoded, err := json.Marshal(params)
 	if err != nil {
-		return fmt.Errorf("encode the Muse child command: %w", err)
+		return "", fmt.Errorf("encode the Muse child command: %w", err)
 	}
-	digest := fmt.Sprintf("%s:%x", method, sha256.Sum256(encoded))
+	digest := fmt.Sprintf("%s:%q:%x", method, inputID, sha256.Sum256(encoded))
 	payload, commandID, err := commandParams(params)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if prior, ok := a.uncertainChildCommands[key]; ok && prior.digest == digest {
 		commandID = prior.commandID
+	}
+	if register != nil {
+		if err := register(commandID); err != nil {
+			return "", err
+		}
 	}
 	delete(a.uncertainChildCommands, key)
 	_, err = a.commandWithID(method, payload, commandID, a.APITimeout(), nil)
@@ -323,7 +385,7 @@ func (a *Agent) commandChild(key, method string, params map[string]any) error {
 			a.uncertainChildCommands[key] = museUncertainInput{digest: digest, commandID: commandID}
 		}
 	}
-	return err
+	return commandID, err
 }
 func (a *Agent) InterruptChild(key string, stop agent.StopContext) error {
 	var childSessionID string
@@ -337,7 +399,8 @@ func (a *Agent) InterruptChild(key string, stop agent.StopContext) error {
 			return agent.ErrChildRouteNotReady
 		}
 		childSessionID = id
-		return a.commandChild(key, methodChildInterrupt, map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID})
+		_, err := a.commandChild(key, methodChildInterrupt, "", map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID}, nil)
+		return err
 	}()
 	if err != nil {
 		return err

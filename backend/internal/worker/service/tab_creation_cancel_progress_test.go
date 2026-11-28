@@ -242,7 +242,8 @@ func TestCreationCancellation_IgnoresAnUncommittedPartialMarker(t *testing.T) {
 	recovered, err := svc.captureWorktreeRemovalIdentity(t.Context(), tracked, key)
 	require.NoError(t, err, "an incomplete marker cannot permanently poison an unprepared close")
 	assert.NotEqual(t, identity.Token, recovered.Token)
-	require.NoError(t, validateWorktreeRemovalIdentity(t.Context(), tracked, recovered))
+	_, err = readVerifiedRemovalWorktree(t.Context(), tracked, recovered)
+	require.NoError(t, err)
 }
 
 func TestCreationCancellation_ReleasesMarkerAfterRefusedRemoval(t *testing.T) {
@@ -255,7 +256,7 @@ func TestCreationCancellation_ReleasesMarkerAfterRefusedRemoval(t *testing.T) {
 			worktree := createWorktreeForTest(t, svc, repo, "kept-marker")
 			tracked, err := svc.Queries.GetWorktreeByID(t.Context(), worktree.WorktreeID)
 			require.NoError(t, err)
-			directory, err := removalGitDir(t.Context(), tracked)
+			info, err := readRemovalWorktree(t.Context(), tracked)
 			require.NoError(t, err)
 			run(t, repo, "git", "worktree", "lock", worktree.WorkingDir)
 			row := savedPayloadCancellation(t, svc, worktree.WorkingDir)
@@ -266,7 +267,7 @@ func TestCreationCancellation_ReleasesMarkerAfterRefusedRemoval(t *testing.T) {
 				result := svc.closePayloadTabCommon(row.UserID, row.TabID, leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 				assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, result.GetWorktreeRemoval())
 			}
-			files, err := filepath.Glob(filepath.Join(directory, "leapmux-removal-*"))
+			files, err := filepath.Glob(filepath.Join(info.GitDir, "leapmux-removal-*"))
 			require.NoError(t, err)
 			assert.Empty(t, files, "a completed close that keeps the worktree must release its marker")
 			assert.DirExists(t, worktree.WorkingDir)
@@ -348,13 +349,13 @@ func TestCreationCancellation_ReleasesUnpublishedMarkerAfterPrepareWriteFailure(
 	row := savedPayloadCancellation(t, svc, worktree.WorkingDir)
 	tracked, err := svc.Queries.GetWorktreeByID(t.Context(), worktree.WorktreeID)
 	require.NoError(t, err)
-	directory, err := removalGitDir(t.Context(), tracked)
+	info, err := readRemovalWorktree(t.Context(), tracked)
 	require.NoError(t, err)
 	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_prepared BEFORE UPDATE OF cancel_progress_payload ON tab_creations BEGIN SELECT RAISE(ABORT, 'save prepared failed'); END`)
 	require.NoError(t, err)
 	_, err = svc.runCreationCancellation(t.Context(), row)
 	require.ErrorContains(t, err, "save prepared failed")
-	markers, err := filepath.Glob(filepath.Join(directory, "leapmux-removal-*"))
+	markers, err := filepath.Glob(filepath.Join(info.GitDir, "leapmux-removal-*"))
 	require.NoError(t, err)
 	assert.Empty(t, markers, "a failed PREPARED write owns no persisted marker")
 	_, err = svc.TabPayloads.Get(t.Context(), row.UserID, row.TabID)
@@ -404,7 +405,8 @@ func TestCreationCancellation_OverlappingCapturesOwnDistinctMarkers(t *testing.T
 	require.NoError(t, err)
 	require.NotEqual(t, first.MarkerName, second.MarkerName)
 	require.NoError(t, releaseWorktreeRemovalIdentity(first))
-	require.NoError(t, validateWorktreeRemovalIdentity(t.Context(), tracked, second), "releasing one close must preserve another close's authority")
+	_, err = readVerifiedRemovalWorktree(t.Context(), tracked, second)
+	require.NoError(t, err, "releasing one close must preserve another close's authority")
 	require.NoError(t, releaseWorktreeRemovalIdentity(second))
 }
 

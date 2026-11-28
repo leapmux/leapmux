@@ -14,6 +14,7 @@ import (
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
@@ -238,14 +239,18 @@ func TestCreationReplacement_TerminalRPCWaitsForTheOriginalCheckpoint(t *testing
 			svc := h.svc
 			const id = "restart-creation"
 			testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
+			// Wrap the start that New wired, so a replacement runs the
+			// production start.
+			production := svc.startTerminalFn
+			require.NotNil(t, production, "New wires the terminal start")
 			svc.startTerminalFn = func(ctx context.Context, opts terminal.Options, output terminal.OutputHandler, exit terminal.ExitHandler) error {
 				if initialFailure {
 					return errors.New("original shell failed")
 				}
-				if err := svc.startTerminalProcess(ctx, opts, output, exit); err != nil {
+				if err := production(ctx, opts, output, exit); err != nil {
 					return err
 				}
-				if err := svc.Terminals.SendInput(id, []byte("exit"+testutil.TestShellEnter())); err != nil {
+				if err := svc.Terminals.SendInput(id, terminput.Input{Data: []byte("exit" + testutil.TestShellEnter())}); err != nil {
 					return err
 				}
 				return svc.Terminals.WaitForExitContext(ctx, id)

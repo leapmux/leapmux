@@ -29,21 +29,31 @@ import (
 // worker session.
 func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 	expected := []string{
+		leapmuxv1connect.SystemServiceGetSystemInfoProcedure,
 		// WorkspaceService surface.
 		leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
+		leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure,
 		leapmuxv1connect.WorkspaceServiceListTabsProcedure,
 		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 		leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
 		leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
 		leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
+		leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure,
 		leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
+		// SectionService surface.
+		leapmuxv1connect.SectionServiceListSectionsProcedure,
+		leapmuxv1connect.SectionServiceCreateSectionProcedure,
+		leapmuxv1connect.SectionServiceRenameSectionProcedure,
+		leapmuxv1connect.SectionServiceDeleteSectionProcedure,
+		leapmuxv1connect.SectionServiceMoveSectionProcedure,
 		// UserCRDT surface.
 		leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		leapmuxv1connect.UserCRDTUpdatePresenceProcedure,
 		leapmuxv1connect.UserCRDTGetMaterializedProcedure,
 		// WorkerManagementService surface.
 		leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
+		leapmuxv1connect.WorkerManagementServiceGetWorkerInventoryProcedure,
 		leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
 	}
 	for _, procedure := range expected {

@@ -1,0 +1,27 @@
+{{- /*
+  table-filter renders an interactive progressive-enhancement filter bar and
+  section-pill selector for tables following the widget on the current page.
+
+      {{< table-filter placeholder="Filter shortcuts by action, key, or section..." >}}
+      {{< table-filter placeholder="Filter keys..." scope="#config-tables" >}}
+*/ -}}
+{{- $placeholder := .Get "placeholder" | default "Filter table rows..." -}}
+{{- $label := .Get "label" | default $placeholder -}}
+{{- $scope := .Get "scope" | default "" -}}
+{{- $param := .Get "param" | default "" -}}
+<div class="lm-table-filter not-prose" data-table-filter{{ with $scope }} data-table-filter-scope="{{ . }}"{{ end }}{{ with $param }} data-table-filter-param="{{ . }}"{{ end }}>
+  <div class="lm-table-filter-bar">
+    <input
+      type="search"
+      class="lm-table-filter-input"
+      placeholder="{{ $placeholder }}"
+      aria-label="{{ $label }}"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button type="button" class="lm-table-filter-clear" hidden>Clear</button>
+    <span class="lm-table-filter-count" aria-live="polite"></span>
+  </div>
+  <div class="lm-table-filter-pills" role="group" aria-label="Filter by section"></div>
+  <p class="lm-table-filter-empty" hidden>No matching rows.</p>
+</div>

@@ -26,6 +26,9 @@ service WorkerGitService {
   rpc ListGitWorktrees(ListGitWorktreesRequest) returns (ListGitWorktreesResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
+  rpc GetGitWorktree(GetGitWorktreeRequest) returns (GetGitWorktreeResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
   rpc InspectBranchDeletion(InspectBranchDeletionRequest) returns (InspectBranchDeletionResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
@@ -36,6 +39,9 @@ service WorkerGitService {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
   rpc InspectLastTabClose(InspectLastTabCloseRequest) returns (InspectLastTabCloseResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc InspectTabsClose(InspectTabsCloseRequest) returns (InspectTabsCloseResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
   rpc PushBranch(PushBranchRequest) returns (PushBranchResponse) {
@@ -50,6 +56,21 @@ service WorkerGitService {
   rpc DeleteBranch(DeleteBranchRequest) returns (DeleteBranchResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
   }
+  rpc GetGitDiff(GetGitDiffRequest) returns (GetGitDiffResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc GetGitLog(GetGitLogRequest) returns (GetGitLogResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc GitCommit(GitCommitRequest) returns (GitCommitResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
+  }
+  rpc CreateGitWorktree(CreateGitWorktreeRequest) returns (CreateGitWorktreeResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
+  }
+  rpc RemoveGitWorktree(RemoveGitWorktreeRequest) returns (RemoveGitWorktreeResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
+  }
 }
 
 // GitSetup prepares the working directory of a new agent or terminal. Absent
@@ -59,9 +80,16 @@ service WorkerGitService {
 message GitSetup {
   oneof mode {
     GitCreateWorktree create_worktree = 1; // Create a git worktree before starting.
-    string use_worktree_path = 2;          // Use an existing worktree.
-    string checkout_branch = 3;            // Switch to a branch.
-    GitCreateBranch create_branch = 4;     // Create a branch and switch to it.
+    GitWorktreeSelector use_worktree = 2;  // Use an existing worktree.
+    string checkout_branch = 3;           // Switch to a branch.
+    GitCreateBranch create_branch = 4;    // Create a branch and switch to it.
+  }
+}
+
+message GitWorktreeSelector {
+  oneof selector {
+    string path = 1;    // Exact checkout path on the Worker.
+    string branch = 2;  // Exact attached local branch in the repository.
   }
 }
 
@@ -191,6 +219,28 @@ message InspectLastTabCloseResponse {
   string worktree_removal_blocked_reason = 11;
 }
 
+message InspectTabsCloseRequest {
+  // All tabs in the closing set. The Worker excludes every tab in this set
+  // when checking whether another open tab remains on the same worktree or
+  // branch.
+  repeated TabIdent tabs = 1;
+}
+
+message TabCloseInspection {
+  TabIdent tab = 1;
+  bool should_prompt = 2;
+  bool is_worktree = 3;
+  string worktree_path = 4;
+  string working_dir = 5;
+  string branch_name = 6;
+  BranchGitState git_state = 7;
+  string error_hint = 8;
+}
+
+message InspectTabsCloseResponse {
+  repeated TabCloseInspection items = 1;
+}
+
 message PushBranchRequest {
   // Directory to push from. The worker resolves the repo, worktree and branch
   // by probing it -- which is all it ever did with the (tab_type, tab_id) this
@@ -293,6 +343,20 @@ message ListGitWorktreesRequest {
 
 message ListGitWorktreesResponse {
   repeated GitWorktreeEntry worktrees = 1;
+}
+
+message GetGitWorktreeRequest {
+  string repo_dir = 1; // A directory inside the selected repository.
+  oneof target {
+    GitWorktreeSelector selector = 2;
+    bool self = 3; // The checkout containing the calling local tab.
+  }
+}
+
+message GetGitWorktreeResponse {
+  GitWorktreeEntry worktree = 1;
+  string repo_root = 2; // The verified main checkout or common Git directory.
+  repeated string ambiguous_paths = 3; // Sorted checkout paths when the selector matches several.
 }
 
 // InspectBranchDeletion returns the shared BranchGitState plus the
@@ -429,14 +493,85 @@ message CreateBranchRequest {
 
 message CreateBranchResponse {}
 
-// DeleteBranch deletes a non-worktree branch. It first checks out
-// switch_to_branch in the working directory and then runs
-// `git branch -D <branch_to_delete>`. If checkout succeeds but deletion fails,
-// the worker keeps the requested checkout and returns the deletion error.
+// DeleteBranch deletes a non-worktree branch. When switch_to_branch is set,
+// the worker checks it out first and then runs `git branch -D <branch_to_delete>`.
+// When switch_to_branch is empty and branch_to_delete is not currently checked out
+// in path, the worker deletes branch_to_delete directly without changing HEAD.
+// When switch_to_branch is empty and branch_to_delete is currently checked out,
+// the worker switches to a local fallback branch (main, master, or the sole
+// remaining local branch) before deleting it, or returns InvalidArgument if none
+// can be chosen unambiguously. If checkout succeeds but deletion fails, the
+// worker keeps the checkout and returns the deletion error.
 message DeleteBranchRequest {
   string path = 1;
   string branch_to_delete = 2;
-  string switch_to_branch = 3;
+  string switch_to_branch = 3; // Optional; see DeleteBranchRequest comment.
 }
 
 message DeleteBranchResponse {}
+
+message GetGitDiffRequest {
+  string path = 1;
+  bool staged = 2;
+  string base_ref = 3;
+  repeated string file_paths = 4;
+  int64 limit = 5;
+}
+
+message GetGitDiffResponse {
+  string diff = 1;
+  bool truncated = 2;
+  int64 total_size = 3;
+}
+
+message GetGitLogRequest {
+  string path = 1;
+  int32 limit = 2;
+  string ref = 3;
+}
+
+message GitCommitEntry {
+  string hash = 1;
+  string short_hash = 2;
+  string author_name = 3;
+  string author_email = 4;
+  string authored_at = 5;
+  string subject = 6;
+}
+
+message GetGitLogResponse {
+  repeated GitCommitEntry commits = 1;
+}
+
+message GitCommitRequest {
+  string path = 1;
+  string message = 2;
+  bool stage_all = 3;
+}
+
+message GitCommitResponse {
+  string hash = 1;
+  string subject = 2;
+}
+
+message CreateGitWorktreeRequest {
+  string path = 1;
+  string branch = 2;
+  string base_branch = 3;
+  string worktree_path = 4;
+}
+
+message CreateGitWorktreeResponse {
+  string worktree_path = 1;
+  string branch = 2;
+  string repo_root = 3;
+}
+
+message RemoveGitWorktreeRequest {
+  string path = 1;
+  bool force = 2;
+  // When true, also delete the local branch that was checked out in the worktree.
+  bool delete_branch = 3;
+}
+
+message RemoveGitWorktreeResponse {}

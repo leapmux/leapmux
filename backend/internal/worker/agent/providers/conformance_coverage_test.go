@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"os"
+	"slices"
 	"sort"
 	"testing"
 
@@ -62,8 +63,18 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 // control-response suites once, over the shared base in package acp, because
 // the base implements those rules for all twelve providers. OpenCode also runs the
 // busy refusal over its own agent type.
+//
+// Each package that publishes a control request runs AssertPublishedControlKeys
+// over each kind that it publishes, because the Worker refuses every answer to a
+// request whose payload gives another key than its publication. Each ACP
+// provider that runs AssertControlIdentitiesStaySeparate runs it beside that
+// suite, over the same publications, and the acp package runs it once for the
+// base. A package whose row lists no AssertPublishedControlKeys reads its keys
+// with the method of the base that it embeds, which that base's package checks,
+// so it may not state a ControlRequestKey of its own
+// (TestAPackageWithItsOwnControlRequestKeyChecksItsKeys).
 var requiredSuites = map[string][]string{
-	"muse": {"AssertUnknownFramePersists", "RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertTokenResumeRule", "AssertChildCapabilities", "RunSupplementConformance"},
+	"muse": {"AssertUnknownFramePersists", "RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertTokenResumeRule", "AssertChildCapabilities", "RunSupplementConformance", "AssertPublishedControlKeys"},
 
 	"commandcode": {
 		"AssertUnknownFramePersists", "RunRetryAttemptCase",
@@ -77,97 +88,97 @@ var requiredSuites = map[string][]string{
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"gemini": {
-		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities",
+		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"amp": {
 		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"antigravity": {
 		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"acp": {
 		"AssertUnknownFramePersists",
 		"AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn",
 		"AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"RunSupplementConformance",
+		"RunSupplementConformance", "AssertPublishedControlKeys",
 	},
 	"claude": {
 		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
-		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"cline": {"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"codebuddy": {
 		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"qoder": {"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"droid": {
 		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"codewhale": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"codex": {
 		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "RunSupplementConformance", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "RunSupplementConformance", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"copilot": {
 		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
-		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertChildCapabilities",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"cursor": {
 		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate",
-		"RequireToolStoreHandlesClosed", "AssertChildCapabilities",
+		"RequireToolStoreHandlesClosed", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"goose": {"AssertUnknownFramePersists", "RequireReadsSessionStore", "AssertChildCapabilities"},
 	"grok": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
-		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
+		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities", "AssertPublishedControlKeys"},
 	"kilo": {"RunRetryAttemptCase", "RequireReadsSessionStore", "AssertChildCapabilities"},
 	"letta": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
-	"kiro":      {"AssertUnknownFramePersists", "RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
+	"kiro":      {"AssertUnknownFramePersists", "RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities", "AssertPublishedControlKeys"},
 	"dirac":     {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"fastagent": {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"junie":     {"RequireReadsSessionStore", "AssertChildCapabilities"},
@@ -175,40 +186,54 @@ var requiredSuites = map[string][]string{
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"opencode": {
 		"RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertBusyRefusalRepublishesTheTurn", "AssertTokenResumeRule",
-		"AssertControlIdentitiesStaySeparate", "AssertChildCapabilities",
+		"AssertControlIdentitiesStaySeparate", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"pi": {
 		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
-		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"ohmypi": {
 		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
-		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"qwen": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
-		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
-	"reasonix": {"RequireReadsSessionStore", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
+		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities", "AssertPublishedControlKeys"},
+	"reasonix": {"RequireReadsSessionStore", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities", "AssertPublishedControlKeys"},
 	"zcode": {
 		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
-		"AssertTokenResumeRule", "RequireToolStoreHandlesClosed", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "RequireToolStoreHandlesClosed", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
 	"mimo": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertChildCapabilities",
+		"AssertTokenResumeRule", "AssertChildCapabilities", "AssertPublishedControlKeys",
 	},
+}
+
+func assertEveryRegisteredProviderRunsSuite(t *testing.T, suite, requirement string) {
+	t.Helper()
+	providers := Registry().Providers()
+	require.NotEmpty(t, providers, "the sweep proves nothing against an empty registry")
+	for _, id := range providers {
+		t.Run(id.String(), func(t *testing.T) {
+			t.Parallel()
+			dir, ok := providerDirs[id]
+			require.Truef(t, ok, "%v has no package directory in providerDirs", id)
+			assert.Truef(t, suitesCalledIn(t, dir)[suite], requirement, dir)
+		})
+	}
 }
 
 // TestEveryRegisteredProviderReadsItsSessionStore sweeps the registry rather
@@ -218,18 +243,19 @@ var requiredSuites = map[string][]string{
 // store, or with a row here that gives the reason it cannot.
 func TestEveryRegisteredProviderReadsItsSessionStore(t *testing.T) {
 	t.Parallel()
+	assertEveryRegisteredProviderRunsSuite(t, "RequireReadsSessionStore",
+		"the tests of %s must run agenttest.RequireReadsSessionStore over a fixture of its session store")
+}
 
-	providers := Registry().Providers()
-	require.NotEmpty(t, providers, "the sweep proves nothing against an empty registry")
-	for _, id := range providers {
-		t.Run(id.String(), func(t *testing.T) {
-			t.Parallel()
-			dir, ok := providerDirs[id]
-			require.Truef(t, ok, "%v has no package directory in providerDirs", id)
-			assert.Truef(t, suitesCalledIn(t, dir)["RequireReadsSessionStore"],
-				"the tests of %s must run agenttest.RequireReadsSessionStore over a fixture of its session store", dir)
-		})
-	}
+// TestEveryRegisteredProviderReadsItsReplyText sweeps the registry, so a
+// provider added after this was written fails until its package replays its
+// cases of testdata/reply_text_conformance.json through
+// agenttest.RunReplyTextConformance. The suite itself fails a provider with no
+// case, so the sweep and the corpus together cover every provider.
+func TestEveryRegisteredProviderReadsItsReplyText(t *testing.T) {
+	t.Parallel()
+	assertEveryRegisteredProviderRunsSuite(t, "RunReplyTextConformance",
+		"the tests of %s must run agenttest.RunReplyTextConformance over its cases of testdata/reply_text_conformance.json")
 }
 
 // TestEveryProviderPackageRunsItsConformanceSuites checks each row of
@@ -258,6 +284,34 @@ func TestEveryProviderPackageRunsItsConformanceSuites(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAPackageWithItsOwnControlRequestKeyChecksItsKeys keeps the exemption of
+// a row with no AssertPublishedControlKeys true: such a package inherits its
+// ControlRequestKey from a base whose own package checks it. A method of the
+// package's own would derive keys that no test compares with the package's
+// publications, and the Worker refuses every answer to a request whose key
+// disagrees.
+func TestAPackageWithItsOwnControlRequestKeyChecksItsKeys(t *testing.T) {
+	t.Parallel()
+
+	exempt := 0
+	for dir, suites := range requiredSuites {
+		if slices.Contains(suites, "AssertPublishedControlKeys") {
+			continue
+		}
+		exempt++
+		testutil.ForEachPackageSourceFile(t, dir, func(fset *token.FileSet, file *ast.File) {
+			for _, decl := range file.Decls {
+				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv != nil && fn.Name.Name == "ControlRequestKey" {
+					assert.Failf(t, "a key that no test checks",
+						"%s states its own ControlRequestKey at %s, so its tests must call agenttest.AssertPublishedControlKeys and its row in requiredSuites must list it",
+						dir, fset.Position(fn.Pos()))
+				}
+			}
+		})
+	}
+	require.NotZero(t, exempt, "no row is exempt, so the sweep checks nothing; delete it")
 }
 
 // TestRequiredSuitesExistInAgenttest keeps requiredSuites honest: a suite that

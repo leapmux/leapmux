@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/coder/quartz"
 	"github.com/coder/websocket"
 
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -163,7 +163,6 @@ type hubClient struct {
 	cancel context.CancelFunc
 	conn   *websocket.Conn
 	closed bool
-	nextID uint64
 	// pending holds the reply channel of each command that waits.
 	pending map[string]chan hubReply
 	// session is the session that the subscription covers, and lastSequence
@@ -378,8 +377,7 @@ func (c *hubClient) send(ctx context.Context, name, sessionID string, payload an
 		c.mu.Unlock()
 		return "", nil, errHubClosed
 	}
-	c.nextID++
-	requestID := "leapmux_" + strconv.FormatUint(c.nextID, 10)
+	requestID := "leapmux_" + id.Generate()
 	replies := make(chan hubReply, 1)
 	c.pending[requestID] = replies
 	c.mu.Unlock()

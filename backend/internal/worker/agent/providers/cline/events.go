@@ -34,9 +34,11 @@ func (a *Agent) handleEvent(event hubEvent) {
 		a.declineForeignRequest(event, "The session ended.")
 		return
 	}
+	decoded := decodeSteerEvent(event)
+	ownSteerStart := a.observeSteerEvent(event, decoded)
 	switch event.Event {
 	case eventRunStarted:
-		a.handleRunStarted(event)
+		a.handleRunStarted(event, decoded.runStarted, ownSteerStart)
 	case eventSessionUpdated:
 		a.handleSessionUpdated(event)
 	case eventIterationStarted:
@@ -46,9 +48,9 @@ func (a *Agent) handleEvent(event hubEvent) {
 			a.discardUnflushedReasoning(t)
 		}
 	case eventPendingPrompts:
-		a.handlePendingPrompts(event)
+		a.handlePendingPrompts(event, decoded.prompts)
 	case eventPendingPromptSubmitted:
-		a.handlePendingPromptSubmitted(event)
+		a.handlePendingPromptSubmitted(event, decoded.submitted)
 	case eventReasoningDelta:
 		a.handleReasoningDelta(event.Payload)
 	case eventAssistantDelta:
@@ -60,7 +62,7 @@ func (a *Agent) handleEvent(event hubEvent) {
 	case contracts.ClineEventAssistantMedia:
 		if t := a.routeContent(event.Payload); t != nil {
 			a.flushReasoning(t, event.SessionID)
-			a.persistRow(t, event.Raw, noCompletion)
+			a.persistReplyRow(t, event.Raw, noCompletion)
 		}
 	case contracts.ClineEventToolStarted:
 		a.dispatchToolStarted(event)
@@ -82,8 +84,10 @@ func (a *Agent) handleEvent(event hubEvent) {
 		a.handleCapabilityRequested(event)
 	case eventApprovalResolved, eventCapabilityResolved:
 		a.handleControlResolved(event)
-	case eventRunHeartbeat, eventAgentDone:
-	// Heartbeats keep the connection active. The run end supplies the completion.
+	case eventAgentDone:
+		a.noteLeadDone(event)
+	case eventRunHeartbeat:
+	// Heartbeats keep the connection active.
 	case eventUINotify:
 	// The hub's desktop notice repeats the run end.
 	case eventCloud:
@@ -110,20 +114,29 @@ func (a *Agent) handleEvent(event hubEvent) {
 // handleRunStarted confirms the send that started the run.
 // Cline sends another run.started for each steer. An active turn keeps its identity.
 // A run that another client starts creates a turn that takes no steer.
-func (a *Agent) handleRunStarted(event hubEvent) {
-	var started *struct {
-		RequestID string `json:"requestId"`
-		ClientID  string `json:"clientId"`
-	}
-	if err := json.Unmarshal(event.Payload, &started); err != nil || started == nil {
-		slog.Debug("cline ignored a malformed run start", "agent_id", a.AgentID(), "error", err)
+func (a *Agent) handleRunStarted(event hubEvent, started *runStartedPayload, ownSteer bool) {
+	if started == nil {
+		slog.Debug("cline ignored a malformed run start", "agent_id", a.AgentID())
 		return
 	}
-	delivered := started.RequestID != "" && a.settleDelivery(started.RequestID, nil)
 	a.Mu.Lock()
 	// A send that stopped waiting already started this turn.
 	ours := started.RequestID != "" && a.turn.active && a.turn.requestID == started.RequestID
+	retirePrevious := !ownSteer && a.detachedReply != nil && a.detachedReply.end == nil
+	if reply := a.turn.inputReply; reply != nil && reply.receipt.SessionID == event.SessionID {
+		if ours && started.ClientID == a.clientID {
+			reply.started = true
+		} else if !ownSteer {
+			// Cline can read a steer in a later run. Another request makes
+			// the session's unkeyed output ambiguous, even from this client.
+			reply.ambiguous = true
+		}
+	}
 	a.Mu.Unlock()
+	if retirePrevious {
+		a.retireDetachedReply()
+	}
+	delivered := started.RequestID != "" && a.settleDelivery(started.RequestID, nil)
 	if !delivered && !ours {
 		a.ensureTurn()
 	}
@@ -157,9 +170,9 @@ func (a *Agent) markRunStarted() {
 //   - `running`: a lead run that Cline starts by itself -- the run that
 //     continues after the teammates of an agent team end -- starts no
 //     run.started, and its session turns `running`.
-//   - `idle`: a turn that has no run (turnState.hasNoRun) ends, because no run
-//     end will end it. A turn with a run ends with the run's own end event,
-//     which Cline publishes just after the session turns `idle`.
+//   - `idle`: a turn without a run ends immediately. The native queue's
+//     autonomous run has no command result, so the idle state ends it too.
+//     A run started by a command waits for its own end event and result.
 func (a *Agent) handleSessionUpdated(event hubEvent) {
 	var updated struct {
 		Snapshot struct {
@@ -172,10 +185,54 @@ func (a *Agent) handleSessionUpdated(event hubEvent) {
 	switch updated.Snapshot.Status {
 	case sessionStatusRunning:
 		a.ensureTurn()
+		a.Mu.Lock()
+		if reply := a.turn.inputReply; reply != nil && reply.receipt.SessionID == event.SessionID {
+			if reply.autonomous {
+				reply.started = true
+			} else if a.turn.leadIdle {
+				// No tracked submission explains the next run.
+				reply.ambiguous = true
+				a.turn.leadIdle = false
+			}
+		}
+		a.Mu.Unlock()
 		a.markRunStarted()
 	case sessionStatusIdle:
-		a.endRunlessTurnLocked(agent.MessageCompletionComplete, runReasonCompleted)
+		a.handleSessionIdle(event.SessionID)
 	}
+}
+
+func (a *Agent) handleSessionIdle(sessionID string) {
+	a.Mu.Lock()
+	turn := a.turn
+	reply := turn.inputReply
+	if reply == nil || reply.receipt.SessionID != sessionID || !reply.started {
+		a.Mu.Unlock()
+		a.endRunlessTurnLocked(agent.MessageCompletionComplete, runReasonCompleted)
+		return
+	}
+	reason := turn.leadDoneReason
+	if !reply.autonomous {
+		a.turn.leadIdle = reply.agentDone && reason != ""
+		a.Mu.Unlock()
+		return
+	}
+	a.Mu.Unlock()
+	outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
+	if reply.ownsOutput(sessionID) {
+		switch reason {
+		case contracts.ClineRunReasonCompleted, contracts.ClineRunReasonMaxIterations:
+			outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
+		case contracts.ClineRunReasonAborted:
+			outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+		case contracts.ClineRunReasonMistakeLimit, contracts.ClineRunReasonError:
+			outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
+		}
+	}
+	if reason == "" {
+		reason = runReasonCompleted
+	}
+	a.endTurn(completionOf(reason, turn.interruptRequested), runEndRow(sessionID, reason, ""), endTurnOptions{outcome: outcome})
 }
 
 // dispatchToolStarted opens one tool call where its output belongs.
@@ -322,13 +379,8 @@ func (a *Agent) handleSessionNotice(event hubEvent) {
 }
 
 // handlePendingPrompts replaces the steer count with the native queue snapshot.
-func (a *Agent) handlePendingPrompts(event hubEvent) {
-	var payload struct {
-		Prompts []struct {
-			Delivery string `json:"delivery"`
-		} `json:"prompts"`
-	}
-	if json.Unmarshal(event.Payload, &payload) != nil {
+func (a *Agent) handlePendingPrompts(event hubEvent, payload *pendingPromptsPayload) {
+	if payload == nil {
 		return
 	}
 	count := 0
@@ -347,13 +399,8 @@ func (a *Agent) handlePendingPrompts(event hubEvent) {
 }
 
 // handlePendingPromptSubmitted removes one steer after the native model reads it.
-func (a *Agent) handlePendingPromptSubmitted(event hubEvent) {
-	var payload struct {
-		Prompt struct {
-			Delivery string `json:"delivery"`
-		} `json:"prompt"`
-	}
-	if json.Unmarshal(event.Payload, &payload) != nil || payload.Prompt.Delivery != deliverySteer {
+func (a *Agent) handlePendingPromptSubmitted(event hubEvent, payload *pendingPromptSubmittedPayload) {
+	if payload == nil || payload.Prompt.Delivery != deliverySteer {
 		return
 	}
 	a.Mu.Lock()

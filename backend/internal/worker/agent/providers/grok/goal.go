@@ -119,7 +119,7 @@ func (a *Agent) sendGoalCommand(command string) error {
 		if err != nil {
 			return fmt.Errorf("marshal the Grok goal command: %w", err)
 		}
-		return a.SendDetachedRequest(acp.MethodSessionPrompt, params, func(_ json.RawMessage, err error) {
+		return a.SendDetachedRequest(acp.MethodSessionPrompt, params, providerkit.DetachedRequestOptions{}, func(_ json.RawMessage, err error) {
 			if err == nil || !a.IsCurrentSession(sessionID) || a.IsStopped() {
 				return
 			}

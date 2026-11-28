@@ -40,7 +40,7 @@ type recoveryHeldSendAgent struct {
 	release <-chan struct{}
 }
 
-func (a *recoveryHeldSendAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *recoveryHeldSendAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	close(a.entered)
 	<-a.release
 	return a.recoveryAgent.SendInput(content, attachments)
@@ -450,7 +450,7 @@ func TestInputRecoveryRechecksLifecycleAfterHeldPreparation(t *testing.T) {
 			if change == "settings" {
 				approveRecoveryInput(t, svc, id)
 				require.Equal(t, 2, starts.count())
-				assert.Equal(t, "saved-thread", replacementOptions.ResumeSessionID)
+				assert.Equal(t, "saved-thread", replacementOptions.Session.ResumeID())
 				assert.Equal(t, "gpt-6.1", replacementOptions.Options[agent.OptionIDModel])
 				assert.Equal(t, "high", replacementOptions.Options[agent.OptionIDEffort])
 				assert.Equal(t, "default", replacementOptions.PermissionMode())

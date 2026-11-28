@@ -36,7 +36,7 @@ func TestNativeCopilotLateSendRejectionKeepsTheNewTurnActive(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
 	first := make(chan error, 1)
-	go func() { first <- provider.SendInput("first", nil) }()
+	go func() { first <- agenttest.SendInput(provider, "first", nil) }()
 	require.Eventually(t, func() bool {
 		for _, message := range sink.Messages() {
 			if bytes.Contains(message.Content, []byte(`"type":"session.idle"`)) {
@@ -45,7 +45,7 @@ func TestNativeCopilotLateSendRejectionKeepsTheNewTurnActive(t *testing.T) {
 		}
 		return false
 	}, 2*time.Second, time.Millisecond)
-	require.NoError(t, provider.SendInput("second", nil))
+	require.NoError(t, agenttest.SendInput(provider, "second", nil))
 	select {
 	case err := <-first:
 		require.ErrorContains(t, err, "first input was rejected")
@@ -69,7 +69,7 @@ func TestNativeCopilotInputRejectionRespectsNewNativeActivity(t *testing.T) {
 			}, agent.NewProviderServices(&agenttest.Sink{}))
 			require.NoError(t, err)
 			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-			require.ErrorContains(t, provider.SendInput("Rejected input", nil), "input was rejected")
+			require.ErrorContains(t, agenttest.SendInput(provider, "Rejected input", nil), "input was rejected")
 			require.Equal(t, mode == "after-new-turn", provider.PublishTurnActive().Active)
 		})
 	}
@@ -101,9 +101,9 @@ func TestNativeCopilotSessionLifecycle(t *testing.T) {
 	require.Equal(t, " {\"jsonrpc\":\"2.0\",\"method\":\"probe.notification\", \"params\":{\"counter\":9007199254740993}} ", string(sink.Messages()[0].Content))
 	content := "Keep the input unchanged.\n한글"
 	image := []byte{0x89, 0x50, 0x4e, 0x47}
-	require.NoError(t, a.SendInput(content, []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: image}}))
+	require.NoError(t, agenttest.SendInput(a, content, []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: image}}))
 	require.True(t, a.PublishTurnActive().Active)
-	require.ErrorIs(t, a.SendInput("second input", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "second input", nil), agent.ErrAgentBusy)
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.False(t, a.PublishTurnActive().Active)
 	before := len(sink.Messages())
@@ -163,13 +163,13 @@ func TestNativeCopilotSteerSendsImmediateMode(t *testing.T) {
 
 	// A steer owns no turn: with nothing running it must refuse rather than
 	// start one, the way every other provider's steer refuses.
-	require.ErrorIs(t, a.SteerInput("too early", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "too early"}), agent.ErrNoActiveTurn)
 
-	require.NoError(t, a.SendInput("first", nil))
+	require.NoError(t, agenttest.SendInput(a, "first", nil))
 	state := a.PublishTurnActive()
 	require.True(t, state.Active)
 	require.True(t, state.Steerable, "an active Copilot turn must be published steerable")
-	require.NoError(t, a.SteerInput("steered", nil))
+	require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("steered")))
 
 	file, err := os.Open(requestsPath)
 	require.NoError(t, err)
@@ -229,7 +229,7 @@ func TestNativeCopilotAsksForAssistedApprovalWhenItOpensASession(t *testing.T) {
 				Options:    optionmap.Map{agent.OptionIDPermissionMode: "assisted"},
 			}
 			if resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			sink := &agenttest.Sink{}
 			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(sink))
@@ -348,7 +348,7 @@ func TestNativeCopilotClearContextFailureRestoresThePreviousSession(t *testing.T
 				require.True(t, a.IsStopped(), "a failed restoration must not accept input")
 				return
 			}
-			require.NoError(t, a.SendInput("Use the restored session.", nil))
+			require.NoError(t, agenttest.SendInput(a, "Use the restored session.", nil))
 			require.Equal(t, "plan", a.SettingsSnapshot().SurfacedOptions[copilotOptionSessionMode])
 			require.Equal(t, "assisted", a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
 		})
@@ -581,7 +581,7 @@ func TestNativeCopilotFallsBackToManualWhenTheRuntimeRefusesTheDefaultPermission
 				"LEAPMUX_TEST_COPILOT_REFUSAL="+tc.refusal)
 			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true)
 			if tc.resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			sink := &agenttest.Sink{}
 			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(sink))
@@ -597,7 +597,7 @@ func TestNativeCopilotFallsBackToManualWhenTheRuntimeRefusesTheDefaultPermission
 				recordedPermissionModes(t, requestsPath), "the agent asks for the default once, then for the safe mode")
 			require.Equal(t, 1, strings.Count(logs.String(), permissionFallbackLog), "the fallback writes one warning")
 			require.Contains(t, logs.String(), "level=WARN")
-			require.NoError(t, provider.SendInput("The agent still takes input.", nil))
+			require.NoError(t, agenttest.SendInput(provider, "The agent still takes input.", nil))
 		})
 	}
 }
@@ -629,7 +629,7 @@ func TestNativeCopilotClearContextFallsBackToManualWhenTheReplacementRefusesTheD
 		contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual,
 	}, recordedPermissionModes(t, requestsPath))
 	require.Equal(t, 1, strings.Count(logs.String(), permissionFallbackLog))
-	require.NoError(t, a.SendInput("The replacement session takes input.", nil))
+	require.NoError(t, agenttest.SendInput(a, "The replacement session takes input.", nil))
 }
 
 // A goal clear closes the session and opens it again under the same identity. It
@@ -657,7 +657,7 @@ func TestNativeCopilotGoalClearFallsBackToManualWhenTheReopenedSessionRefusesThe
 		contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual,
 	}, recordedPermissionModes(t, requestsPath))
 	require.Equal(t, 1, strings.Count(logs.String(), permissionFallbackLog))
-	require.NoError(t, a.SendInput("The reopened session takes input.", nil))
+	require.NoError(t, agenttest.SendInput(a, "The reopened session takes input.", nil))
 }
 
 // A mode that the user chose is a different case. Manual would ignore that choice, so the
@@ -679,7 +679,7 @@ func TestNativeCopilotStillFailsStartupWhenTheRuntimeRefusesAPermissionModeThatT
 			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, false)
 			opts.NewSessionDefaultOptionIDs = tc.defaulted
 			if tc.resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			_, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 			require.ErrorContains(t, err, "the Copilot runtime did not confirm the requested permissionMode setting")
@@ -745,7 +745,7 @@ func TestNativeCopilotDoesNotFallBackWhenTheRuntimeAcceptsTheDefaultPermissionMo
 			requestsPath := installCopilotThatRefusesAMode(t, "", 1, "LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG=1")
 			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true)
 			if resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 			require.NoError(t, err)

@@ -1,6 +1,6 @@
 import type { ControlQuestion, QuestionOption } from '../../model/question'
 import type { QuestionAnswer } from '../../model/tools/question'
-import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
+import { isObject, pickString, stringArray } from '~/lib/jsonPick'
 
 interface AntigravityQuestionRecord {
   index: number
@@ -8,16 +8,12 @@ interface AntigravityQuestionRecord {
   prompt: ControlQuestion | null
 }
 
-export function antigravityIsQuestionRequest(payload: Record<string, unknown>): boolean {
-  return pickObject(pickObject(payload, 'requestedInteraction'), 'askQuestion') !== null
-}
-
 export function antigravityQuestionRecords(source: unknown): AntigravityQuestionRecord[] {
   if (!Array.isArray(source))
     return []
-  return source.flatMap((record, index) => {
+  return source.map((record, index) => {
     if (!isObject(record))
-      return []
+      return { index, id: '', prompt: null }
     const id = pickString(record, 'id')
     const question = pickString(record, 'question')
     const options = Array.isArray(record.options)
@@ -33,17 +29,8 @@ export function antigravityQuestionRecords(source: unknown): AntigravityQuestion
             : {}),
         }
       : null
-    return [
-      { index, id, prompt },
-    ]
+    return { index, id, prompt }
   })
-}
-
-export function antigravityExtractQuestions(payload: Record<string, unknown>): ControlQuestion[] {
-  const ask = pickObject(pickObject(payload, 'requestedInteraction'), 'askQuestion')
-  return antigravityQuestionRecords(ask?.questions).flatMap(record => record.prompt
-    ? [record.prompt]
-    : [])
 }
 
 function questionOption(option: Record<string, unknown>): QuestionOption {

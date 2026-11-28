@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Factory Droid's control channel: the server asks the worker for permission
@@ -49,34 +50,10 @@ type droidAskUserRequest struct {
 	} `json:"questions"`
 }
 
-// droidPermissionResult is the result of Droid's reply to
-// droid.request_permission. Droid's schema also accepts `comment` and
-// `editedSpecContent`, and the worker writes neither: see
-// droidResolveControlResponse for the comment.
-type droidPermissionResult struct {
-	SelectedOption string `json:"selectedOption"`
-}
-
-// droidAskUserResult is the result of Droid's reply to droid.ask_user. Droid's
-// schema requires `answers` to be a list, even for a cancel.
-type droidAskUserResult struct {
-	Cancelled bool                 `json:"cancelled"`
-	Answers   []droidAskUserAnswer `json:"answers"`
-}
-
-// droidAskUserAnswer is one answer of a droid.ask_user reply. Droid identifies
-// the question by Index, and reports the answer to the model as
-// "<index>. [question] <question>" and "[answer] <answer>".
-type droidAskUserAnswer struct {
-	Index    int    `json:"index"`
-	Question string `json:"question"`
-	Answer   string `json:"answer"`
-}
-
 // droidCancelledAskUser is the reply that cancels a droid.ask_user request: the
 // reply that Droid's own client sends for a cancel.
-func droidCancelledAskUser() droidAskUserResult {
-	return droidAskUserResult{Cancelled: true, Answers: []droidAskUserAnswer{}}
+func droidCancelledAskUser() contracts.DroidAskUserResult {
+	return contracts.DroidAskUserResult{Cancelled: true, Answers: []contracts.DroidAskUserAnswer{}}
 }
 
 // handleServerRequest answers one server->client request.
@@ -95,7 +72,7 @@ func (a *Agent) handleServerRequest(line []byte, env *droidEnvelope) {
 
 // onRequestPermission publishes a permission control request.
 func (a *Agent) onRequestPermission(env *droidEnvelope) {
-	cancel := droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}
+	cancel := contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}
 	var params droidPermissionRequest
 	if err := json.Unmarshal(env.Params, &params); err != nil {
 		slog.Debug("droid: bad permission params", "agent_id", a.AgentID(), "error", err)
@@ -103,7 +80,7 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 		return
 	}
 	if len(params.ToolUses) == 0 {
-		a.respond(env.ID, droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce})
+		a.respond(env.ID, contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce})
 		return
 	}
 	sessions := params.AssociatedSessionIDs
@@ -142,6 +119,13 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 		if id != record.sessionID {
 			record.root = false
 		}
+	}
+	if record.root {
+		toolIDs := make([]string, 0, len(params.ToolUses))
+		for _, use := range params.ToolUses {
+			toolIDs = append(toolIDs, use.ToolUse.ID)
+		}
+		record.nativeTurnID = a.droidReplyTurnForTools(toolIDs)
 	}
 	ordinary := true
 	for _, use := range params.ToolUses {
@@ -242,7 +226,10 @@ func (a *Agent) onAskUser(env *droidEnvelope) {
 		a.respond(env.ID, droidCancelledAskUser())
 		return
 	}
-	a.registerControl(&droidPendingControl{requestID: requestID, rpcID: env.ID, payload: payload, root: true, cancelAnswer: droidCancelledAskUser()})
+	a.registerControl(&droidPendingControl{
+		requestID: requestID, rpcID: env.ID, payload: payload, root: true,
+		nativeTurnID: a.droidReplyTurnForTools([]string{params.ToolCallID}), cancelAnswer: droidCancelledAskUser(),
+	})
 }
 
 // respond sends a JSON-RPC response for a server->client request.
@@ -266,6 +253,14 @@ func (a *Agent) respond(id string, result any) {
 	}
 }
 
+// ControlRequestKey reads the key that the agent publishes a Droid request
+// under: the `requestId` that it writes into the payload (onRequestPermission,
+// onAskUser).
+func (droidProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	id := providerkit.StringField(payload, "requestId")
+	return id, id != ""
+}
+
 // droidStoredRequest is the part of a published control request that the reply
 // reads. onRequestPermission and onAskUser write these fields.
 type droidStoredRequest struct {
@@ -287,8 +282,8 @@ type droidStoredQuestion struct {
 	Question string `json:"question"`
 }
 
-// droidResolveControlResponse turns the browser's decision into the answer body
-// of Droid. The shared suites pin two rules:
+// droidResolveControlResponse turns the neutral answer of AnswerControlRequest
+// into the answer body of Droid. The shared suites pin two rules:
 //
 //   - An absent request leaves the response bytes alone.
 //   - A malformed request withholds the response.
@@ -312,21 +307,23 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	}
 
 	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !ok || behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny {
+	if !ok || behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
 		slog.Warn("droid control response states no decision", "request_id", ctx.RequestID, "behavior", behavior)
 		var resolution agent.ControlResponseResolution
 		resolution.Refuse(agent.RefusalNoDecision)
 		return resolution
 	}
-	allow := behavior == agent.ControlBehaviorAllow
-	decision := droidInnerResponse(ctx.ResponseContent)
+	allow := behavior == contracts.ControlAnswerBehaviorAllow
+	decision := agent.DecodeControlInnerResponse(ctx.ResponseContent)
 
 	var resolution agent.ControlResponseResolution
 	var result any
 	var err error
 	switch request.Type {
 	case contracts.DroidRequestTypePermission:
-		resolution.PlanModeControl = (droidProvider{}).PlanModeControl(request.ToolUse.Name)
+		if droidIsPlanConfirmation(request.ConfirmationType) {
+			resolution.PlanModeControl = agent.PlanModeControlExit
+		}
 		var approvalOption string
 		if allow && resolution.PlanModeControl == agent.PlanModeControlExit && !ctx.PlanApproval.GetClearContext() {
 			approvalOption, err = droidPlanApprovalOption(request, ctx.PlanApproval.GetPermissionMode())
@@ -378,7 +375,7 @@ func droidPlanApprovalOption(request droidStoredRequest, mode string) (string, e
 	if mode == "" {
 		return "", nil
 	}
-	if request.ToolUse.Name != contracts.DroidToolExitSpecMode || request.ConfirmationType != contracts.DroidConfirmationTypeExitSpecMode {
+	if request.ConfirmationType != contracts.DroidConfirmationTypeExitSpecMode {
 		return "", errors.New("this Factory Droid confirmation cannot apply the selected plan permission mode")
 	}
 	switch mode {
@@ -399,7 +396,9 @@ func droidPlanApprovalOption(request droidStoredRequest, mode string) (string, e
 // the reason that the reader sees for a refusal.
 //
 // Allow becomes the selected plan option or proceed_once; deny becomes cancel.
-// An explicit selectedOption must agree with the selected plan option.
+// The plan option replaces selectedOption. No answer states both: a plan
+// answer states no selectedOption (agent.AnswerNeutralPlan), and a permission
+// answer carries no plan settings, which alone select a plan option.
 // The request must have offered any option other than
 // cancel. Factory's SDK refuses to send an option that the request did not
 // offer, and it cancels the request instead. A cancel needs no offer, because it
@@ -407,18 +406,14 @@ func droidPlanApprovalOption(request droidStoredRequest, mode string) (string, e
 // refuses proceed_edit even when the request offered it. Droid's reply schema
 // requires `editedSpecContent` beside proceed_edit, and the worker sends no
 // edited spec.
-func droidPermissionReply(offered []string, allow bool, decision json.RawMessage, approvalOption string) (droidPermissionResult, error) {
-	var stated struct {
-		SelectedOption string `json:"selectedOption"`
-	}
+func droidPermissionReply(offered []string, allow bool, decision json.RawMessage, approvalOption string) (contracts.DroidPermissionResult, error) {
+	// The decision states the option in the shape of the reply itself.
+	var stated contracts.DroidPermissionResult
 	if err := json.Unmarshal(decision, &stated); err != nil {
-		return droidPermissionResult{}, errors.New(agent.RefusalUnreadableAnswer)
+		return contracts.DroidPermissionResult{}, errors.New(agent.RefusalUnreadableAnswer)
 	}
 	option := stated.SelectedOption
 	if allow && approvalOption != "" {
-		if option != "" && option != approvalOption {
-			return droidPermissionResult{}, errors.New("the selected native option contradicts the plan permission mode")
-		}
 		option = approvalOption
 	}
 	switch {
@@ -427,30 +422,30 @@ func droidPermissionReply(offered []string, allow bool, decision json.RawMessage
 	case option == "":
 		option = contracts.DroidPermissionOptionCancel
 	case (option == contracts.DroidPermissionOptionCancel) == allow:
-		return droidPermissionResult{}, fmt.Errorf("the option %s contradicts the decision", option)
+		return contracts.DroidPermissionResult{}, fmt.Errorf("the option %s contradicts the decision", option)
 	case option == contracts.DroidPermissionOptionProceedEdit:
-		return droidPermissionResult{}, errors.New("the option proceed_edit requires an edited spec, which LeapMux does not send")
+		return contracts.DroidPermissionResult{}, errors.New("the option proceed_edit requires an edited spec, which LeapMux does not send")
 	}
 	if option != contracts.DroidPermissionOptionCancel && !slices.Contains(offered, option) {
-		return droidPermissionResult{}, errors.New(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, option))
+		return contracts.DroidPermissionResult{}, errors.New(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, option))
 	}
-	return droidPermissionResult{SelectedOption: option}, nil
+	return contracts.DroidPermissionResult{SelectedOption: option}, nil
 }
 
 // droidAskUserReply builds the reply to a question request. A refusal is
 // Droid's own cancel, which carries no answer.
-func droidAskUserReply(questions []droidStoredQuestion, allow bool, decision json.RawMessage) (droidAskUserResult, error) {
+func droidAskUserReply(questions []droidStoredQuestion, allow bool, decision json.RawMessage) (contracts.DroidAskUserResult, error) {
 	if !allow {
 		return droidCancelledAskUser(), nil
 	}
 	answers, err := droidAnswersInQuestionOrder(questions, decision)
 	if err != nil {
-		return droidAskUserResult{}, err
+		return contracts.DroidAskUserResult{}, err
 	}
-	return droidAskUserResult{Answers: answers}, nil
+	return contracts.DroidAskUserResult{Answers: answers}, nil
 }
 
-// droidDecidedAnswer is one answer of the browser's decision. Pointers tell an
+// droidDecidedAnswer is one answer of the neutral envelope. Pointers tell an
 // absent field from a zero value: an answer with no index or no text identifies
 // no question.
 type droidDecidedAnswer struct {
@@ -458,27 +453,31 @@ type droidDecidedAnswer struct {
 	Answer *string `json:"answer"`
 }
 
-// droidAnswersInQuestionOrder pairs each answer of the browser's decision with
-// its question by Droid's own index, and lists the answers in the order of the
+// droidAnswersInQuestionOrder pairs each answer of decision with its question
+// by Droid's own index, and lists the answers in the order of the
 // questions, with the index and the words of each question.
 //
 // The decision must answer every question exactly once, and nothing else.
 // Droid's AskUser tool fails when the count of answers differs from the count
 // of questions, and Droid's own client refuses an unknown or repeated index.
-func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.RawMessage) ([]droidAskUserAnswer, error) {
-	var stated struct {
-		// A pointer tells an absent list from an empty one: an absent list
-		// answers none.
-		Answers *[]droidDecidedAnswer `json:"answers"`
-	}
+func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.RawMessage) ([]contracts.DroidAskUserAnswer, error) {
+	var stated map[string]json.RawMessage
 	if err := json.Unmarshal(decision, &stated); err != nil {
 		return nil, errors.New(agent.RefusalUnreadableAnswer)
 	}
-	if stated.Answers == nil {
+	// A pointer tells an absent list from an empty one: an absent list answers
+	// none, and so does a null one.
+	var decided *[]droidDecidedAnswer
+	if raw, present := stated[contracts.DroidReplyAnswers]; present {
+		if err := json.Unmarshal(raw, &decided); err != nil {
+			return nil, errors.New(agent.RefusalUnreadableAnswer)
+		}
+	}
+	if decided == nil {
 		return nil, errors.New("the decision holds no answer list")
 	}
-	byIndex := make(map[int]string, len(*stated.Answers))
-	for _, answer := range *stated.Answers {
+	byIndex := make(map[int]string, len(*decided))
+	for _, answer := range *decided {
 		if answer.Index == nil || answer.Answer == nil {
 			return nil, errors.New("an answer states no index or no text")
 		}
@@ -487,7 +486,7 @@ func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.
 		}
 		byIndex[*answer.Index] = *answer.Answer
 	}
-	answers := make([]droidAskUserAnswer, 0, len(questions))
+	answers := make([]contracts.DroidAskUserAnswer, 0, len(questions))
 	asked := make(map[int]bool, len(questions))
 	for _, question := range questions {
 		if asked[question.Index] {
@@ -498,7 +497,7 @@ func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.
 		if !answered {
 			return nil, fmt.Errorf("the question with the index %d has no answer", question.Index)
 		}
-		answers = append(answers, droidAskUserAnswer{Index: question.Index, Question: question.Question, Answer: text})
+		answers = append(answers, contracts.DroidAskUserAnswer{Index: question.Index, Question: question.Question, Answer: text})
 	}
 	// Every question found its own answer, so a longer answer set holds an
 	// index that no question states.
@@ -519,20 +518,6 @@ func droidResponseEnvelope(id string, result any) droidEnvelope {
 	}
 	env.Result = raw
 	return env
-}
-
-// droidInnerResponse returns the neutral inner response object, where a browser
-// writes the fields a Droid answer takes beside the behavior.
-func droidInnerResponse(content []byte) json.RawMessage {
-	var envelope struct {
-		Response struct {
-			Response json.RawMessage `json:"response"`
-		} `json:"response"`
-	}
-	if json.Unmarshal(content, &envelope) != nil || len(envelope.Response.Response) == 0 {
-		return json.RawMessage(`{}`)
-	}
-	return envelope.Response.Response
 }
 
 // droidOptionValues reads the `value` of each offered option. Droid's options

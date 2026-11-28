@@ -296,6 +296,7 @@ func (s *WorkerManagementService) ListWorkers(
 	// returned the caller's whole worker row set in one response.
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
+		IDPrefix:     req.GetIdPrefix(),
 		PageParams:   pageParams(req.GetPage()),
 	})
 	if err != nil {
@@ -310,6 +311,22 @@ func (s *WorkerManagementService) ListWorkers(
 	return &leapmuxv1.ListWorkersResponse{
 		Workers: protoWorkers,
 		Page:    pageResponse(page.NextCursor),
+	}, nil
+}
+
+func (s *WorkerManagementService) GetWorkerInventory(ctx context.Context, _ *leapmuxv1.GetWorkerInventoryRequest) (*leapmuxv1.GetWorkerInventoryResponse, error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := s.store.Workers().InventorySnapshot(ctx, user.ID)
+	if err != nil {
+		return nil, storeConnectError(err, "read Worker inventory")
+	}
+	return &leapmuxv1.GetWorkerInventoryResponse{
+		OwnerUserId: user.ID.String(),
+		Revision:    snap.Revision,
+		WorkerIds:   snap.WorkerIDs,
 	}, nil
 }
 
@@ -338,9 +355,6 @@ func (s *WorkerManagementService) GetWorker(
 			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
-	if worker.DeregisteringAt != nil {
-		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 	}
 
 	return &leapmuxv1.GetWorkerResponse{
@@ -382,9 +396,7 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 	}
 
-	if err := s.deregisterEffects.Apply(ctx, req.GetWorkerId(), user.ID.String()); err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
+	s.deregisterEffects.Apply(ctx, req.GetWorkerId(), user.ID.String())
 
 	return &leapmuxv1.DeregisterWorkerResponse{}, nil
 }

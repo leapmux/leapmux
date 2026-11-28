@@ -1,5 +1,5 @@
 {
-  "_readme": "Letta Code uses a protocol_v2 App Server through `letta server --listen`. Go and TypeScript read these wire values. The Worker stores native `stream_delta` payloads. A message with several tool calls produces one native payload per call. The browser plugin reads the same `message_type` and `deltaFields`.\n\n`commands` identifies client command types. `messages` identifies server message types. The Worker consumes child snapshots and publishes registry state without storing a transcript row. `deltaKinds` identifies stream message types. `tools` identifies native tools that both sides use. The Worker opens child rows for `Agent`, and it posts a question request when an `AskUserQuestion` call returns its receipt. The Worker streams `Bash` output, and the plugin draws the tools.\n\n`subagentStates` identifies child lifecycle values. `loopStatuses` identifies busy states. Letta owns these values except `modes` and `reply`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. LeapMux owns the flat browser decision fields in `reply`.\n\n`question` identifies the receipt that an accepted `AskUserQuestion` call returns and the response that answers it. Letta Code owns these words. The Worker reads the receipt and writes the response. The browser reads the saved response to draw the answer. The browser reads the `message` of the receipt to draw the result of the call. `stopReasons` identifies the `stop_reason` words of `turn_finished` that the Worker records as an interrupted turn or a failed turn.\n\n`kind`, `request_id`, and `decision` stay at the top level. They never appear under `response`. Native `client_tool_start` uses serialized `tool_args`. The separate browser control payload uses `tool_input`.\n\nThe Worker preserves each original native final return. Letta can report an output file path in its native final footer. The browser shows that path beside the original preview. LeapMux reads no output file. `toolOutput.StreamIDPrefix` identifies native current-window progress. Only the exact prefix plus `tool_call_id` identifies progress. Genuine final returns also use synthetic IDs. `toolStatuses` identifies native result status. `deltaFields.ID`, `RunID`, and `ToolReturns` retain the native message, run, and composite result identities. An empty client_tool_end carries lifecycle state. Actual returned data remains present when its value is empty, zero, false, or null. The eventTypes table identifies native event_message variants. Retry notices use the shared retry model. Unknown notices produce no raw JSON text. Compaction event messages publish live state. Summary messages supply stored compaction boundaries and optional token counts. Native manual compaction uses execute_command and its correlated response. The compaction table specifies the native command ID and help argument. Slash-command start/end deltas carry the original input and output. A successful non-help end marks a context rewrite; native message counts are not token counts.",
+  "_readme": "Letta Code uses a protocol_v2 App Server through `letta server --listen`. Go and TypeScript read these wire values. The Worker stores native `stream_delta` payloads. A message with several tool calls produces one native payload per call. The browser plugin reads the same `message_type` and `deltaFields`.\n\n`commands` identifies client command types. `messages` identifies server message types. The Worker consumes child snapshots and publishes registry state without storing a transcript row. `deltaKinds` identifies stream message types. `tools` identifies native tools that both sides use. The Worker opens child rows for `Agent`, and it posts a question request when an `AskUserQuestion` call returns its receipt. The Worker streams `Bash` output, and the plugin draws the tools.\n\n`subagentStates` identifies child lifecycle values. `loopStatuses` identifies busy states. Letta owns these values except `modes`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. `reply` holds the fields of the flat `approval_response` payload and of its decision. The Worker writes the payload to answer a permission. The Worker forwards an answer to a permission without a change, so it first checks each field of the answer by its exact name. `behaviors` holds the two `behavior` words of a decision.\n\n`question` identifies the receipt that an accepted `AskUserQuestion` call returns and the response that answers it. Letta Code owns these words. The Worker reads the receipt and writes the response. The browser reads the `message` of the receipt to draw the result of the call. `stopReasons` identifies the `stop_reason` words of `turn_finished` that the Worker records as an interrupted turn or a failed turn.\n\n`kind`, `request_id`, and `decision` stay at the top level. They never appear under `response`. Native `client_tool_start` uses serialized `tool_args`. The control payload that the Worker stores for a request uses `tool_input`.\n\nThe Worker preserves each original native final return. Letta can report an output file path in its native final footer. The browser shows that path beside the original preview. LeapMux reads no output file. `toolOutput.StreamIDPrefix` identifies native current-window progress. Only the exact prefix plus `tool_call_id` identifies progress. Genuine final returns also use synthetic IDs. `toolStatuses` identifies native result status. `deltaFields.ID`, `RunID`, and `ToolReturns` retain the native message, run, and composite result identities. An empty client_tool_end carries lifecycle state. Actual returned data remains present when its value is empty, zero, false, or null. The eventTypes table identifies native event_message variants. Retry notices use the shared retry model. Unknown notices produce no raw JSON text. Compaction event messages publish live state. Summary messages supply stored compaction boundaries and optional token counts. Native manual compaction uses execute_command and its correlated response. The compaction table specifies the native command ID and help argument. Slash-command start/end deltas carry the original input and output. A successful non-help end marks a context rewrite; native message counts are not token counts.",
   "_unread": {
     "commands": {
       "AbortMessage": {
@@ -209,65 +209,36 @@
         "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
       }
     },
-    "reply": {
-      "Behavior": {
+    "question": {
+      "ResponseType": {
         "sides": [
-          "go"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
-      "Decision": {
-        "sides": [
-          "go"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
-      "Kind": {
-        "sides": [
-          "go"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
-      "Message": {
-        "sides": [
-          "go"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
-      "RequestID": {
-        "sides": [
-          "go",
           "ts"
         ],
-        "why": "The Worker writes this field through a struct tag that a reflection test pins. The browser reads the request id from the request that the Worker published."
-      }
-    },
-    "question": {
+        "why": "The Worker writes the response and reads it back before it sends the task notification. The browser words a saved answer from the neutral decision, so it never reads the response."
+      },
       "StatusAnswered": {
         "sides": [
           "ts"
         ],
-        "why": "The Worker writes this status. The browser reads only a dismissal and draws every other response from its answers."
+        "why": "The Worker writes the response and reads it back before it sends the task notification. The browser words a saved answer from the neutral decision, so it never reads the response."
       },
-      "FieldType": {
+      "StatusDismissed": {
         "sides": [
-          "go"
+          "ts"
         ],
-        "why": "The Worker reads and writes this field through a struct tag that a reflection test pins to this table."
+        "why": "The Worker writes the response and reads it back before it sends the task notification. The browser words a saved answer from the neutral decision, so it never reads the response."
       },
       "FieldVersion": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "The Worker checks this field through a struct tag that a reflection test pins. The browser never reads the version."
+        "why": "The Worker checks the version of the receipt and of the response. The browser never reads the version."
       },
       "FieldToolCallID": {
         "sides": [
-          "go",
           "ts"
         ],
-        "why": "The Worker matches this field through a struct tag that a reflection test pins. The browser reads the call from the request that the Worker published."
+        "why": "The Worker matches the receipt to its call by this field. The browser reads the call from the request that the Worker published."
       },
       "FieldQuestions": {
         "sides": [
@@ -277,9 +248,15 @@
       },
       "FieldStatus": {
         "sides": [
-          "go"
+          "ts"
         ],
-        "why": "The Worker reads and writes this field through a struct tag that a reflection test pins to this table."
+        "why": "The Worker writes the response and reads it back before it sends the task notification. The browser words a saved answer from the neutral decision, so it never reads the response."
+      },
+      "FieldAnswers": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker writes the response and reads it back before it sends the task notification. The browser words a saved answer from the neutral decision, so it never reads the response."
       },
       "FieldMessage": {
         "sides": [
@@ -409,7 +386,14 @@
     "RequestID": "request_id",
     "Decision": "decision",
     "Behavior": "behavior",
-    "Message": "message"
+    "Message": "message",
+    "UpdatedInput": "updated_input",
+    "SelectedPermissionSuggestionIDs": "selected_permission_suggestion_ids",
+    "Error": "error"
+  },
+  "behaviors": {
+    "Allow": "allow",
+    "Deny": "deny"
   },
   "question": {
     "ReceiptType": "ask_user_question",
@@ -423,6 +407,99 @@
     "FieldStatus": "status",
     "FieldAnswers": "answers",
     "FieldMessage": "message"
+  },
+  "structs": {
+    "LettaApprovalResponse": {
+      "doc": "LettaApprovalResponse is the flat approval_response payload that answers one\npermission. `request_id` and `decision` sit at the top level of the payload,\nnever under a `response` key: the nested form produces\n`loop_error: \"Protocol violation: input.kind=approval_response requires\npayload.request_id and either payload.decision or payload.error\"`.\n\nDecision holds an encoded LettaApprovalDecision. Error replaces it when the\nworker could not publish the request.",
+      "table": "reply",
+      "fields": [
+        {
+          "key": "Kind",
+          "type": "string"
+        },
+        {
+          "key": "RequestID",
+          "type": "string"
+        },
+        {
+          "key": "Decision",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Error",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    },
+    "LettaApprovalDecision": {
+      "doc": "LettaApprovalDecision is the allow or deny decision of an approval_response.\n\nMessage is never omitted: Letta's `isValidApprovalResponseBody` requires\n`typeof decision.message === \"string\"` for a deny. An `omitempty` that dropped\nan empty message turned every deny into a protocol violation, the tool call\nhung, and the turn never reached the model again.",
+      "table": "reply",
+      "fields": [
+        {
+          "key": "Behavior",
+          "type": "string"
+        },
+        {
+          "key": "Message",
+          "type": "string"
+        }
+      ]
+    },
+    "LettaQuestionReceipt": {
+      "doc": "LettaQuestionReceipt is the result of an accepted AskUserQuestion call. The\ncall returns it as JSON text in `tool_return`.",
+      "table": "question",
+      "fields": [
+        {
+          "key": "FieldType",
+          "type": "string"
+        },
+        {
+          "key": "FieldVersion",
+          "type": "int"
+        },
+        {
+          "key": "FieldToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "FieldQuestions",
+          "type": "json.RawMessage"
+        }
+      ]
+    },
+    "LettaQuestionResponse": {
+      "doc": "LettaQuestionResponse answers a receipt. Letta Code reads it from the task\nnotification that carries it, and it accepts an `answered` response only when\n`answers` holds a nonempty answer for each question, keyed by the text of the\nquestion. The field order is the order that Letta Code writes. A dismissal\nomits the answers.",
+      "table": "question",
+      "fields": [
+        {
+          "key": "FieldType",
+          "type": "string"
+        },
+        {
+          "key": "FieldVersion",
+          "type": "int"
+        },
+        {
+          "key": "FieldToolCallID",
+          "type": "string"
+        },
+        {
+          "key": "FieldQuestions",
+          "type": "json.RawMessage"
+        },
+        {
+          "key": "FieldStatus",
+          "type": "string"
+        },
+        {
+          "key": "FieldAnswers",
+          "type": "map[string]string",
+          "omitempty": true
+        }
+      ]
+    }
   },
   "stopReasons": {
     "Cancelled": "cancelled",

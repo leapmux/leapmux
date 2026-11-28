@@ -2225,3 +2225,110 @@ func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
 		})
 	}
 }
+
+func TestIdPHandler_Callback_FormPostAndAppleUserName(t *testing.T) {
+	base := hubtestutil.OpenTestStore(t)
+	createRetainedAdministrator(t, base)
+	env := setupOAuthSignupEnv(t, base)
+
+	nowAuthTime := func() any { return time.Now().Unix() }
+
+	// PUT must be rejected with 405 Method Not Allowed.
+	providerEmptyName := createTestOIDCProviderWithMode(t, env.store, env.ks, "apple-user@example.com", "apple-sub-1", "", leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_FORM_POST, nowAuthTime)
+	putReq, err := http.NewRequest(http.MethodPut, env.server.URL+"/auth/idp/"+providerEmptyName+"/callback", nil)
+	require.NoError(t, err)
+	putResp, err := noRedirectClient().Do(putReq)
+	require.NoError(t, err)
+	_ = putResp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, putResp.StatusCode)
+
+	// Oversized POST body (> 64 KiB) must fail with 413 Request Entity Too Large.
+	bigBody := "code=x&state=y&user=" + strings.Repeat("a", 65<<10)
+	bigReq, err := http.NewRequest(http.MethodPost, env.server.URL+"/auth/idp/"+providerEmptyName+"/callback", strings.NewReader(bigBody))
+	require.NoError(t, err)
+	bigReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	bigResp, err := noRedirectClient().Do(bigReq)
+	require.NoError(t, err)
+	_ = bigResp.Body.Close()
+	assert.Equal(t, http.StatusRequestEntityTooLarge, bigResp.StatusCode)
+
+	// POST callback must ignore query parameters and read only the POST body.
+	queryOnlyReq, err := http.NewRequest(http.MethodPost, env.server.URL+"/auth/idp/"+providerEmptyName+"/callback?code=q&state=s", strings.NewReader(""))
+	require.NoError(t, err)
+	queryOnlyReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	queryOnlyResp, err := noRedirectClient().Do(queryOnlyReq)
+	require.NoError(t, err)
+	_ = queryOnlyResp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, queryOnlyResp.StatusCode)
+
+	for _, tc := range []struct {
+		name         string
+		oidcName     string
+		responseMode leapmuxv1.OAuthResponseMode
+		querySuffix  string
+		wantDisplay  string
+	}{
+		{
+			name:         "empty OIDC name falls back to Apple user JSON even with malformed query string",
+			oidcName:     "",
+			responseMode: leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_FORM_POST,
+			querySuffix:  "?%zz=1",
+			wantDisplay:  "Jane Appleseed",
+		},
+		{
+			name:         "whitespace-only OIDC name falls back to Apple user JSON",
+			oidcName:     "   \t  ",
+			responseMode: leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_FORM_POST,
+			wantDisplay:  "Jane Appleseed",
+		},
+		{
+			name:         "non-empty OIDC name takes precedence over Apple user JSON",
+			oidcName:     "Provider Name",
+			responseMode: leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_FORM_POST,
+			wantDisplay:  "Provider Name",
+		},
+		{
+			name:         "query-mode OIDC provider ignores Apple user JSON",
+			oidcName:     "",
+			responseMode: leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_QUERY,
+			wantDisplay:  "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			providerID := createTestOIDCProviderWithMode(t, env.store, env.ks, "apple-user@example.com", "apple-sub-"+tc.name, tc.oidcName, tc.responseMode, nowAuthTime)
+			state := "apple-state-" + id.Generate()
+			nonce := "apple-nonce-" + id.Generate()
+			require.NoError(t, env.states.Create(service.CreateOAuthStateParams{
+				State:        state,
+				ProviderID:   providerID,
+				PkceVerifier: "verifier",
+				NonceHash:    hashNonceForTest(nonce),
+				Purpose:      service.OAuthStatePurposeLogin,
+				ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
+			}))
+
+			form := url.Values{}
+			form.Set("code", "apple-code")
+			form.Set("state", state)
+			form.Set("user", `{"name":{"firstName":"Jane","lastName":"Appleseed"},"email":"apple-user@example.com"}`)
+			req, err := http.NewRequest(http.MethodPost, env.server.URL+"/auth/idp/"+providerID+"/callback"+tc.querySuffix, strings.NewReader(form.Encode()))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(auth.BuildOAuthNonceCookieForFormPost(state, nonce, time.Minute, false))
+
+			resp, err := noRedirectClient().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			loc, err := resp.Location()
+			require.NoError(t, err)
+			assert.Equal(t, service.IdPCompleteSignupPath, loc.Path)
+			token := loc.Query().Get("token")
+			require.NotEmpty(t, token)
+
+			pending, ok := env.pendingSignups.Get(token)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantDisplay, pending.DisplayName)
+		})
+	}
+}

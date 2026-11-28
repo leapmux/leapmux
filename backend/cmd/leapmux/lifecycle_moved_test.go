@@ -20,7 +20,7 @@ func TestEnableAdoptsAMovedDataDirectory(t *testing.T) {
 	manager := &nativeStartRecorder{t: t}
 	enable := func(dataDir string) error {
 		_, err := captureStdout(t, func() error {
-			return runModeEnableWithController("hub", nativeRecorderController(manager))(cmdCtx{}, []string{"--data-dir", dataDir, "--startup=login", "--yes"})
+			return runLifecycleWithController("hub", "enable", nativeRecorderController(manager), []string{"--data-dir", dataDir, "--startup=login", "--yes"}...)
 		})
 		return err
 	}

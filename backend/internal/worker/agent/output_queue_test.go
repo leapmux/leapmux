@@ -181,3 +181,45 @@ func TestOutputQueueCancellationStopsRetriesAndKeepsPendingWrites(t *testing.T) 
 	assert.EqualValues(t, 1, attempts.Load())
 	assert.True(t, queue.HasPending())
 }
+
+func TestOutputQueueWaitForAdmittedWritesJoinsARetry(t *testing.T) {
+	t.Parallel()
+	var queue OutputQueue
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	trap := clock.Trap().NewTimer(OutputRetryTimerTag)
+	t.Cleanup(trap.Close)
+	t.Cleanup(queue.StopRetries)
+	queue.ConfigureRetry(ctx, clock, nil)
+	var attempted atomic.Bool
+	queue.Append(OutputWrite{Label: "retry the admitted fact", Run: func() error {
+		if !attempted.Swap(true) {
+			return assert.AnError
+		}
+		return nil
+	}})
+	require.ErrorIs(t, queue.Flush(), assert.AnError)
+	delay := testutil.WaitForTimer(t, ctx, trap)
+	result := make(chan error, 1)
+	go func() { result <- queue.WaitForAdmittedWrites(ctx) }()
+	testutil.AssertEventually(t, func() bool {
+		queue.mu.Lock()
+		defer queue.mu.Unlock()
+		return len(queue.pending) == 2
+	}, "the barrier must follow the failed output")
+	clock.Advance(delay).MustWait(ctx)
+	require.NoError(t, <-result)
+}
+
+func TestOutputQueueWaitForAdmittedWritesFlushesIdlePendingWrite(t *testing.T) {
+	t.Parallel()
+	var queue OutputQueue
+	var ran atomic.Bool
+	queue.Append(OutputWrite{Label: "idle pending", Run: func() error {
+		ran.Store(true)
+		return nil
+	}})
+	require.NoError(t, queue.WaitForAdmittedWrites(testutil.DeadlineContext(t)))
+	assert.True(t, ran.Load())
+	assert.False(t, queue.HasPending())
+}

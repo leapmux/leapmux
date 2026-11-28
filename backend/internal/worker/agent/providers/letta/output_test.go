@@ -95,9 +95,9 @@ func TestLettaAbortKeepsTheTurnUntilItsTurnFinished(t *testing.T) {
 	assert.Equal(t, "abort_message", fake.nextCommand(t)["type"])
 	// Source: .tmp/probe/letta/logs/frames2.jsonl, frames 19-24.
 	a.HandleOutput([]byte(`{"type":"update_loop_status","loop_status":{"status":"WAITING_ON_INPUT"}}`))
-	require.ErrorIs(t, a.SendInput("Wait for the cancelled turn.", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "Wait for the cancelled turn.", nil), agent.ErrAgentBusy)
 	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
-	require.NoError(t, a.SendInput("Continue after the cancelled turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Continue after the cancelled turn.", nil))
 	assert.Equal(t, "input", fake.nextCommand(t)["type"])
 }
 
@@ -107,9 +107,9 @@ func TestLettaNormalIdleDoesNotReleaseInputBeforeTheFinalFrame(t *testing.T) {
 	a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
 	a.HandleOutput([]byte(lettaLiveLoopStatus))
 	a.HandleOutput([]byte(`{"type":"update_loop_status","loop_status":{"status":"WAITING_ON_INPUT"}}`))
-	require.ErrorIs(t, a.SendInput("Do not overtake the prior final row.", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "Do not overtake the prior final row.", nil), agent.ErrAgentBusy)
 	a.HandleOutput([]byte(lettaLiveTurnFinished))
-	require.NoError(t, a.SendInput("The prior final row now exists.", nil))
+	require.NoError(t, agenttest.SendInput(a, "The prior final row now exists.", nil))
 }
 
 func TestLettaRepeatedTurnFinishedIsIgnored(t *testing.T) {
@@ -463,7 +463,7 @@ func TestControlRequestBodyLivesInTheRequestField(t *testing.T) {
 	assert.Equal(t, string(lettaControlPermission), payload.Type, "a request for the question tool asks whether the tool may run")
 }
 
-// The control payload uses the contract's tool fields that the browser reads.
+// The control payload uses the contract's tool fields, which ReadControlRequest reads.
 // A payload with `toolName`, `toolCallId`, and `input` drew an empty tool banner.
 // Its question options did not appear.
 func TestControlPayloadUsesTheContractFieldNames(t *testing.T) {
@@ -766,7 +766,7 @@ func TestEchoOfAQueuedMessageTheReaderSentIsNotARow(t *testing.T) {
 	sink := &agenttest.Sink{}
 	fake, a := openedAgentWithSink(t, sink)
 
-	require.NoError(t, a.SendInput("PROMPT_C", nil))
+	require.NoError(t, agenttest.SendInput(a, "PROMPT_C", nil))
 	id := sentClientMessageID(t, inputPayload(t, fake))
 
 	// Letta Code queues the message and echoes it when it starts.

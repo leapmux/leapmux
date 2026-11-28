@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -16,6 +17,7 @@ type nativeControl struct {
 	event           string
 	toolName        string
 	agentID         string
+	instanceID      string
 	request         json.RawMessage
 	sink            agent.ProviderServices
 	payload         []byte
@@ -25,79 +27,243 @@ type nativeControl struct {
 	automaticFailed bool
 	publicationDone chan struct{}
 	publicationOnce sync.Once
+	// Mu protects reply ownership as the native tool and request streams meet.
+	replyCallID   string
+	replyInputIDs []string
+	replyBound    bool
+	tracksUnbound bool
+}
+
+type nativeControlKind uint8
+
+const (
+	nativeControlKindUnknown nativeControlKind = iota
+	nativeControlKindApproval
+	nativeControlKindQuestions
+	nativeControlKindPlanReview
+)
+
+type nativeQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+type nativeQuestionIntent struct {
+	Kind    string `json:"kind"`
+	Approve string `json:"approve"`
+	CallID  string `json:"callId"`
 }
 
 type nativeQuestion struct {
-	ID       string `json:"id"`
-	Question string `json:"question"`
-	Detail   string `json:"detail"`
-	Options  []struct {
-		Label string `json:"label"`
-	} `json:"options"`
-	Intent *struct {
-		Kind    string `json:"kind"`
-		Approve string `json:"approve"`
-		CallID  string `json:"callId"`
-	} `json:"intent"`
+	ID          string                 `json:"id"`
+	Header      string                 `json:"header"`
+	Question    string                 `json:"question"`
+	Detail      string                 `json:"detail"`
+	MultiSelect bool                   `json:"multiSelect"`
+	Options     []nativeQuestionOption `json:"options"`
+	Intent      *nativeQuestionIntent  `json:"intent"`
 }
 
-// storedControlRefusal validates the stored request and the answer envelope.
-// An empty result means that both are valid.
-func storedControlRefusal(ctx agent.ControlResponseContext) string {
-	var payload struct {
-		Type    string          `json:"type"`
-		Event   string          `json:"event"`
-		ID      string          `json:"eventId"`
-		AgentID string          `json:"agentId"`
-		Request json.RawMessage `json:"request"`
-	}
-	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.ID == "" || payload.AgentID == "" || ctx.RequestID != "" && ctx.RequestID != payload.ID {
-		return agent.RefusalUnreadableRequest
-	}
-	requestID, _, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+type parsedApprovalRequest struct {
+	ToolName string
+	CallID   string
+	Reason   string
+}
+
+type parsedWaterfallControl struct {
+	Type          string
+	Event         string
+	EventID       string
+	AgentID       string
+	HasRequestObj bool
+	Kind          nativeControlKind
+	Approval      parsedApprovalRequest
+	Questions     []nativeQuestion
+	WaitCallID    string
+	StrictValid   bool
+}
+
+func parseWaterfallControl(raw []byte) parsedWaterfallControl {
+	fields, ok := providerkit.RawObject(raw)
 	if !ok {
-		return agent.RefusalNoDecision
+		return parsedWaterfallControl{}
 	}
-	if requestID != payload.ID {
-		return agent.RefusalOtherRequest
+	parsed := parsedWaterfallControl{
+		Type:    providerkit.ObjectString(fields, "type"),
+		Event:   providerkit.ObjectString(fields, "event"),
+		EventID: providerkit.ObjectString(fields, "eventId"),
+		AgentID: providerkit.ObjectString(fields, "agentId"),
 	}
-	switch payload.Event {
+	requestObj, hasRequestObj := providerkit.RawObject(fields["request"])
+	parsed.HasRequestObj = hasRequestObj
+	if !hasRequestObj && parsed.Event == contracts.DeepseekHarnessControlEventUserQuestions {
+		// A user-questions payload without a nested request object reads its own questions.
+		requestObj = fields
+	}
+	parsed.parseRequestObject(requestObj)
+	return parsed
+}
+
+func parseWaterfallRequest(event string, raw json.RawMessage) parsedWaterfallControl {
+	parsed := parsedWaterfallControl{Event: event}
+	requestObj, ok := providerkit.RawObject(raw)
+	parsed.HasRequestObj = ok
+	if ok {
+		parsed.parseRequestObject(requestObj)
+	}
+	return parsed
+}
+
+func (p *parsedWaterfallControl) parseRequestObject(requestObj map[string]json.RawMessage) {
+	if requestObj == nil {
+		return
+	}
+	switch p.Event {
 	case contracts.DeepseekHarnessControlEventApproval:
-		var request struct {
-			ToolName string `json:"toolName"`
+		toolName := providerkit.ObjectString(requestObj, "toolName")
+		callID := providerkit.ObjectString(requestObj, "callId")
+		displayReason, _ := providerkit.RawObject(requestObj["displayReason"])
+		reason := providerkit.ObjectString(displayReason, "en")
+		if reason == "" {
+			reason = providerkit.ObjectString(requestObj, "reason")
 		}
-		if json.Unmarshal(payload.Request, &request) != nil || request.ToolName == "" {
-			return agent.RefusalUnreadableRequest
+		p.Approval = parsedApprovalRequest{ToolName: toolName, CallID: callID, Reason: reason}
+		if toolName != "" {
+			p.Kind = nativeControlKindApproval
+			p.StrictValid = true
 		}
-		return ""
 	case contracts.DeepseekHarnessControlEventUserQuestions:
-		var request struct {
-			Questions []nativeQuestion `json:"questions"`
-		}
-		if json.Unmarshal(payload.Request, &request) != nil || len(request.Questions) == 0 {
-			return agent.RefusalUnreadableRequest
-		}
-		ids := map[string]bool{}
-		for _, question := range request.Questions {
-			if question.ID == "" || question.Question == "" || ids[question.ID] {
-				return agent.RefusalUnreadableRequest
+		waitObj, _ := providerkit.RawObject(requestObj["wait"])
+		p.WaitCallID = providerkit.ObjectString(waitObj, "callId")
+		elements, hasArray := providerkit.RawArray(requestObj["questions"])
+		strictValid := hasArray && len(elements) > 0
+		seenIDs := map[string]bool{}
+		hasPlanReview := false
+		records := make([]nativeQuestion, 0, len(elements))
+		for _, element := range elements {
+			record, ok := providerkit.RawObject(element)
+			if !ok {
+				strictValid = false
+				continue
 			}
-			ids[question.ID] = true
-			labels := map[string]bool{}
-			for _, option := range question.Options {
-				if option.Label == "" || labels[option.Label] {
-					return agent.RefusalUnreadableRequest
+			question := nativeQuestion{
+				ID:          providerkit.ObjectString(record, "id"),
+				Header:      providerkit.ObjectString(record, "header"),
+				Question:    providerkit.ObjectString(record, "question"),
+				Detail:      providerkit.ObjectString(record, "detail"),
+				MultiSelect: providerkit.RawBool(record["multiSelect"]),
+			}
+			if intentObj, ok := providerkit.RawObject(record["intent"]); ok {
+				question.Intent = &nativeQuestionIntent{
+					Kind:    providerkit.ObjectString(intentObj, "kind"),
+					Approve: providerkit.ObjectString(intentObj, "approve"),
+					CallID:  providerkit.ObjectString(intentObj, "callId"),
 				}
-				labels[option.Label] = true
+				if question.Intent.Kind == deepseekHarnessIntentPlanReview {
+					hasPlanReview = true
+				}
 			}
-			if question.Intent != nil && question.Intent.Kind == "plan-review" && (question.Intent.CallID == "" || !labels[question.Intent.Approve]) {
-				return agent.RefusalUnreadableRequest
+			optElems, hasOpts := providerkit.RawArray(record["options"])
+			if !hasOpts && providerkit.RawPresent(record["options"]) {
+				strictValid = false
+			}
+			seenLabels := map[string]bool{}
+			for _, optElem := range optElems {
+				optObj, ok := providerkit.RawObject(optElem)
+				label := providerkit.ObjectString(optObj, "label")
+				if !ok || label == "" {
+					strictValid = false
+					continue
+				}
+				if seenLabels[label] {
+					strictValid = false
+				}
+				seenLabels[label] = true
+				question.Options = append(question.Options, nativeQuestionOption{
+					Label:       label,
+					Description: providerkit.ObjectString(optObj, "description"),
+				})
+			}
+			if question.ID == "" || question.Question == "" || seenIDs[question.ID] {
+				strictValid = false
+			} else {
+				seenIDs[question.ID] = true
+			}
+			if question.Intent != nil && question.Intent.Kind == deepseekHarnessIntentPlanReview {
+				if question.Intent.CallID == "" || !seenLabels[question.Intent.Approve] {
+					strictValid = false
+				}
+			}
+			records = append(records, question)
+		}
+		if hasPlanReview {
+			if len(records) == 1 && records[0].Intent != nil && records[0].Intent.Kind == deepseekHarnessIntentPlanReview {
+				p.Kind = nativeControlKindPlanReview
+				p.Questions = records
+				p.StrictValid = strictValid
+			}
+			return
+		}
+		p.Kind = nativeControlKindQuestions
+		p.StrictValid = strictValid
+		p.Questions = make([]nativeQuestion, 0, len(records))
+		for _, question := range records {
+			if question.ID != "" && question.Question != "" {
+				p.Questions = append(p.Questions, question)
 			}
 		}
-		return ""
-	default:
-		return agent.RefusalUnreadableRequest
 	}
+}
+
+func (a *Agent) noteControlUnboundLocked(control *nativeControl) {
+	if control != nil && control.replyCallID != "" && len(control.replyInputIDs) == 0 && !control.tracksUnbound {
+		control.tracksUnbound = true
+		a.unboundControls.Add(1)
+	}
+}
+
+func (a *Agent) clearControlUnboundLocked(control *nativeControl) {
+	if control != nil && control.tracksUnbound {
+		control.tracksUnbound = false
+		a.unboundControls.Add(-1)
+	}
+}
+
+func (a *Agent) deleteControlLocked(id string) {
+	if control := a.controls[id]; control != nil {
+		a.clearControlUnboundLocked(control)
+		delete(a.controls, id)
+	}
+}
+
+func (a *Agent) clearControlsLocked() {
+	for _, control := range a.controls {
+		a.clearControlUnboundLocked(control)
+	}
+	clear(a.controls)
+}
+
+// ControlRequestKey reads the key that the agent publishes a waterfall control
+// under: its eventId (publishNativeControl).
+func (deepseekHarnessProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	id := providerkit.StringField(payload, "eventId")
+	return id, id != ""
+}
+
+// resolveStoredControl validates the stored request and the answer envelope.
+// An empty refusal means that both are valid. The Worker resolves only a
+// stored request whose eventId is its key (ControlRequestKey), so the key
+// needs no check here.
+func resolveStoredControl(ctx agent.ControlResponseContext) (parsedWaterfallControl, string) {
+	parsed := parseWaterfallControl(ctx.RequestPayload)
+	if parsed.Type != "waterfall" || parsed.AgentID == "" || !parsed.HasRequestObj || !parsed.StrictValid || parsed.Kind == nativeControlKindUnknown {
+		return parsed, agent.RefusalUnreadableRequest
+	}
+	_, behavior, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	if !ok || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
+		return parsed, agent.RefusalNoDecision
+	}
+	return parsed, ""
 }
 
 func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw []byte) error {
@@ -135,6 +301,7 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 	if err := decoder.Decode(&header); err != nil || header == nil {
 		return fmt.Errorf("DeepSeek Harness control request is invalid")
 	}
+	parsed := parseWaterfallRequest(event, request)
 	if event == contracts.DeepseekHarnessControlEventApproval {
 		if tool, ok := header["toolName"].(string); ok {
 			header["tool_name"] = tool
@@ -144,21 +311,14 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 		}
 	} else {
 		header["tool_name"] = contracts.DeepseekHarnessToolAskUserQuestion
-		var questions struct {
-			Questions []nativeQuestion `json:"questions"`
-		}
-		if err := json.Unmarshal(request, &questions); err != nil {
-			return err
-		}
-		for _, question := range questions.Questions {
-			if question.Intent != nil && question.Intent.Kind == "plan-review" {
-				header["tool_name"] = contracts.DeepseekHarnessToolExitPlanMode
-				header["tool_use_id"] = question.Intent.CallID
-				// The Worker requires the declared compression. A review without plan text stores no plan.
-				if plan := question.Detail; plan != "" {
-					compressed, compression := msgcodec.Compress([]byte(plan))
-					sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(plan))
-				}
+		if parsed.Kind == nativeControlKindPlanReview {
+			review := parsed.Questions[0]
+			header["tool_name"] = contracts.DeepseekHarnessToolExitPlanMode
+			header["tool_use_id"] = review.Intent.CallID
+			// The Worker requires the declared compression. A review without plan text stores no plan.
+			if plan := review.Detail; plan != "" {
+				compressed, compression := msgcodec.Compress([]byte(plan))
+				sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(plan))
 			}
 		}
 	}
@@ -168,7 +328,15 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 		return err
 	}
 	toolName, _ := header["tool_name"].(string)
-	control := &nativeControl{event: event, toolName: toolName, agentID: sessionID, request: append([]byte(nil), request...), sink: sink, payload: content, publicationDone: make(chan struct{})}
+	callID, _ := header["tool_use_id"].(string)
+	if callID == "" && event == contracts.DeepseekHarnessControlEventUserQuestions {
+		callID = parsed.WaitCallID
+	}
+	control := &nativeControl{
+		event: event, toolName: toolName, agentID: sessionID, instanceID: uuid.NewString(),
+		request: append([]byte(nil), request...), sink: sink, payload: content, publicationDone: make(chan struct{}),
+		replyCallID: callID, replyInputIDs: a.replyToolInputs(sessionID, callID),
+	}
 	a.Mu.Lock()
 	if a.controls[id] != nil {
 		a.Mu.Unlock()
@@ -179,6 +347,7 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 		return fmt.Errorf("DeepSeek Harness cannot publish a control after its connection ends")
 	}
 	a.controls[id] = control
+	a.noteControlUnboundLocked(control)
 	automatic := a.canBypassControlLocked(control)
 	if automatic {
 		control.ready = true
@@ -193,18 +362,32 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 }
 
 func (a *Agent) publishRegisteredControl(id string, control *nativeControl) error {
-	err := control.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.agentID, RequestID: id, Payload: control.payload})
+	a.Mu.Lock()
+	inputIDs := control.replyInputIDs
+	a.Mu.Unlock()
+	err := control.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: control.agentID, RequestID: id, InstanceID: control.instanceID,
+		Payload: control.payload, NativeInputIDs: inputIDs,
+	})
 	a.Mu.Lock()
 	current := a.controls[id] == control
 	control.published, control.ready = err == nil, true
+	if err == nil && len(inputIDs) > 0 {
+		control.replyBound = true
+	}
 	control.publicationOnce.Do(func() { close(control.publicationDone) })
 	if err != nil && current {
-		delete(a.controls, id)
+		a.deleteControlLocked(id)
+	}
+	var binding agent.NativeControlInputs
+	if current {
+		binding = control.takeReplyInputsLocked(id)
 	}
 	automatic := current && err == nil && a.canBypassControlLocked(control)
 	a.Mu.Unlock()
+	a.bindReplyControl(control.sink, binding)
 	if !current && err == nil {
-		control.sink.CancelControlRequest(id)
+		control.sink.CancelControlRequestInstance(id, control.instanceID)
 	}
 	if automatic {
 		a.queuePermissionApprovals()
@@ -222,9 +405,10 @@ func (a *Agent) replyRemoteEvent(id string, outcome map[string]any) error {
 	return a.rpc.call(a.Context(), "$events/result", map[string]any{"clientId": clientID, "eventId": id, "outcome": outcome}, nil)
 }
 
-func (a *Agent) answerControl(raw []byte) error {
+func (a *Agent) answerControl(input agent.RawInput) error {
+	raw := input.Data
 	id, behavior, _, ok := agent.DecodeControlBehavior(raw)
-	if !ok || id == "" || behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny {
+	if !ok || id == "" || behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
 		return fmt.Errorf("DeepSeek Harness control response is invalid")
 	}
 	a.Mu.Lock()
@@ -232,6 +416,9 @@ func (a *Agent) answerControl(raw []byte) error {
 	a.Mu.Unlock()
 	if !exists {
 		return fmt.Errorf("DeepSeek Harness control response has no pending request")
+	}
+	if err := agent.ControlInstanceRefusal(pending.instanceID, input.ControlInstanceID); err != nil {
+		return err
 	}
 	if pending.publicationDone != nil {
 		select {
@@ -243,52 +430,61 @@ func (a *Agent) answerControl(raw []byte) error {
 	var value any
 	if pending.event == contracts.DeepseekHarnessControlEventApproval {
 		value = "rejected"
-		if behavior == agent.ControlBehaviorAllow {
+		if behavior == contracts.ControlAnswerBehaviorAllow {
 			value = "allowed-once"
 		}
 	} else {
-		var response struct {
-			Response struct {
-				Response struct {
-					Answers json.RawMessage `json:"answers"`
-				} `json:"response"`
-			} `json:"response"`
-		}
-		if err := json.Unmarshal(raw, &response); err != nil {
-			return err
-		}
-		var questions struct {
-			Questions []nativeQuestion `json:"questions"`
-		}
-		if err := json.Unmarshal(pending.request, &questions); err != nil {
-			return err
-		}
-		if len(questions.Questions) == 1 && questions.Questions[0].Intent != nil && questions.Questions[0].Intent.Kind == "plan-review" {
-			question := questions.Questions[0]
-			label := question.Intent.Approve
-			if behavior != agent.ControlBehaviorAllow {
-				label = ""
-				for _, option := range question.Options {
-					if option.Label != question.Intent.Approve {
-						label = option.Label
-						break
-					}
-				}
-			}
-			if label == "" {
-				return fmt.Errorf("DeepSeek Harness plan review has no requested choice")
+		parsed := parseWaterfallRequest(pending.event, pending.request)
+		if parsed.Kind == nativeControlKindPlanReview {
+			question := parsed.Questions[0]
+			label, err := planReviewLabel(question, behavior == contracts.ControlAnswerBehaviorAllow, agent.DecodeControlChoice(raw))
+			if err != nil {
+				return err
 			}
 			value = map[string]any{"answers": []map[string]any{{"id": question.ID, "selected": []string{label}}}}
 		} else {
-			if behavior != agent.ControlBehaviorAllow {
-				return a.sendControlOutcome(id, pending, map[string]any{"kind": "next"})
+			if behavior != contracts.ControlAnswerBehaviorAllow {
+				return a.sendControlOutcome(id, pending, input.ControlInstanceID, map[string]any{"kind": "next"})
+			}
+			var inner struct {
+				Answers json.RawMessage `json:"answers"`
+			}
+			if err := json.Unmarshal(agent.DecodeControlInnerResponse(raw), &inner); err != nil {
+				return err
 			}
 			var answers []map[string]any
-			if len(response.Response.Response.Answers) == 0 || json.Unmarshal(response.Response.Response.Answers, &answers) != nil {
+			if len(inner.Answers) == 0 || json.Unmarshal(inner.Answers, &answers) != nil || answers == nil {
 				return fmt.Errorf("DeepSeek Harness question response has no answers")
 			}
 			value = map[string]any{"answers": answers}
 		}
 	}
-	return a.sendControlOutcome(id, pending, map[string]any{"kind": "result", "value": value})
+	return a.sendControlOutcome(id, pending, input.ControlInstanceID, map[string]any{"kind": "result", "value": value})
+}
+
+// planReviewLabel is the option of a plan review that an answer selects. An
+// approval selects the review's approve label. A refusal selects the
+// refusing option that the answer states as its choice, or the first one
+// when it states none: a review can offer several refusals, such as one that
+// also leaves plan mode, and the user chose one of them.
+func planReviewLabel(question nativeQuestion, approve bool, choice string) (string, error) {
+	approveLabel := question.Intent.Approve
+	if approve {
+		if choice != "" && choice != approveLabel {
+			return "", fmt.Errorf("DeepSeek Harness plan review approves with %q, not %q", approveLabel, choice)
+		}
+		if approveLabel == "" {
+			return "", fmt.Errorf("DeepSeek Harness plan review has no requested choice")
+		}
+		return approveLabel, nil
+	}
+	for _, option := range question.Options {
+		if option.Label != approveLabel && (choice == "" || option.Label == choice) {
+			return option.Label, nil
+		}
+	}
+	if choice != "" {
+		return "", fmt.Errorf("DeepSeek Harness plan review offers no refusal %q", choice)
+	}
+	return "", fmt.Errorf("DeepSeek Harness plan review has no requested choice")
 }

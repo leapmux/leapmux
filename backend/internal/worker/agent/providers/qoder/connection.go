@@ -14,7 +14,8 @@ import (
 // SendRawInput supplies the session routing that Qoder's SDK daemon requires.
 // Daemon requests have connection scope. A native control answer may already
 // carry the session that raised it, which must stay unchanged.
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	raw, stop := input.Data, input.Stop
 	var frame map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &frame); err != nil || frame == nil {
 		return fmt.Errorf("the Qoder input frame must be a JSON object")

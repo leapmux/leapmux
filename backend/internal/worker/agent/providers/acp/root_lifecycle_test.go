@@ -364,3 +364,36 @@ func TestNativeEndCapturesCleanupBeforeTheSessionCanChange(t *testing.T) {
 		assert.Equal(t, "session-1", sessionID)
 	}
 }
+
+func TestReplyReconciliationRunsBetweenTextAndTurnEnd(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+		queue := &agent.OutputQueue{}
+		b.sink = agent.NewOrderedProviderServices(queue, agent.NewProviderServices(sink))
+		hold := make(chan struct{})
+		queue.Append(agent.OutputWrite{Label: "hold the output queue", Run: func() error {
+			<-hold
+			return nil
+		}})
+		flushed := make(chan error, 1)
+		go func() { flushed <- queue.Flush() }()
+		synctest.Wait()
+		calls := 0
+		b.hooks.CaptureReplyReconciliation = func() func(agent.MessageCompletion, bool) error {
+			return func(agent.MessageCompletion, bool) error {
+				calls++
+				assert.Equal(t, []string{"text:Final answer."}, assembledTexts(t, sink.Messages()))
+				assert.Empty(t, turnEndContents(sink))
+				return nil
+			}
+		}
+		require.True(t, b.BeginAgentTurn())
+		b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "Final answer."))
+		b.EndAgentTurn(json.RawMessage(agentTurnEndFrame))
+		assert.Empty(t, sink.Messages(), "the pending write retains queue order")
+		close(hold)
+		require.NoError(t, <-flushed)
+		assert.Equal(t, 1, calls)
+		require.Len(t, turnEndContents(sink), 1)
+	})
+}

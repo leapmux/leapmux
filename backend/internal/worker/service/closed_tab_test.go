@@ -26,6 +26,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -34,6 +35,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/grpc/codes"
@@ -230,8 +232,16 @@ type setupConfig struct {
 	remoteIPC      ControlIPCFactory
 	rewriteQuery   func(string) string
 	clock          quartz.Clock
+	terminalClock  quartz.Clock
 	maxMessageSize int
 	registry       *agent.Registry
+}
+
+// withTerminalClock builds the Service's terminal Manager on clock, so a test
+// drives the timers of each terminal it spawns: the fallback wait of an initial
+// command, and the reader drain after an exit.
+func withTerminalClock(clock quartz.Clock) setupOption {
+	return func(c *setupConfig) { c.terminalClock = clock }
 }
 
 // withRegistry builds the Service's agent manager over r instead of the full
@@ -360,13 +370,17 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *testService
 	if registry == nil {
 		registry = testRegistry
 	}
+	var terminalOptions []terminal.ManagerOption
+	if cfg.terminalClock != nil {
+		terminalOptions = append(terminalOptions, terminal.WithClock(cfg.terminalClock))
+	}
 	svc := New(Config{
 		ResolveTabPublication: fixtureResolveTabPublication, PublishTab: fixturePublishTab, CancelTabPublication: fixtureCancelTabPublication, WorkerID: "worker-1",
 		DB:        sqlDB,
 		Channels:  chmgr,
 		Send:      func(*leapmuxv1.ConnectRequest) error { return nil },
 		Agents:    agent.NewManager(registry, nil),
-		Terminals: terminal.NewManager(),
+		Terminals: terminal.NewManager(terminalOptions...),
 		HomeDir:   t.TempDir(),
 		DataDir:   t.TempDir(),
 		// The test channel above is opened as "user-1", so make that the
@@ -427,7 +441,7 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id strin
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
 		ID: id, Shell: testutil.TestShell(), WorkingDir: workingDir,
 		Cols: 80, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -547,16 +561,27 @@ func drainAllInFlight(svc *Service) {
 // dispatch is a helper that marshals a request proto and dispatches it as the
 // worker's own owner ("user-1", the identity setupTestService seeds).
 func dispatch(d testRPCDispatcher, method string, req proto.Message, w *testResponseWriter) {
-	dispatchAs(d, userid.MustNew("user-1"), method, req, w)
+	dispatchAsWithContext(d, context.Background(), userid.MustNew("user-1"), method, req, w)
+}
+
+// dispatchWithContext is dispatch with an explicit request context.
+func dispatchWithContext(d testRPCDispatcher, ctx context.Context, method string, req proto.Message, w *testResponseWriter) {
+	dispatchAsWithContext(d, ctx, userid.MustNew("user-1"), method, req, w)
 }
 
 // dispatchAs is dispatch with an explicit caller, for the access-control probes
 // that need someone OTHER than the worker's owner.
+func dispatchAs(d testRPCDispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
+	dispatchAsWithContext(d, context.Background(), caller, method, req, w)
+}
+
+// dispatchAsWithContext marshals req and dispatches it with an explicit context
+// and caller.
 //
 // It panics, and so fails the calling test, when the dispatcher holds no
 // handler for the method: the dispatcher would answer Unimplemented, and a test
 // asserting a refusal would then pass for the wrong reason.
-func dispatchAs(d testRPCDispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
+func dispatchAsWithContext(d testRPCDispatcher, ctx context.Context, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
 	if !slices.Contains(d.Methods(), method) {
 		panic("dispatch: no handler is registered for " + method)
 	}
@@ -564,7 +589,7 @@ func dispatchAs(d testRPCDispatcher, caller userid.UserID, method string, req pr
 	if err != nil {
 		panic(err)
 	}
-	dispatchTestRequest(d, context.Background(), channel.LocalAgentCaller(caller), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, w)
+	dispatchTestRequest(d, ctx, channel.LocalAgentCaller(caller), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, w)
 }
 
 func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
@@ -958,7 +983,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 		ShellStartDir: "",
 		Cols:          80,
 		Rows:          24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 
 	require.True(t, svc.Terminals.UpdateTitle("term-1", "user@host: ~/dir"))
 
@@ -972,12 +997,12 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	}))
 
 	// Send a command so the terminal has screen content.
-	require.NoError(t, svc.Terminals.SendInput("term-1", []byte("echo shutdown_test"+testutil.TestShellEnter())))
+	require.NoError(t, svc.Terminals.SendInput("term-1", terminput.Input{Data: []byte("echo shutdown_test" + testutil.TestShellEnter())}))
 
 	// Wait until the echo output appears in the screen buffer; otherwise
 	// Shutdown can race ahead of the shell processing the input.
 	testutil.AssertEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince("term-1", 0)
+		screen, _, _, _ := svc.Terminals.ScreenSnapshotSince("term-1", 0)
 		return bytes.Contains(screen, []byte("shutdown_test"))
 	}, "expected terminal screen to contain 'shutdown_test'")
 
@@ -1666,7 +1691,7 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 	exitFn := svc.makeTerminalExitFn()
 	require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
 		ID: terminalID, Shell: testutil.TestShell(), WorkingDir: workingDir, Cols: 200, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, func(id string, exitCode int) {
+	}, func(terminal.Output) {}, func(id string, exitCode int) {
 		close(exitEntered)
 		<-exitRelease
 		exitFn(id, exitCode)
@@ -1766,6 +1791,12 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
+	svc.EnableSemanticEvents()
+	require.NotNil(t, svc.semanticEvents.journal.Load())
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	// The trap turns the hang-up into exit 7: without the stamped-set guard,
 	// the exit handler would append an exited notice and publish TerminalClosed.
@@ -1787,8 +1818,24 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 	}, wWatch)
 	ack := waitWatchUpdateAck(t, wWatch)
 	require.Empty(t, ack.GetRejectedTerminals(), "WatchEvents must attach cleanly before shutdown")
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: terminalID}
+	_, checkpoint, err := svc.semanticEvents.journal.Load().Open(t.Context(), tab, nil)
+	require.NoError(t, err)
 
 	svc.Shutdown()
+	svc.FinalizeSemanticEvents(true)
+
+	journal, err := eventjournal.Start(t.Context(), svc.DB, svc.WorkerID, svc.RegisteredBy(), svc.Clock)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, journal.Stop(t.Context(), true)) }()
+	reader, _, err := journal.Open(t.Context(), tab, checkpoint.GetCursor())
+	require.NoError(t, err)
+	frames, _, err := reader.Read(t.Context(), checkpoint.GetAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, frames, 1, "clean shutdown must retain the shell exit")
+	closed := frames[0].GetRecord().GetFact().GetTerminalExit()
+	require.NotNil(t, closed)
+	assert.Nil(t, closed.ExitCode, "a shutdown hang-up does not supply a shell exit code")
 
 	assert.Eventually(t, func() bool {
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)
@@ -2013,7 +2060,7 @@ func TestRestartTerminalRefusesUntilPriorExitHandlerFinishes(t *testing.T) {
 		exitFn := svc.makeTerminalExitFn()
 		require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
 			ID: id, WorkingDir: workingDir, Shell: testutil.TestShell(), Cols: 80, Rows: 24,
-		}, func([]byte, int64, []terminal.Signal) {}, func(terminalID string, code int) {
+		}, func(terminal.Output) {}, func(terminalID string, code int) {
 			close(entered)
 			<-released
 			exitFn(terminalID, code)
@@ -2025,7 +2072,7 @@ func TestRestartTerminalRefusesUntilPriorExitHandlerFinishes(t *testing.T) {
 			svc.TerminalStartup.WaitForInFlight()
 			svc.Shutdown()
 		}()
-		require.NoError(t, svc.Terminals.SendInput(id, []byte("exit"+testutil.TestShellEnter())))
+		require.NoError(t, svc.Terminals.SendInput(id, terminput.Input{Data: []byte("exit" + testutil.TestShellEnter())}))
 		<-entered
 		require.True(t, svc.Terminals.WaitForReadDrained(id))
 		probe := &noIdentityRemoteIPC{failFrom: 1}
@@ -2067,7 +2114,7 @@ func TestSuccessfulTerminalExitHelperJoinsItsCallback(t *testing.T) {
 		entered, release := make(chan struct{}), make(chan struct{})
 		finish := sync.OnceFunc(func() { close(release) })
 		defer finish()
-		require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{ID: id, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24}, func([]byte, int64, []terminal.Signal) {}, func(string, int) { close(entered); <-release }))
+		require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{ID: id, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24}, func(terminal.Output) {}, func(string, int) { close(entered); <-release }))
 		testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 		sendShellLine(t, dispatcher, id, []byte("exit 0"+testutil.TestShellEnter()))
 		<-entered

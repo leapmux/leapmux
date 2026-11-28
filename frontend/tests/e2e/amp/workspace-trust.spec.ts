@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { ampExtractControl } from '../../../src/components/chat/providers/amp/extractControl'
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { ampTest } from '../amp-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
@@ -11,7 +10,7 @@ import { readAmpExecutorCatalog } from './nativeCatalog'
 import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
 
 ampTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
-  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-ask', classify: ampExtractControl })
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-ask' })
 })
 
 ampTest('keeps untrusted project MCP servers blocked without an interactive trust decision', async ({ native }, testInfo) => {

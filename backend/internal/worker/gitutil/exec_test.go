@@ -1,7 +1,9 @@
 package gitutil
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,4 +117,30 @@ func TestNewGitCmd_ShortstatEmitsEnglishWording(t *testing.T) {
 func TestNewGitCmdLimitsInheritedPipeWait(t *testing.T) {
 	cmd := NewGitCmd(t.Context(), "status", "--porcelain")
 	require.Equal(t, 5*time.Second, cmd.WaitDelay)
+}
+
+func TestDiffToWriterAndRunCombinedWithStdin(t *testing.T) {
+	t.Parallel()
+	dir := initRepo(t)
+	ctx := context.Background()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("one\n"), 0o644))
+	combined, err := RunCombinedWithStdin(ctx, dir, nil, "add", "f.txt")
+	require.NoError(t, err, string(combined))
+	combined, err = RunCombinedWithStdin(ctx, dir, strings.NewReader("commit from stdin\n"), "commit", "-F", "-")
+	require.NoError(t, err, string(combined))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("two\n"), 0o644))
+	var out bytes.Buffer
+	stderr, err := DiffToWriter(ctx, dir, &out, "--", "f.txt")
+	require.NoError(t, err, string(stderr))
+	assert.Contains(t, out.String(), "-one")
+	assert.Contains(t, out.String(), "+two")
+
+	// Failing RunCombinedWithStdin must return a *CommandError wrapping *exec.ExitError.
+	_, err = RunCombinedWithStdin(ctx, dir, strings.NewReader("empty\n"), "commit", "-F", "-")
+	var cmdErr *CommandError
+	require.True(t, errors.As(err, &cmdErr))
+	var exitErr *exec.ExitError
+	assert.True(t, errors.As(err, &exitErr))
 }

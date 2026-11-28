@@ -55,7 +55,7 @@ let proc: ChildProcess
  */
 function routeSpawnToProc(current: () => ChildProcess) {
   return (_command: string, args: readonly string[]) => {
-    if (args[0] === 'worker' && args[1] === 'register') {
+    if (args[0] === 'daemon' && args[1] === 'worker' && args[2] === 'register') {
       const registerProc = Object.assign(new ChildProcess(), {
         stdout: new PassThrough(),
         stderr: new PassThrough(),
@@ -107,7 +107,7 @@ describe('withNativeWorker', () => {
       pid: 31233,
     })
     calls.spawn.mockImplementation((_command: string, args: readonly string[]) => {
-      if (args[1] !== 'register')
+      if (args[2] !== 'register')
         return proc
       queueMicrotask(() => {
         registration.stderr.emit('data', Buffer.from('registration diagnostic\n'))
@@ -182,6 +182,7 @@ describe('withNativeWorker', () => {
       LEAPMUX_WORKER_NAME: options.workerName,
     })
     expect(calls.spawn).toHaveBeenNthCalledWith(1, '/isolated/leapmux', [
+      'daemon',
       'worker',
       'register',
       '--hub',
@@ -194,6 +195,7 @@ describe('withNativeWorker', () => {
       env: expect.objectContaining({ HOME: server.agentEnv.HOME, PRIVATE_ENV_FILTERED: 'true' }),
     }))
     expect(calls.spawn).toHaveBeenNthCalledWith(2, '/isolated/leapmux', [
+      'daemon',
       'worker',
       'run',
       '--data-dir',
@@ -444,6 +446,7 @@ describe('spawnWorkerProcess', () => {
       output,
     })).toBe(proc)
     expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
+      'daemon',
       'worker',
       'run',
       '--data-dir',
@@ -468,6 +471,7 @@ describe('spawnWorkerProcess', () => {
       detached: true,
     })
     expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
+      'daemon',
       'worker',
       'run',
       '--data-dir',
@@ -546,7 +550,7 @@ describe('spawnRegisteredWorker', () => {
       pid: 31235,
       exitCode: 0,
     })
-    calls.spawn.mockImplementation((_command: string, args: string[]) => args[1] === 'register'
+    calls.spawn.mockImplementation((_command: string, args: string[]) => args[2] === 'register'
       ? registerProc
       : proc)
     const registered = await spawnRegisteredWorker(hub, {
@@ -570,7 +574,7 @@ describe('spawnRegisteredWorker', () => {
       notifySpawned = resolve
     })
     calls.spawn.mockImplementation((_command: string, args: string[]) => {
-      if (args[1] === 'register') {
+      if (args[2] === 'register') {
         notifySpawned()
         return registerProc
       }
@@ -641,6 +645,7 @@ describe('spawnRegisteredWorker', () => {
     })
     expect(registered).toEqual({ proc, workerId: 'private-worker' })
     expect(calls.spawn).toHaveBeenNthCalledWith(1, '/isolated/leapmux', [
+      'daemon',
       'worker',
       'register',
       '--hub',
@@ -653,6 +658,7 @@ describe('spawnRegisteredWorker', () => {
       env: expect.objectContaining({ PRIVATE_ENV_FILTERED: 'true' }),
     }))
     expect(calls.spawn).toHaveBeenNthCalledWith(2, '/isolated/leapmux', [
+      'daemon',
       'worker',
       'run',
       '--data-dir',

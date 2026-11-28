@@ -27,12 +27,12 @@ func startAgent(t *testing.T, resume string) (*Agent, *agenttest.ControlSink) {
 	t.Helper()
 	sink := &agenttest.ControlSink{}
 	started, err := startWithThreadExporter(context.Background(), agent.Options{
-		AgentID:         "agent-start",
-		WorkingDir:      t.TempDir(),
-		HomeDir:         t.TempDir(),
-		Shell:           "/bin/sh",
-		ResumeSessionID: resume,
-		AgentDirs:       agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}),
+		AgentID:    "agent-start",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Shell:      "/bin/sh",
+		Session:    agent.ResumeSession(resume),
+		AgentDirs:  agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}),
 	}, agent.NewProviderServices(sink), func(_ context.Context, id string) ([]byte, error) {
 		return json.Marshal(map[string]any{"id": id, "agentMode": "high", "meta": map[string]any{"features": []string{"fast"}}, "messages": []any{}})
 	})
@@ -152,7 +152,7 @@ func TestStartReadsNativeThreadSettings(t *testing.T) {
 			reads := 0
 			started, err := startWithThreadExporter(context.Background(), agent.Options{
 				AgentID: "native-settings", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Shell: "/bin/sh",
-				ResumeSessionID: "T-native", AgentDirs: agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}),
+				Session: agent.ResumeSession("T-native"), AgentDirs: agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()}),
 			}, agent.NewProviderServices(sink), func(_ context.Context, id string) ([]byte, error) {
 				assert.Equal(t, "T-native", id)
 				reads++
@@ -200,7 +200,7 @@ func TestStartCancelsAnExportAndRemovesTheAgentDirectory(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	started, err := startWithThreadExporter(ctx, agent.Options{
 		AgentID: "cancelled-export", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Shell: "/bin/sh",
-		ResumeSessionID: "T-native", AgentDirs: dirs,
+		Session: agent.ResumeSession("T-native"), AgentDirs: dirs,
 	}, agent.NewProviderServices(sink), func(ctx context.Context, _ string) ([]byte, error) {
 		matches, err := filepath.Glob(filepath.Join(base, "*", "amp-*", helperSpecFileName))
 		require.NoError(t, err)

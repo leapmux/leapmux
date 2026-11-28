@@ -124,16 +124,17 @@ type inputRecoveryDeliveryAgent struct {
 
 func (a *inputRecoveryDeliveryAgent) SupportsSteering() bool { return true }
 
-func (a *inputRecoveryDeliveryAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SendInput(content, attachments)
+func (a *inputRecoveryDeliveryAgent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.SendInput(request.Content, request.Attachments)
 }
 
-func (a *inputRecoveryDeliveryAgent) SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SendInputForSession(sessionID, content, attachments)
+func (a *inputRecoveryDeliveryAgent) SteerInputForSession(sessionID string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.SendInputForSession(sessionID, request.Content, request.Attachments)
 }
 
 func (a *inputRecoveryDeliveryAgent) CompactContext() error {
-	return a.SendInput("compact", nil)
+	_, err := a.SendInput("compact", nil)
+	return err
 }
 
 func TestInputRecoveryPreparesTheProviderSelectedForDelivery(t *testing.T) {
@@ -144,15 +145,18 @@ func TestInputRecoveryPreparesTheProviderSelectedForDelivery(t *testing.T) {
 		deliver   func(*Service, string) error
 	}{
 		{name: "send", deliver: func(svc *Service, id string) error {
-			return svc.Agents.SendInput(id, "input", nil)
+			_, err := svc.Agents.SendInput(id, "input", nil)
+			return err
 		}},
 		{name: "session send", deliver: func(svc *Service, id string) error {
 			p, release := svc.Agents.LockProvider(id)
 			release()
-			return agent.SendInputToSession(p, "delivery-thread", "input", nil)
+			_, err := agent.SendInputToSession(p, "delivery-thread", "input", nil)
+			return err
 		}},
 		{name: "steer", deliver: func(svc *Service, id string) error {
-			return svc.Agents.SteerInput(id, "input", nil)
+			_, err := svc.Agents.SteerInput(id, agent.SteerRequest{InputID: "input-1", Content: "input"})
+			return err
 		}},
 		{name: "compact", deliver: func(svc *Service, id string) error {
 			return svc.Agents.CompactContext(id)
@@ -160,7 +164,8 @@ func TestInputRecoveryPreparesTheProviderSelectedForDelivery(t *testing.T) {
 		{name: "validated active answer", validated: true, deliver: func(svc *Service, id string) error {
 			p, release := svc.Agents.LockProvider(id)
 			release()
-			return agent.SteerInputToSession(p, "delivery-thread", "answer", nil)
+			_, err := agent.SteerInputToSession(p, "delivery-thread", agent.SteerRequest{InputID: "answer-1", Content: "answer"})
+			return err
 		}},
 	} {
 		t.Run(operation.name, func(t *testing.T) {
@@ -240,7 +245,7 @@ func TestInputRecoveryPreparedRegistrationMustRemainCurrent(t *testing.T) {
 			go func() {
 				err := svc.ensureAgentReadyForInput(agentID)
 				if err == nil {
-					err = svc.Agents.SendInput(agentID, "unchecked input", nil)
+					_, err = svc.Agents.SendInput(agentID, "unchecked input", nil)
 				}
 				done <- err
 			}()

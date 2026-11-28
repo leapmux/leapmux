@@ -25,7 +25,7 @@ type codexProvider struct {
 func (codexProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == contracts.AttachmentMediaKindAudio {
 		if !codexAudioMIME(attachment.MIMEType) {
-			return fmt.Errorf("codex does not support audio format %q", attachment.MIMEType)
+			return fmt.Errorf("codex does not support audio format %q: %s", attachment.MIMEType, attachment.Filename)
 		}
 		if len(attachment.Data) == 0 {
 			return fmt.Errorf("audio attachment %q is empty", attachment.Filename)
@@ -183,29 +183,21 @@ func (codexProvider) ReportsDefaultModelSentinel() bool { return false }
 // codexMCPElicitationMeta admits the approval scope Codex offers on an MCP
 // tool-call or tool-suggestion elicitation. The request's
 // `_meta.codex_approval_kind` states which approval it is, and its
-// `_meta.persist` lists the scopes it accepts; an answer may name only one of
-// those, and only a session or an always scope.
+// `_meta.persist` lists the scopes it accepts; an answer may specify only one of
+// those, and only a session or an always scope. codexElicitationAcceptChoices
+// reads both, so the answer admits exactly the scopes that the prompt offers.
 func codexMCPElicitationMeta(requestPayload json.RawMessage, persist string) bool {
-	var request struct {
-		Params struct {
-			Meta struct {
-				Kind    string   `json:"codex_approval_kind"`
-				Persist []string `json:"persist"`
-			} `json:"_meta"`
-		} `json:"params"`
-	}
-	if json.Unmarshal(requestPayload, &request) != nil {
-		return false
-	}
-	meta := request.Params.Meta
-	if meta.Kind != contracts.MCPElicitationApprovalKindToolCall && meta.Kind != contracts.MCPElicitationApprovalKindToolSuggestion {
-		return false
-	}
-	if persist != contracts.MCPElicitationApprovalScopeSession && persist != contracts.MCPElicitationApprovalScopeAlways {
-		return false
-	}
-	return slices.Contains(meta.Persist, persist)
+	params := providerkit.RawFields(providerkit.RawFields(requestPayload)["params"])
+	// The once choice remembers nothing, and its empty scope must not admit
+	// an empty persist.
+	return persist != "" && slices.ContainsFunc(codexElicitationAcceptChoices(providerkit.RawFields(params["_meta"])), func(choice codexElicitationAcceptChoice) bool {
+		return choice.persist == persist
+	})
 }
+
+// SupportsFork reports that Codex supports native conversation-history forking
+// via the app-server thread/fork JSON-RPC request.
+func (codexProvider) SupportsFork() bool { return true }
 
 // ChildCapabilities states the native child operations that this provider supports.
 func (codexProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {

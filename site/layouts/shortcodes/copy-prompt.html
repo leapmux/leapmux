@@ -1,0 +1,17 @@
+{{- /*
+  copy-prompt renders a bordered card holding a prompt for a coding agent, with
+  a compact one-click copy button and temporary "Copied" feedback state.
+
+      {{< copy-prompt label="Prompt for your coding agent" >}}
+      Read https://leapmux.dev/agent-guide.md and help me install LeapMux.
+      {{< /copy-prompt >}}
+*/ -}}
+{{- $label := .Get "label" | default "Prompt for your coding agent" -}}
+{{- $prompt := .Inner | strings.TrimSpace -}}
+<div class="copy-prompt not-prose">
+  <div class="copy-prompt-header">
+    <span class="copy-prompt-label">{{ $label }}</span>
+    <button type="button" class="copy-prompt-btn" data-copied-label="Copied">Copy prompt</button>
+  </div>
+  <pre class="copy-prompt-body"><code>{{ $prompt }}</code></pre>
+</div>

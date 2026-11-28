@@ -118,6 +118,46 @@ func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (
 }
 
 func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.WorkerRegistrationKeyWithCreator]{}, err
+	}
+	if hasPrefix {
+		idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+		if err != nil || empty {
+			return store.Page[store.WorkerRegistrationKeyWithCreator]{}, err
+		}
+		now := pgtime.New(time.Now())
+		if filter.Exact {
+			return queryPage(ctx, p.Limit,
+				func() (gendb.ListRegistrationKeysAdminByIDExactParams, error) {
+					return gendb.ListRegistrationKeysAdminByIDExactParams{
+						IncludeExpired: p.IncludeExpired,
+						Now:            now,
+						ID:             filter.Lower,
+					}, nil
+				},
+				s.conn.q.ListRegistrationKeysAdminByIDExact,
+				func(r gendb.ListRegistrationKeysAdminByIDExactRow) store.WorkerRegistrationKeyWithCreator {
+					return fromDBListRegistrationKeysAdminRow(gendb.ListRegistrationKeysAdminRow(r))
+				})
+		}
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListRegistrationKeysAdminByIDPrefixParams, error) {
+				return gendb.ListRegistrationKeysAdminByIDPrefixParams{
+					IncludeExpired: p.IncludeExpired,
+					Now:            now,
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListRegistrationKeysAdminByIDPrefix,
+			func(r gendb.ListRegistrationKeysAdminByIDPrefixRow) store.WorkerRegistrationKeyWithCreator {
+				return fromDBListRegistrationKeysAdminRow(gendb.ListRegistrationKeysAdminRow(r))
+			})
+	}
 	// Leave Valid=false on the pgtime.NullTime value so the
 	// `($N::timestamptz IS NULL OR …)` short-circuits keep every row /
 	// start from the head.

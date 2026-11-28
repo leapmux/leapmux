@@ -77,6 +77,23 @@ func kimiConversationProviderFields(raw []byte) (map[string]json.RawMessage, err
 	return fields, nil
 }
 
+// resolveLatestView decodes the supplemental fields and returns the accepted
+// rendering view when present, or original when no newer view is stored.
+func (original kimiConversationRecordView) resolveLatestView(supplemental []byte) (kimiConversationRecordView, map[string]json.RawMessage, error) {
+	fields, err := kimiConversationProviderFields(supplemental)
+	if err != nil {
+		return kimiConversationRecordView{}, nil, err
+	}
+	current := original
+	if latest := fields[contracts.KimiConversationSupplementRoot]; len(latest) != 0 {
+		current, err = decodeKimiConversationRecord(latest)
+		if err != nil || !original.acceptsView(current) {
+			return kimiConversationRecordView{}, nil, errors.New("the stored Kimi rendering data has another native identity")
+		}
+	}
+	return current, fields, nil
+}
+
 // persistView runs in the shared output queue. A conditional-write conflict
 // returns an error so that queue retains the captured view for another drain.
 func (writer *kimiConversationRecordWriter) persistView(view kimiConversationRecordView, content agent.MessageContent, span agent.SpanInfo, firstWrite func() error) error {
@@ -98,16 +115,9 @@ func (writer *kimiConversationRecordWriter) persistView(view kimiConversationRec
 		writer.noteExistingRecord(content, stored.Seq)
 		return nil
 	}
-	fields, err := kimiConversationProviderFields(stored.Content.Supplemental)
+	current, fields, err := original.resolveLatestView(stored.Content.Supplemental)
 	if err != nil {
 		return err
-	}
-	current := original
-	if latest := fields[contracts.KimiConversationSupplementRoot]; len(latest) != 0 {
-		current, err = decodeKimiConversationRecord(latest)
-		if err != nil || !original.acceptsView(current) {
-			return errors.New("the stored Kimi rendering data has another native identity")
-		}
 	}
 	if !current.acceptsView(view) {
 		return errors.New("the Kimi rendering view removes or changes accepted native context")

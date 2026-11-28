@@ -247,6 +247,38 @@ func (c *sqliteConn) fromDBUserListRow(u gendb.ListAllUsersRow) (store.UserListI
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.UserListItem], error) {
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.UserListItem]{}, err
+	}
+	if active {
+		if empty {
+			return store.Page[store.UserListItem]{}, nil
+		}
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (string, error) { return filter.Lower, nil },
+				s.conn.q.ListUsersByIDExact,
+				func(r gendb.ListUsersByIDExactRow) (store.UserListItem, error) {
+					return s.conn.fromDBUserListRow(gendb.ListAllUsersRow(r))
+				},
+				s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListUsersByIDPrefixParams, error) {
+				return gendb.ListUsersByIDPrefixParams{
+					IDLo:  filter.Lower,
+					IDHi:  filter.Upper,
+					IDGt:  idGt,
+					Limit: fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListUsersByIDPrefix,
+			func(r gendb.ListUsersByIDPrefixRow) (store.UserListItem, error) {
+				return s.conn.fromDBUserListRow(gendb.ListAllUsersRow(r))
+			},
+			s.conn.queryError)
+	}
 	return store.QueryPageErr(ctx, p.Limit,
 		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
 		s.conn.q.ListAllUsers, s.conn.fromDBUserListRow, s.conn.queryError)

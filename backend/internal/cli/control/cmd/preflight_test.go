@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -12,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
@@ -114,32 +114,6 @@ func (b *stateBuilder) tombstonedTab(tabID, tileID string, tabType leapmuxv1.Tab
 	return b
 }
 
-// captureEmit redirects control.Out to a buffer, runs fn, restores
-// control.Out, then returns the captured error envelope's code+message
-// (empty strings on the happy path). Necessary because
-// control.EmitError* writes the structured envelope to stdout, not to
-// the returned error.
-func captureEmit(t *testing.T, fn func() error) (code string, message string) {
-	t.Helper()
-	prev := control.Out
-	buf := &bytes.Buffer{}
-	control.Out = buf
-	defer func() { control.Out = prev }()
-	if err := fn(); err == nil {
-		return "", ""
-	}
-	var env struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
-		t.Fatalf("envelope did not parse: %v\nbuf=%s", err, buf.String())
-	}
-	return env.Error.Code, env.Error.Message
-}
-
 func TestPreflightTile_AcceptsLiveTileInWorkspace(t *testing.T) {
 	state := newStateBuilder().
 		workspace("ws-1", "root-1").
@@ -157,7 +131,7 @@ func TestPreflightTile_RejectsEmptyTileID(t *testing.T) {
 	code, _ := captureEmit(t, func() error {
 		return preflightTile(state, "ws-1", "")
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 }
 
 func TestPreflightTile_RejectsUnknownTile(t *testing.T) {
@@ -235,7 +209,7 @@ func TestPreflightTab_RejectsTypeMismatch(t *testing.T) {
 	code, msg := captureEmit(t, func() error {
 		return preflightTab(state, "ws-1", "agent-A", leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "type agent")
 	assert.Contains(t, msg, "expected terminal")
 }
@@ -317,6 +291,47 @@ func TestNodeWorkspaceFromState_BreaksCycleSafely(t *testing.T) {
 		node("b", "a").
 		st
 	assert.Empty(t, nodeWorkspaceFromState(state, "a"))
+}
+
+func TestNodeWorkspaceFromState_ResolvesLiveFloatingWindows(t *testing.T) {
+	state := newStateBuilder().
+		workspace("ws-1", "root-1").
+		node("root-1", "").
+		node("fw-root", "").
+		node("fw-split", "fw-root").
+		node("fw-leaf", "fw-split").
+		node("dead-fw-root", "").
+		node("dead-fw-leaf", "dead-fw-root").
+		tab("tab-in-fw", "fw-leaf", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		st
+	state.FloatingWindows = map[string]*leapmuxv1.FloatingWindowRecord{
+		"fw-1": {
+			WindowId:    "fw-1",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+			RootNodeId:  "fw-root",
+		},
+		"fw-dead": {
+			WindowId:    "fw-dead",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+			RootNodeId:  "dead-fw-root",
+			TombstoneAt: &leapmuxv1.HLC{Physical: 1, Logical: 0, ClientId: "x"},
+		},
+	}
+
+	assert.Equal(t, "ws-1", nodeWorkspaceFromState(state, "fw-root"))
+	assert.Equal(t, "ws-1", nodeWorkspaceFromState(state, "fw-leaf"))
+	wsID, rootID, isFloat := nodeRootFromState(state, "fw-leaf")
+	assert.Equal(t, "ws-1", wsID)
+	assert.Equal(t, "fw-root", rootID)
+	assert.True(t, isFloat)
+	wsID, rootID, isFloat = nodeRootFromState(state, "root-1")
+	assert.Equal(t, "ws-1", wsID)
+	assert.Equal(t, "root-1", rootID)
+	assert.False(t, isFloat)
+	assert.Empty(t, nodeWorkspaceFromState(state, "dead-fw-root"))
+	assert.Empty(t, nodeWorkspaceFromState(state, "dead-fw-leaf"))
+	assert.NoError(t, preflightTile(state, "ws-1", "fw-leaf"))
+	assert.NoError(t, preflightTab(state, "ws-1", "tab-in-fw", leapmuxv1.TabType_TAB_TYPE_AGENT))
 }
 
 // TestIsWorkerUnreachable_ExistenceAuthClass guards the close-path
@@ -428,23 +443,25 @@ func TestIsWorkerUnreachable_NilSafe(t *testing.T) {
 	assert.False(t, isWorkerUnreachable(fmt.Errorf("bare error with no code")))
 }
 
-// preflightOutcome runs `terminal shells --worker-id workerID` against hub and
-// returns the one envelope the command printed. `terminal shells` is the
-// smallest command that preflights its worker and then calls it.
+// preflightOutcome runs `terminal shells` inside a spawn whose worker is
+// workerID, and returns the error envelope that it printed, or nil.
+// `terminal shells` is the smallest command that preflights its worker and
+// then calls it, and "self" costs no list call, so the hub sees only the
+// preflight.
 func preflightOutcome(t *testing.T, hub *recordingHub, disp *shellsDispatcher, workerID string) (errEnvelope map[string]any) {
 	t.Helper()
 	startSpawnIPC(t, hub, disp)
-	out := withCapturedStdout(t, func() {
-		_ = RunTerminalShells(fakeCmdCtx{}, []string{"--worker-id", workerID})
-	})
+	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", workerID)
+	o := runControl(t, "terminal", "shells")
+	lines := o.lines()
+	// Exactly one envelope: a second line would mean the command printed
+	// a result and an error, or two errors.
+	require.Len(t, lines, 1, "exactly one envelope: %s", o.Stdout)
 	var env struct {
 		Data  map[string]any `json:"data"`
 		Error map[string]any `json:"error"`
 	}
-	// Unmarshalling the WHOLE buffer pins that exactly one envelope was
-	// written: a second object would fail with "invalid character '{' after
-	// top-level value".
-	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &env))
 	return env.Error
 }
 
@@ -499,8 +516,8 @@ func TestMaybePreflightWorker_ToleratesADenial(t *testing.T) {
 	}
 }
 
-// Any other failure of the lookup is reported as preflight_failed, and the
-// command stops before the worker. Treating it as a denial would downgrade
+// Any other failure of the lookup is reported with the code of the hub's
+// answer, and the command stops before the worker. Treating it as a denial would downgrade
 // the check to "unvalidated" without a word.
 func TestMaybePreflightWorker_ReportsALookupThatFailed(t *testing.T) {
 	for _, code := range []connect.Code{connect.CodeUnavailable, connect.CodeInternal, connect.CodeDeadlineExceeded} {
@@ -511,7 +528,8 @@ func TestMaybePreflightWorker_ReportsALookupThatFailed(t *testing.T) {
 			errEnvelope := preflightOutcome(t, hub, disp, "worker-A")
 
 			require.NotNil(t, errEnvelope)
-			assert.Equal(t, "preflight_failed", errEnvelope["code"])
+			assert.Equal(t, string(cli.FromError(connect.NewError(code, "x")).Code), errEnvelope["code"],
+				"the failure keeps the code of the hub's answer")
 			assert.Contains(t, errEnvelope["message"], "the hub could not answer")
 			assert.Empty(t, disp.called(), "a failed preflight must not reach the worker")
 		})
@@ -523,13 +541,9 @@ func TestMaybePreflightWorker_ReportsALookupThatFailed(t *testing.T) {
 func TestMaybePreflightWorker_SkipsAnEmptyWorkerID(t *testing.T) {
 	hub := &recordingHub{}
 	startSpawnIPC(t, hub, nil)
-	c, err := requireClient("")
+	c, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, maybePreflightWorker(t.Context(), c, ""))
-	})
-
-	assert.Empty(t, out, "a skipped preflight prints nothing")
+	require.NoError(t, maybePreflightWorker(t.Context(), c, ""))
 	assert.Empty(t, hub.called(), "a skipped preflight asks the hub nothing")
 }

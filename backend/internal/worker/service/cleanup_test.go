@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/db"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 // setupTestDB creates an in-memory SQLite database with migrations applied
@@ -527,6 +529,65 @@ func TestCleanup_DeleteClosedAgentsRetainsChildWhenRootRetained(t *testing.T) {
 		_, err := queries.GetAgentByID(ctx, id)
 		assert.NoError(t, err, "%s must survive: it shares its root's retention fate", id)
 	}
+}
+
+// The retention pass purges the row of a queued input that someone removed
+// longer than inputqueue.RemovedInputRetention ago, by the queue's clock, and
+// keeps the row of a later removal, which still turns a retry of its request
+// into a repeat. The inputs that the queue holds stay.
+func TestCleanup_PurgesRemovedAgentInputsPastTheirRetention(t *testing.T) {
+	t.Parallel()
+
+	sqlDB, queries := setupTestDB(t)
+	ctx := t.Context()
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		ID: "agent-1", WorkingDir: "/tmp",
+	}))
+	clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	start := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	clock.Set(start).MustWait(ctx)
+	store := inputqueue.NewStore(sqlDB, clock)
+	enqueue := func(id string) {
+		t.Helper()
+		_, err := store.Enqueue(ctx, inputqueue.NewItem{
+			ID: id, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: id,
+		})
+		require.NoError(t, err)
+	}
+	enqueue("held")
+	enqueue("removed-first")
+	_, err := store.Delete(ctx, "agent-1", "removed-first")
+	require.NoError(t, err)
+	clock.Set(start.Add(time.Hour)).MustWait(ctx)
+	enqueue("removed-later")
+	_, err = store.Delete(ctx, "agent-1", "removed-later")
+	require.NoError(t, err)
+
+	// The first removal is just past the retention, and the later one is not.
+	clock.Set(start.Add(inputqueue.RemovedInputRetention + time.Millisecond)).MustWait(ctx)
+	inputs := inputqueue.NewManager(store, nil, nil)
+	t.Cleanup(inputs.StopAndWait)
+	runCleanup(ctx, queries, inputs)
+
+	rowIDs := func(table string) []string {
+		rows, err := sqlDB.QueryContext(ctx, `SELECT id FROM `+table+` ORDER BY id`)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, rows.Close()) }()
+		var ids []string
+		for rows.Next() {
+			var id string
+			require.NoError(t, rows.Scan(&id))
+			ids = append(ids, id)
+		}
+		require.NoError(t, rows.Err())
+		return ids
+	}
+	assert.Equal(t, []string{"held"}, rowIDs("agent_input_queue_items"))
+	assert.Equal(t, []string{"removed-later"}, rowIDs("agent_input_queue_removed"))
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, "held", snapshot.Items[0].ID)
 }
 
 // Shutdown cancels a retention pass in progress and waits for it. A query that the

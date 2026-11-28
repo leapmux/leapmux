@@ -48,7 +48,7 @@ func (p claudeProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 	res.SelfDisplayed = p.IsSelfDisplayingControlTool(ctx.ToolName)
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
 	if !res.Withhold {
-		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == agent.ControlBehaviorAllow && agent.DecodeControlChoice(ctx.ResponseContent) == "session" {
+		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == contracts.ControlAnswerBehaviorAllow && agent.DecodeControlChoice(ctx.ResponseContent) == "session" {
 			content, err := applyClaudeSessionPermission(res.Content, ctx.ToolName)
 			if err != nil {
 				res.Refuse(agent.RefusalUnencodableReply)
@@ -58,7 +58,7 @@ func (p claudeProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		}
 	}
 	if !res.Withhold && res.PlanModeControl == agent.PlanModeControlExit && ctx.PlanApproval.GetPermissionMode() != "" && !ctx.PlanApproval.GetClearContext() {
-		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == agent.ControlBehaviorAllow {
+		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == contracts.ControlAnswerBehaviorAllow {
 			content, err := applyClaudePlanPermission(res.Content, ctx.PlanApproval.GetPermissionMode())
 			if err != nil {
 				res.Refuse(agent.RefusalUnencodableReply)
@@ -214,6 +214,10 @@ func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) 
 // sends input to a subagent, so ChildCapabilities.AcceptsMessages keeps its default false
 // and this provider implements ChildInterrupter alone. See InterruptChild in
 // subagent.go.
+
+// SupportsFork reports that Claude Code supports native conversation-history
+// forking via --resume <id> --fork-session --session-id <new-id>.
+func (claudeProvider) SupportsFork() bool { return true }
 
 // ChildCapabilities states the native child operations that this provider supports.
 func (claudeProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {

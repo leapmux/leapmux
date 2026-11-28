@@ -63,7 +63,7 @@ func TestCompactContextReportsNativeRefusalAndReleasesTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newSteerAgent(t)
 	require.NoError(t, a.CompactContext())
-	assert.ErrorIs(t, a.SendInput("do not overtake compaction", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "do not overtake compaction", nil), agent.ErrAgentBusy)
 
 	var request droidEnvelope
 	require.NoError(t, json.Unmarshal([]byte(stdin.frames()[0]), &request))
@@ -88,7 +88,7 @@ func TestCompactContextReportsNativeRefusalAndReleasesTurn(t *testing.T) {
 	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notice[contracts.NotificationFieldType])
 	assert.Equal(t, contracts.CompactionEndOutcomeFailed, notice[contracts.NotificationFieldOutcome])
 	assert.Contains(t, notice[contracts.NotificationFieldError], "Nothing to compact")
-	require.NoError(t, a.SendInput("continue after the refusal", nil), "the native refusal releases the input guard")
+	require.NoError(t, agenttest.SendInput(a, "continue after the refusal", nil), "the native refusal releases the input guard")
 }
 
 func TestCompactContextBusyRefusalPreservesAnIndependentTurn(t *testing.T) {
@@ -108,7 +108,7 @@ func TestCompactContextBusyRefusalPreservesAnIndependentTurn(t *testing.T) {
 	last, published := sink.LastTurnActive()
 	assert.True(t, published)
 	assert.True(t, last, "a refused compact request does not end the independent turn")
-	assert.ErrorIs(t, a.SendInput("wait for the independent turn", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "wait for the independent turn", nil), agent.ErrAgentBusy)
 }
 
 func TestCompactContextInvalidSuccessStopsUnknownNativeState(t *testing.T) {
@@ -131,7 +131,7 @@ func TestCompactContextInvalidSuccessStopsUnknownNativeState(t *testing.T) {
 	last, published := sink.LastTurnActive()
 	assert.True(t, published)
 	assert.True(t, last, "an invalid native result must not publish an idle turn")
-	assert.ErrorIs(t, a.SendInput("do not enter the unknown native state", nil), errAgentStopped)
+	assert.ErrorIs(t, agenttest.SendInput(a, "do not enter the unknown native state", nil), errAgentStopped)
 	assert.Contains(t, sink.LeapMuxNotifications()[0][contracts.NotificationFieldError], "invalid compaction result")
 }
 
@@ -139,7 +139,7 @@ func TestCompactContextReleasesQueuedInputAfterNativeCompletion(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newSteerAgent(t)
 	require.NoError(t, a.CompactContext())
-	assert.ErrorIs(t, a.SendInput("do not overtake compaction", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "do not overtake compaction", nil), agent.ErrAgentBusy)
 
 	var request droidEnvelope
 	require.NoError(t, json.Unmarshal([]byte(stdin.frames()[0]), &request))
@@ -158,7 +158,7 @@ func TestCompactContextReleasesQueuedInputAfterNativeCompletion(t *testing.T) {
 	last, published := sink.LastTurnActive()
 	assert.True(t, published, "the native reply must release the queue's compact turn")
 	assert.False(t, last, "the native reply releases queued input")
-	require.NoError(t, a.SendInput("continue after compaction", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue after compaction", nil))
 }
 
 func TestCompactContextWaitsForCompletedNotificationAfterSuccessReply(t *testing.T) {
@@ -181,7 +181,7 @@ func TestCompactContextWaitsForCompletedNotificationAfterSuccessReply(t *testing
 	}
 	a.Mu.Unlock()
 	assert.Equal(t, request.ID, pendingID, "a successful reply precedes the native completed boundary")
-	assert.ErrorIs(t, a.SendInput("wait for the completed boundary", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "wait for the completed boundary", nil), agent.ErrAgentBusy)
 	last, published := sink.LastTurnActive()
 	assert.False(t, published && !last, "the response must not release queued input")
 
@@ -189,7 +189,7 @@ func TestCompactContextWaitsForCompletedNotificationAfterSuccessReply(t *testing
 	last, published = sink.LastTurnActive()
 	assert.True(t, published)
 	assert.False(t, last, "the native completed boundary releases queued input")
-	require.NoError(t, a.SendInput("continue after compaction", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue after compaction", nil))
 }
 
 func TestCompactContextCompletedNotificationDoesNotEndTheNextTurn(t *testing.T) {
@@ -203,7 +203,7 @@ func TestCompactContextCompletedNotificationDoesNotEndTheNextTurn(t *testing.T) 
 	last, published := sink.LastTurnActive()
 	assert.True(t, published)
 	assert.False(t, last, "the completed boundary releases queued input")
-	require.NoError(t, a.SendInput("continue after compaction", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue after compaction", nil))
 
 	reply := newDroidEnvelope(droidTypeResponse)
 	reply.ID = request.ID
@@ -270,7 +270,7 @@ func TestCompactContextWaitsPastTheNormalAPITimeout(t *testing.T) {
 	pending := a.compaction != nil
 	a.Mu.Unlock()
 	assert.True(t, pending, "the input queue waits while native compaction still runs")
-	assert.ErrorIs(t, a.SendInput("wait for the summary", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "wait for the summary", nil), agent.ErrAgentBusy)
 
 	var request droidEnvelope
 	require.NoError(t, json.Unmarshal([]byte(stdin.frames()[0]), &request))
@@ -304,7 +304,7 @@ func TestCompactContextStopsWhenTheNativeResultStalls(t *testing.T) {
 	}, 30*time.Second, 10*time.Millisecond)
 	last, published := sink.LastTurnActive()
 	assert.False(t, published && !last, "an unknown native state must not release queued input")
-	assert.ErrorIs(t, a.SendInput("do not enter the unknown native state", nil), errAgentStopped)
+	assert.ErrorIs(t, agenttest.SendInput(a, "do not enter the unknown native state", nil), errAgentStopped)
 	assert.Contains(t, sink.LeapMuxNotifications()[0][contracts.NotificationFieldError], "context deadline exceeded")
 	assert.Equal(t, contracts.NotificationTypeCompactionEnded, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
 	assert.Equal(t, contracts.CompactionEndOutcomeFailed, sink.LeapMuxNotifications()[0][contracts.NotificationFieldOutcome])

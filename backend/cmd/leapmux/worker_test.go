@@ -169,7 +169,7 @@ func TestWorkerExitsCleanlyOnShutdownSignals(t *testing.T) {
 			hubURL, connected := startReceivingHub(t)
 			cfg := writeRegisteredStateAgainst(t, hubURL)
 
-			cmd := exec.Command(os.Args[0], "worker", "run", "--data-dir", cfg.DataDir, "--log-level", "info")
+			cmd := exec.Command(os.Args[0], "daemon", "worker", "run", "--data-dir", cfg.DataDir, "--log-level", "info")
 			cmd.Env = append(os.Environ(), runMainEnv+"=1")
 			var output testutil.LogBuffer
 			cmd.Stdout, cmd.Stderr = &output, &output
@@ -239,8 +239,8 @@ func TestReregistrationAdvice(t *testing.T) {
 func TestReregistrationStepsDeleteNoFileByHand(t *testing.T) {
 	t.Parallel()
 
-	assert.Contains(t, reregistrationSteps, "leapmux worker deregister")
-	assert.Contains(t, reregistrationSteps, "leapmux worker register")
+	assert.Contains(t, reregistrationSteps, "leapmux daemon worker deregister")
+	assert.Contains(t, reregistrationSteps, "leapmux daemon worker register")
 	assert.NotContains(t, reregistrationSteps, "state.json")
 	assert.NotContains(t, reregistrationSteps, "delete")
 }
@@ -254,8 +254,8 @@ func TestAlreadyRegisteredError(t *testing.T) {
 	err := alreadyRegisteredError(&config.State{HubURL: "https://hub.example", WorkerID: "worker-1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "https://hub.example", "the refusal must identify the saved Hub")
-	assert.Contains(t, err.Error(), "leapmux worker start")
-	assert.Contains(t, err.Error(), "leapmux worker run")
+	assert.Contains(t, err.Error(), "leapmux daemon worker start")
+	assert.Contains(t, err.Error(), "leapmux daemon worker run")
 	assert.NotContains(t, err.Error(), "--registration-key",
 		"the register command requires the key, so dropping it is no remedy")
 	assert.Equal(t, 1, strings.Count(err.Error(), reregistrationSteps),
@@ -315,7 +315,7 @@ func TestWorkerCommandReportsDeregistrationCleanupFailure(t *testing.T) {
 	cfg := writeRegisteredStateAgainst(t, hubURL)
 	before, err := os.ReadFile(cfg.StatePath())
 	require.NoError(t, err)
-	command := exec.Command(os.Args[0], "worker", "run", "--data-dir", cfg.DataDir)
+	command := exec.Command(os.Args[0], "daemon", "worker", "run", "--data-dir", cfg.DataDir)
 	command.Env = append(os.Environ(), runMainEnv+"=1")
 	var output testutil.LogBuffer
 	command.Stdout, command.Stderr = &output, &output

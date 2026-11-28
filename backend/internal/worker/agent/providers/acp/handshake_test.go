@@ -36,6 +36,9 @@ type handshakePeer struct {
 	// after its answer to that method: what an agent sends once it handled the
 	// request. The peer only reads it.
 	linesAfter map[string][]string
+	// errors holds, for each method, a JSON-RPC error payload to return instead
+	// of calling respond. The peer only reads it.
+	errors map[string]any
 }
 
 // recorded returns the requests that the peer read so far, in order.
@@ -106,7 +109,15 @@ func newHandshakeRig(t *testing.T, peer *handshakePeer, hooks Hooks, clock quart
 					return
 				}
 			}
-			reply, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": respond(request.Method)})
+			var (
+				reply []byte
+				err   error
+			)
+			if rpcErr, hasErr := peer.errors[request.Method]; hasErr {
+				reply, err = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": rpcErr})
+			} else {
+				reply, err = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": respond(request.Method)})
+			}
 			if err != nil {
 				return
 			}
@@ -222,7 +233,7 @@ func TestStartACPHandshake_AResumeCarriesTheSessionParams(t *testing.T) {
 	}
 	peer := &handshakePeer{}
 	b, _, session := runHandshakeForTest(t, peer, hooks,
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionResume},
 		func(method string) json.RawMessage {
 			if method == MethodInitialize {
@@ -307,7 +318,7 @@ func TestACPStopClosesAdmissionAndRunsPrepareStopOnce(t *testing.T) {
 		assert.Error(t, err)
 		_, err = rig.base.ClearContext()
 		assert.Error(t, err)
-		assert.Error(t, rig.base.SendInput("late root prompt", nil))
+		assert.Error(t, agenttest.SendInput(rig.base, "late root prompt", nil))
 		assert.ErrorIs(t, rig.base.SendChildPromptDetached(child, "late child prompt", nil, func(json.RawMessage, error) {}), agent.ErrChildRouteNotReady)
 		assert.Error(t, rig.base.SendPromptDetached("session", "late detached prompt", nil, func(json.RawMessage, error) {}))
 		assert.Len(t, peer.recorded(), 2, "no late operation can reach the ACP peer")
@@ -384,7 +395,7 @@ func TestACPStopCancellationDoesNotWaitForStdin(t *testing.T) {
 				})
 				_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
 				require.NoError(t, err)
-				require.NoError(t, rig.base.SendInput("hold the native read", nil))
+				require.NoError(t, agenttest.SendInput(rig.base, "hold the native read", nil))
 				blocked, err := rig.base.EnqueueStdin([]byte("{}\n"))
 				require.NoError(t, err)
 				synctest.Wait()
@@ -442,7 +453,7 @@ func TestACPStoppedRootPromptDoesNotWaitForTheSessionLock(t *testing.T) {
 	b.stopDone = make(chan struct{})
 	b.Mu.Unlock()
 	done := make(chan error, 1)
-	go func() { done <- b.SendInput("late root prompt", nil) }()
+	go func() { done <- agenttest.SendInput(b, "late root prompt", nil) }()
 	select {
 	case err := <-done:
 		require.Error(t, err)

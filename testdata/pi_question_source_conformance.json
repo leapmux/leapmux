@@ -1,5 +1,5 @@
 {
-  "_readme": "Shared Pi dialog matching cases for Go and TypeScript. Malformed or ambiguous sources must not supply display fields.",
+  "_readme": "Pi dialog matching cases. The Worker's Pi provider reads its question source through them: control_source_test.go and control_prompt_test.go replay every case. Malformed or ambiguous sources must not supply display fields.",
   "cases": [
     {
       "name": "single selection with preview",

@@ -2,7 +2,6 @@ package gemini
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -20,78 +19,22 @@ func (geminiProvider) ListStoredSessions(ctx context.Context, query agent.Stored
 }
 
 func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
-	if _, _, _, plan := geminiPlanPermission(ctx.RequestPayload); !plan || geminiJSONRPCReply(ctx.ResponseContent) {
+	if _, _, _, plan := geminiPlanPermission(ctx.RequestPayload); !plan || acp.IsJSONRPCReply(ctx.ResponseContent) {
 		return p.Provider.ResolveControlResponse(ctx)
 	}
-	result := agent.DefaultControlResponseResolution(ctx)
-	requestID, behavior, feedback, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	id, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	switch {
-	case !ok || requestID == "":
-		result.Refuse(agent.RefusalNoDecision)
-		return result
-	case !found:
-		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	case requestID != agent.StoredControlRequestID(ctx, storedID):
-		result.Refuse(agent.RefusalOtherRequest)
-		return result
-	}
-	option := ""
-	switch behavior {
-	case agent.ControlBehaviorAllow:
-		option = "proceed_once"
-		result.PlanModeControl = agent.PlanModeControlExit
-	case agent.ControlBehaviorDeny:
-		option = "cancel"
-		result.FollowUp = agent.FeedbackFollowUp(feedback)
-	default:
-		result.Refuse(agent.RefusalNoDecision)
-		return result
-	}
-	var request struct {
-		Params struct {
-			Options []struct {
-				OptionID string `json:"optionId"`
-			} `json:"options"`
-		} `json:"params"`
-	}
-	if json.Unmarshal(ctx.RequestPayload, &request) != nil {
-		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	}
-	offered := false
-	for _, candidate := range request.Params.Options {
-		if candidate.OptionID == option {
-			offered = true
-			break
-		}
-	}
-	if !offered {
-		result.Refuse(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, option))
-		return result
-	}
-	content, err := json.Marshal(struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Result  any             `json:"result"`
-	}{JSONRPC: "2.0", ID: id, Result: map[string]any{"outcome": map[string]string{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": option}}})
-	if err != nil {
-		result.Refuse(agent.RefusalUnencodableReply)
-		return result
-	}
-	result.Content = content
-	return result
-}
-
-func geminiJSONRPCReply(content []byte) bool {
-	var reply map[string]json.RawMessage
-	if json.Unmarshal(content, &reply) != nil {
-		return false
-	}
-	_, result := reply["result"]
-	_, failure := reply["error"]
-	return result || failure
+	return acp.ResolvePlanPermission(ctx, acp.PlanPermissionResolver{
+		AllowOption: func(agent.ControlResponseContext) string { return "proceed_once" },
+		DenyOption:  "cancel",
+		ValidateOption: func(ctx agent.ControlResponseContext, optionID string, result *agent.ControlResponseResolution) bool {
+			for _, candidate := range acp.PermissionOptions(ctx.RequestPayload) {
+				if candidate.GetOptionId() == optionID {
+					return true
+				}
+			}
+			result.Refuse(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, optionID))
+			return false
+		},
+	})
 }
 
 func (geminiProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {

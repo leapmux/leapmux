@@ -100,3 +100,23 @@ WHERE revoked_at IS NOT NULL AND revoked_at < ?;
 -- name: DeleteExpiredDelegationTokensBefore :execresult
 DELETE FROM delegation_tokens
 WHERE expires_at < ? AND revoked_at IS NULL;
+
+-- name: ListAllDelegationTokensByExactID :many
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+FROM delegation_tokens t
+LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
+WHERE t.id = sqlc.arg(id)
+  AND (sqlc.arg(user_id) = '' OR t.user_id = sqlc.arg(user_id))
+  AND (CAST(sqlc.arg(include_revoked) AS SIGNED) != 0 OR t.revoked_at IS NULL);
+
+-- name: ListAllDelegationTokensByIDPrefix :many
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+FROM delegation_tokens t
+LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
+WHERE t.id >= sqlc.arg(id_lo)
+  AND t.id < sqlc.arg(id_hi)
+  AND t.id > sqlc.arg(id_gt)
+  AND (sqlc.arg(user_id) = '' OR t.user_id = sqlc.arg(user_id))
+  AND (CAST(sqlc.arg(include_revoked) AS SIGNED) != 0 OR t.revoked_at IS NULL)
+ORDER BY t.id ASC
+LIMIT ?;

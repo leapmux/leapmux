@@ -35,9 +35,11 @@ CREATE TABLE agents (
     -- option_groups: cached catalog of every configuration axis reported by the
     -- agent process (model/effort/permission/etc.), as a JSON array.
     option_groups    TEXT NOT NULL DEFAULT '[]',
-    -- An AgentProvider ordinal. agents is the only table that stores it.
+    -- An AgentProvider ordinal. agents stores the provider of each agent.
     -- messages identifies its agent through agent_id; control_response_answers
-    -- reads the provider from agents. A virtual child stores its parent's provider.
+    -- reads the provider from agents. The one copy elsewhere is
+    -- agent_input_queue_items.sender_provider, which records the provider of
+    -- an agent that sent a message. A virtual child stores its parent's provider.
     -- An unset provider is 0 and fails the CHECK.
     -- CreateAgent binds the column rather than relying on the default.
     agent_provider   INTEGER NOT NULL DEFAULT 1
@@ -49,6 +51,12 @@ CREATE TABLE agents (
     parent_agent_id  TEXT REFERENCES agents(id) ON DELETE CASCADE,
     spawn_span_id    TEXT NOT NULL DEFAULT '',
     provider_child_key TEXT NOT NULL DEFAULT '',
+    -- Cross-agent provenance for independent root agents opened or forked by
+    -- another agent tab. Deliberately carries no foreign key and no ON DELETE
+    -- CASCADE so cross-Worker spawns work and purging the origin never deletes
+    -- the spawned or forked agent.
+    spawned_by_agent_id  TEXT NOT NULL DEFAULT '',
+    forked_from_agent_id TEXT NOT NULL DEFAULT '',
     session_start_seq INTEGER NOT NULL DEFAULT 0,
     -- Per-agent monotonic message-seq high-water mark. Message seqs are allocated as
     -- (message_seq_hwm + 1) rather than (MAX(live seq) + 1), so a deleted tail seq is
@@ -98,6 +106,7 @@ CREATE TABLE agents (
 );
 CREATE INDEX idx_agents_closed_at ON agents(closed_at) WHERE closed_at IS NOT NULL;
 CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id IS NOT NULL;
+CREATE INDEX idx_agents_spawned_by ON agents(spawned_by_agent_id, created_at, id) WHERE spawned_by_agent_id <> '' AND closed_at IS NULL;
 -- Serves ListSessionsForResume, the resume picker's read. It filters an exact
 -- (provider, working directory) pair, which no other index covers, and it runs
 -- on the path of a dialog that opens on every "New agent" click.
@@ -149,6 +158,13 @@ CREATE TABLE messages (
     -- that failure to the write.
     seq                 INTEGER NOT NULL CHECK (seq >= 1),
     agent_session_id    TEXT NOT NULL DEFAULT '',
+    native_input_id     TEXT NOT NULL DEFAULT '' CHECK (native_input_id = '' OR agent_session_id <> ''),
+    native_turn_id      TEXT NOT NULL DEFAULT '' CHECK (native_turn_id = '' OR agent_session_id <> ''),
+    -- AgentInputTurnOutcome is present only on a verified turn's final row.
+    -- TestEnumColumnChecksMatchTheirProtoRanges pins the range.
+    input_turn_outcome  INTEGER CHECK (input_turn_outcome IS NULL OR typeof(input_turn_outcome) = 'integer')
+        CHECK (input_turn_outcome BETWEEN 1 AND 4)
+        CHECK (input_turn_outcome IS NULL OR native_turn_id <> ''),
     source              INTEGER NOT NULL CHECK (typeof(source) = 'integer') CHECK (source BETWEEN 1 AND 3),
     content             BLOB NOT NULL,
     -- A ContentCompression ordinal, under the same CHECK as the supplemental
@@ -222,6 +238,11 @@ CREATE TABLE messages (
     -- AgentChatMessage.transcript_only.
     transcript_only     INTEGER NOT NULL DEFAULT 0
         CHECK (typeof(transcript_only) = 'integer'),
+    -- 1 for a user message accepted from the input queue; 0 for every other
+    -- transcript row. Input-reply queries filter on this column instead of
+    -- matching an idempotency_key prefix.
+    from_input_queue    INTEGER NOT NULL DEFAULT 0
+        CHECK (typeof(from_input_queue) = 'integer' AND from_input_queue IN (0, 1)),
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
@@ -234,6 +255,54 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, agent_session_id, span_i
 CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type IS NOT NULL;
 CREATE UNIQUE INDEX idx_messages_idempotency_key
     ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '';
+CREATE INDEX idx_messages_native_turn
+    ON messages(agent_id, agent_session_id, native_turn_id, seq) WHERE native_turn_id <> '';
+CREATE INDEX idx_messages_native_input
+    ON messages(agent_id, agent_session_id, native_input_id, seq) WHERE native_input_id <> '';
+
+-- A native start can follow a prompt and precede acceptance of the input row.
+-- Keep the binding independent of either row. A retirement records the local
+-- result when no native completion row exists.
+CREATE TABLE native_agent_inputs (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_session_id TEXT NOT NULL CHECK (agent_session_id <> ''),
+    native_input_id TEXT NOT NULL CHECK (native_input_id <> ''),
+    native_turn_id TEXT NOT NULL DEFAULT '',
+    -- The consuming item's ordinal in an authoritative native snapshot.
+    reply_after_ordinal INTEGER CHECK (reply_after_ordinal IS NULL OR (reply_after_ordinal > 0 AND native_turn_id <> '')),
+    -- AgentInputTurnOutcome ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
+    retired_outcome INTEGER CHECK (retired_outcome IS NULL OR typeof(retired_outcome) = 'integer')
+        CHECK (retired_outcome BETWEEN 1 AND 4),
+    PRIMARY KEY (agent_id, agent_session_id, native_input_id)
+) WITHOUT ROWID;
+-- An authoritative native snapshot can order replies differently from the
+-- sequence in which their transcript rows reached the Worker.
+CREATE TABLE native_agent_reply_turns (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_session_id TEXT NOT NULL CHECK (agent_session_id <> ''),
+    native_turn_id TEXT NOT NULL CHECK (native_turn_id <> ''),
+    -- AgentInputTurnOutcome ordinal. Only a native end can finalize this row.
+    -- TestEnumColumnChecksMatchTheirProtoRanges pins the range.
+    outcome INTEGER NOT NULL CHECK (typeof(outcome) = 'integer') CHECK (outcome BETWEEN 1 AND 3),
+    reply_count INTEGER NOT NULL CHECK (reply_count >= 0),
+    PRIMARY KEY (agent_id, agent_session_id, native_turn_id)
+) WITHOUT ROWID;
+
+CREATE TABLE native_agent_reply_items (
+    agent_id TEXT NOT NULL,
+    agent_session_id TEXT NOT NULL,
+    native_turn_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+    -- Preserve the missing ordinal if the native record is later withdrawn.
+    message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+    PRIMARY KEY (agent_id, agent_session_id, native_turn_id, ordinal),
+    FOREIGN KEY (agent_id, agent_session_id, native_turn_id)
+        REFERENCES native_agent_reply_turns(agent_id, agent_session_id, native_turn_id) ON DELETE CASCADE
+) WITHOUT ROWID;
+-- One transcript row can belong to several receipt projections. Prevent a
+-- duplicate within one projection and index the foreign key for retractions.
+CREATE UNIQUE INDEX idx_native_reply_items_message_by_turn
+    ON native_agent_reply_items(message_id, agent_id, agent_session_id, native_turn_id);
 -- Serves the notification duplicate lookup, which reads only messages whose
 -- generated count identifies a journal or corrupt private storage. Partial
 -- (only counted rows) so the far-more-numerous ordinary inserts skip it, and
@@ -305,7 +374,22 @@ CREATE TABLE agent_input_queue_items (
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     order_index     INTEGER NOT NULL CHECK (order_index > 0),
     -- AgentInputKind ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 8),
+    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 9),
+    -- The agent tab that sent an AGENT_MESSAGE, which the Worker stamps from
+    -- the caller's control token, or from the sender that a sibling Worker
+    -- states for a call that it relays. Empty for every other kind. The
+    -- provider is an AgentProvider ordinal, NULL exactly when the tab id is
+    -- empty. The provider and the title are copies, kept because the sender's
+    -- row can be purged while the message waits, and the row of a sender on a
+    -- sibling Worker is never here. The title is the one that the sender had
+    -- The title is the one that the sender had when it sent the message, and
+    -- it may be empty. TestEnumColumnChecksMatchTheirProtoRanges pins the
+    -- sender_provider range.
+    sender_tab_id   TEXT NOT NULL DEFAULT '',
+    sender_provider INTEGER
+        CHECK (sender_provider IS NULL OR typeof(sender_provider) = 'integer')
+        CHECK (sender_provider BETWEEN 1 AND 31),
+    sender_title    TEXT NOT NULL DEFAULT '',
     text            TEXT NOT NULL DEFAULT '',
     target_mode     TEXT NOT NULL DEFAULT '',
     prepare_context INTEGER NOT NULL DEFAULT 0 CHECK (prepare_context IN (0, 1)),
@@ -317,14 +401,33 @@ CREATE TABLE agent_input_queue_items (
     -- The provider source bytes an automatic retry carries into the accepted
     -- transcript's supplemental content. Empty for ordinary input.
     source_payload  BLOB NOT NULL DEFAULT X'',
+    -- The idempotency key of the request that queued the input, which the
+    -- Worker computes once, when it inserts the row (inputIdempotencyKey in
+    -- inputqueue). An edit keeps
+    -- it, so a retry of that request still matches the input after someone
+    -- edited it, and the transcript row of the accepted input takes it over.
+    -- It has no default, so an insert that forgets it fails.
+    idempotency_key TEXT NOT NULL CHECK (idempotency_key <> ''),
     -- AgentInputState ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     state           INTEGER NOT NULL DEFAULT 1 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 5),
     error           TEXT NOT NULL DEFAULT '',
     version         INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    -- A steer that waits for an echo records the identity of its dispatch.
+    steer_attempt_id TEXT NOT NULL DEFAULT '',
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(agent_id, order_index)
+    -- An item has a sender exactly when it is an agent message, so no writer
+    -- can store an agent message that identifies nobody, or a sender on an input
+    -- that the user wrote. The literal 9 is AGENT_INPUT_KIND_AGENT_MESSAGE;
+    -- a CHECK cannot bind a parameter, and TestAgentMessageSenderTieCheck pins
+    -- the ordinal.
+    CHECK ((kind = 9) = (sender_tab_id <> '')),
+    CHECK ((sender_tab_id = '') = (sender_provider IS NULL)),
+    CHECK (sender_tab_id <> '' OR sender_title = '')
 );
+-- The order of the inputs that the queue holds.
+CREATE UNIQUE INDEX idx_agent_input_queue_order
+    ON agent_input_queue_items(agent_id, order_index);
 -- One pending automatic retry per kind and agent. The literals are ordinals:
 -- 1 is AGENT_INPUT_STATE_QUEUED, 5 is AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
 -- and 8 is AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR. SQLite forbids a bound
@@ -337,6 +440,21 @@ CREATE UNIQUE INDEX idx_agent_input_queue_one_auto_retry_kind
     WHERE state = 1 AND kind IN (5, 8);
 CREATE INDEX idx_agent_input_queue_pending
     ON agent_input_queue_items(agent_id, order_index, state);
+
+-- Tombstones for inputs removed from the queue before delivery (Store.Delete).
+-- Keeping removed request receipts in a dedicated table lets live queue reads
+-- and writes operate on agent_input_queue_items without filtering tombstones,
+-- while a retry of EnqueueAgentInput with the same input id still finds the
+-- receipt until PurgeRemoved deletes it after RemovedInputRetention.
+CREATE TABLE agent_input_queue_removed (
+    id              TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL CHECK (idempotency_key <> ''),
+    removed_at      DATETIME NOT NULL
+);
+-- Serves Store.PurgeRemoved in inputqueue/removal.go.
+CREATE INDEX idx_agent_input_queue_removed
+    ON agent_input_queue_removed(removed_at);
 
 CREATE TABLE agent_input_queue_attachments (
     item_id     TEXT NOT NULL REFERENCES agent_input_queue_items(id) ON DELETE CASCADE,
@@ -423,6 +541,11 @@ CREATE TABLE control_response_payloads (
     non_blocking INTEGER NOT NULL DEFAULT 0 CHECK (non_blocking IN (0, 1)),
     agent_session_id TEXT NOT NULL DEFAULT '',
     input_id TEXT NOT NULL DEFAULT '',
+    -- The neutral decision that the answer carried, a ControlDecision in its
+    -- protobuf binary form, or empty for an answer that the Worker recorded
+    -- without one. The answer's transcript row states it, so one display reads
+    -- the decision instead of the provider's answer bytes.
+    decision BLOB NOT NULL DEFAULT X'',
     FOREIGN KEY (delivery_id, kind) REFERENCES control_deliveries(id, kind) ON DELETE CASCADE,
     CHECK ((follow_up_kind = 0) = (follow_up = ''))
 );
@@ -446,7 +569,7 @@ SELECT d.id AS delivery_id, d.agent_id, d.operation_id AS request_id,
     d.instance_id AS claim_token, d.state, p.request_payload, p.response_content,
     p.resolved_content, p.plan_approval_settings, p.execution_session_id,
     p.source_seq, p.follow_up, p.follow_up_kind, p.agent_session_id, a.agent_provider,
-    p.input_id, p.non_blocking
+    p.input_id, p.non_blocking, p.decision
 FROM control_deliveries d
 JOIN control_response_payloads p ON p.delivery_id = d.id
 JOIN agents a ON a.id = d.agent_id;
@@ -742,6 +865,10 @@ CREATE TABLE tab_creations (
     request_payload BLOB NOT NULL,
     publication_payload BLOB NOT NULL,
     runtime_payload BLOB NOT NULL,
+    -- A restored terminal must never release a possibly delivered command again.
+    initial_command_claimed BOOLEAN NOT NULL DEFAULT FALSE CHECK (initial_command_claimed IN (0, 1)),
+    -- The checkout selected at creation, retained after the runtime payload is cleared.
+    selected_worktree_identity BLOB,
     publication_result BLOB NOT NULL DEFAULT X'',
     -- TabCreationState ordinal. TestTabCreationEnumColumnsMatchProto pins the range.
     state INTEGER NOT NULL CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 6),
@@ -757,12 +884,98 @@ CREATE TABLE tab_creations (
 );
 CREATE INDEX idx_tab_creations_pending ON tab_creations(worker_id, state);
 
+-- One journal per Worker database. The append transaction maintains the counters.
+CREATE TABLE semantic_event_journal (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    worker_id TEXT NOT NULL CHECK (worker_id <> ''),
+    owner_user_id TEXT NOT NULL CHECK (owner_user_id <> ''),
+    journal_id TEXT NOT NULL CHECK (journal_id <> ''),
+    cursor_key BLOB NOT NULL CHECK (length(cursor_key) = 32),
+    dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
+    entry_count INTEGER NOT NULL CHECK (entry_count >= 0),
+    payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0)
+);
+
+-- A Worker feed keeps its committed position after every entry expires.
+CREATE TABLE semantic_event_feed_heads (
+    -- TabType ordinal. Only Worker-owned agent (1) and terminal (2) tabs
+    -- publish semantic events; file and diff tabs are client-only views.
+    -- TestSemanticEventEnumColumnsMatchProto pins the range.
+    tab_type INTEGER PRIMARY KEY CHECK (typeof(tab_type) = 'integer') CHECK (tab_type BETWEEN 1 AND 2),
+    singleton INTEGER NOT NULL DEFAULT 1 CHECK (singleton = 1) REFERENCES semantic_event_journal(singleton) ON DELETE CASCADE,
+    high_sequence INTEGER NOT NULL CHECK (high_sequence > 0)
+) WITHOUT ROWID;
+
+CREATE TABLE semantic_event_tails (
+    -- TabType ordinal. Worker-owned agent (1) and terminal (2) tabs publish facts.
+    -- TestSemanticEventEnumColumnsMatchProto pins the range.
+    tab_type INTEGER NOT NULL CHECK (typeof(tab_type) = 'integer') CHECK (tab_type BETWEEN 1 AND 2),
+    tab_id TEXT NOT NULL CHECK (tab_id <> ''),
+    tab_stream_id TEXT NOT NULL CHECK (tab_stream_id <> ''),
+    high_sequence INTEGER NOT NULL CHECK (high_sequence >= 0),
+    floor_sequence INTEGER NOT NULL CHECK (floor_sequence >= 0 AND floor_sequence <= high_sequence),
+    last_observed_unix_millis INTEGER NOT NULL,
+    resource_closed BOOLEAN NOT NULL DEFAULT FALSE CHECK (resource_closed IN (0, 1)),
+    final_sequence INTEGER CHECK (final_sequence IS NULL OR (resource_closed AND final_sequence = high_sequence)),
+    PRIMARY KEY (tab_type, tab_id)
+) WITHOUT ROWID;
+CREATE INDEX semantic_event_tail_age_idx ON semantic_event_tails (last_observed_unix_millis, tab_type, tab_id);
+
+-- Mark only an existing history stream. A prior cursor already created its tail.
+-- TestSemanticEventEnumColumnsMatchProto pins the tab_type literals below.
+-- +goose StatementBegin
+CREATE TRIGGER semantic_event_terminal_closed
+AFTER UPDATE OF closed_at ON terminals
+WHEN OLD.closed_at IS NULL AND NEW.closed_at IS NOT NULL
+BEGIN
+    UPDATE semantic_event_tails SET resource_closed = TRUE
+    WHERE tab_type = 2 AND tab_id = NEW.id;
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER semantic_event_agent_closed
+AFTER UPDATE OF closed_at ON agents
+WHEN OLD.closed_at IS NULL AND NEW.closed_at IS NOT NULL
+BEGIN
+    UPDATE semantic_event_tails SET resource_closed = TRUE
+    WHERE tab_type = 1 AND tab_id = NEW.id;
+END;
+-- +goose StatementEnd
+
+CREATE TABLE semantic_event_entries (
+    ingest_order INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- TabType ordinal checked by the parent tail.
+    tab_type INTEGER NOT NULL,
+    tab_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    feed_sequence INTEGER NOT NULL CHECK (feed_sequence > 0),
+    observed_unix_millis INTEGER NOT NULL,
+    fact BLOB NOT NULL,
+    -- SemanticWatchGapReason ordinal. Only UNCLEAN_STOP (2) and SOURCE_LIMIT (3)
+    -- are stored as rows; RETENTION (1) and HISTORY_UNAVAILABLE (4) are derived
+    -- by readers from missing entries. TestSemanticEventEnumColumnsMatchProto pins the range.
+    gap_reason INTEGER CHECK (gap_reason IS NULL OR typeof(gap_reason) = 'integer') CHECK (gap_reason BETWEEN 2 AND 3),
+    CHECK ((gap_reason IS NULL AND length(fact) > 0) OR (gap_reason IS NOT NULL AND length(fact) = 0)),
+    UNIQUE (tab_type, tab_id, sequence),
+    UNIQUE (tab_type, feed_sequence),
+    FOREIGN KEY (tab_type, tab_id) REFERENCES semantic_event_tails(tab_type, tab_id) ON DELETE CASCADE
+);
+CREATE INDEX semantic_event_age_idx ON semantic_event_entries (observed_unix_millis, tab_type, tab_id, sequence);
+
 -- +goose Down
+DROP TRIGGER IF EXISTS semantic_event_agent_closed;
+DROP TRIGGER IF EXISTS semantic_event_terminal_closed;
+DROP TABLE IF EXISTS semantic_event_entries;
+DROP TABLE IF EXISTS semantic_event_feed_heads;
+DROP TABLE IF EXISTS semantic_event_tails;
+DROP TABLE IF EXISTS semantic_event_journal;
 DROP TABLE IF EXISTS tab_creations;
 DROP VIEW IF EXISTS tab_locations;
 DROP TABLE IF EXISTS agent_background_tasks;
 DROP INDEX IF EXISTS idx_agents_spawn_span;
 DROP INDEX IF EXISTS idx_agents_provisional_spawn;
+DROP INDEX IF EXISTS idx_agents_spawned_by;
 DROP INDEX IF EXISTS idx_agents_parent;
 DROP TABLE IF EXISTS agent_todos;
 DROP TABLE IF EXISTS worker_tab_payloads;
@@ -773,9 +986,13 @@ DROP TABLE IF EXISTS worktrees;
 DROP VIEW IF EXISTS auto_review_approvals;
 DROP TABLE IF EXISTS auto_review_approval_payloads;
 DROP TABLE IF EXISTS agent_input_queue_attachments;
+DROP TABLE IF EXISTS agent_input_queue_removed;
 DROP TABLE IF EXISTS agent_input_queue_items;
 DROP TABLE IF EXISTS agent_input_queue_state;
 DROP TABLE IF EXISTS agent_turn_ends;
+DROP TABLE IF EXISTS native_agent_reply_items;
+DROP TABLE IF EXISTS native_agent_reply_turns;
+DROP TABLE IF EXISTS native_agent_inputs;
 DROP TABLE IF EXISTS agent_message_retractions;
 DROP VIEW IF EXISTS control_response_answers;
 DROP TABLE IF EXISTS control_response_payloads;

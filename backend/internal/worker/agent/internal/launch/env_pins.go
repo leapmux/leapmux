@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 const environmentPinPrefix = "__LEAPMUX_PIN_"
@@ -24,7 +22,7 @@ type shellLaunchSpec struct {
 	pins []environmentPin
 }
 
-func prepareShellLaunch(spec WrapSpec, token string, environ []string) shellLaunchSpec {
+func prepareShellLaunch(dialect shellDialect, spec WrapSpec, token string, environ []string) shellLaunchSpec {
 	used := make(map[string]bool, len(environ)+len(spec.SetEnv)+len(spec.StripEnvKeys))
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")
@@ -38,20 +36,13 @@ func prepareShellLaunch(spec WrapSpec, token string, environ []string) shellLaun
 		used[strings.ToUpper(name)] = true
 	}
 	prepared := shellLaunchSpec{WrapSpec: spec}
-	csh := isCsh(terminal.ShellBaseName(spec.Shell))
 	for i, entry := range spec.SetEnv {
 		name, value, _ := strings.Cut(entry, "=")
 		alias := environmentPinPrefix + token + "_" + strconv.Itoa(i)
 		if !shellIdentifier.MatchString(alias) {
 			panic(fmt.Sprintf("shell wrapper: pin source %q is not a plain identifier", alias))
 		}
-		if csh {
-			alias = cshPinSource(alias, used)
-		} else {
-			for used[strings.ToUpper(alias)] {
-				alias += "_"
-			}
-		}
+		alias = dialect.pinSource(alias, used)
 		used[strings.ToUpper(alias)] = true
 		prepared.pins = append(prepared.pins, environmentPin{target: name, source: alias, value: value})
 	}
@@ -59,7 +50,7 @@ func prepareShellLaunch(spec WrapSpec, token string, environ []string) shellLaun
 }
 
 // A collision must never grow a pin past BSD csh's substitution limit.
-func cshPinSource(base string, used map[string]bool) string {
+func (cshDialect) pinSource(base string, used map[string]bool) string {
 	const hashBytes = (cshVariableNameLimit - len(environmentPinPrefix)) / 2
 	for attempt := 0; ; attempt++ {
 		digest := sha256.Sum256([]byte(base + ":" + strconv.Itoa(attempt)))

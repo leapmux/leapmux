@@ -66,6 +66,13 @@ type RunConfig struct {
 	AgentStartupConcurrency int
 	EncryptionMode          leapmuxv1.EncryptionMode // Encryption mode (classic, post-quantum)
 	UseLoginShell           bool                     // Wrap claude invocation in user's login shell
+	// ControlCLI is the absolute path of the program that serves
+	// `leapmux control` for this worker. Every process that the worker spawns
+	// with remote control receives a link to it in LEAPMUX_CONTROL_CLI, and the
+	// directory of the link first on PATH. Pass the executable of this process
+	// only when it serves the CLI; "" gives the spawns neither. See
+	// bootstrap.Params.ControlCLI.
+	ControlCLI string
 	// RegisteredBy seeds the worker's owner, which restricts every machine-scoped
 	// RPC family (tunnels, file, git, sysinfo) -- see service.ownerOnlyRegistrar. It is a
 	// DB-sourced seed for the in-process launchers (solo reads it from
@@ -301,6 +308,7 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 		Name:                 workerName,
 		HomeDir:              homeDir,
 		DataDir:              dataDir,
+		ControlCLI:           cfg.ControlCLI,
 		AuthToken:            cfg.AuthToken,
 		SeedRegisteredBy:     cfg.RegisteredBy,
 		AgentStartupTimeout:  cfg.AgentStartupTimeout,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 
@@ -125,21 +126,25 @@ func runGitCommand(cmd *exec.Cmd) (runErr, cleanupErr error) {
 	return runErr, cleanupErr
 }
 
-func captureGitCommand(ctx context.Context, args ...string) (stdout, stderr bytes.Buffer, err error) {
-	cmd := NewGitCmd(ctx, args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr, cleanupErr := runGitCommand(cmd)
+func finishGitCommand(ctx context.Context, runErr, cleanupErr error, stderr []byte) error {
 	var exitErr *exec.ExitError
 	if errors.As(runErr, &exitErr) {
-		exitErr.Stderr = bytes.Clone(stderr.Bytes())
+		exitErr.Stderr = bytes.Clone(stderr)
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		runErr = errors.Join(ctxErr, runErr)
 	}
 	if runErr != nil || cleanupErr != nil {
-		err = &CommandError{RunError: runErr, CleanupError: cleanupErr}
+		return &CommandError{RunError: runErr, CleanupError: cleanupErr}
 	}
-	return stdout, stderr, err
+	return nil
+}
+
+func captureGitCommand(ctx context.Context, args ...string) (stdout, stderr bytes.Buffer, err error) {
+	cmd := NewGitCmd(ctx, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr, cleanupErr := runGitCommand(cmd)
+	return stdout, stderr, finishGitCommand(ctx, runErr, cleanupErr, stderr.Bytes())
 }
 
 // Capture returns complete captured streams, including partial bytes on failure.
@@ -154,4 +159,33 @@ func Capture(ctx context.Context, dir string, args ...string) (stdout, stderr []
 // DiffBytes disables repository executable helpers and preserves raw output.
 func DiffBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return Bytes(ctx, dir, append([]string{"diff", "--no-ext-diff", "--no-textconv"}, args...)...)
+}
+
+// DiffToWriter streams raw git diff output into stdout with repository
+// diff.external and textconv helpers disabled.
+func DiffToWriter(ctx context.Context, dir string, stdout io.Writer, args ...string) (stderr []byte, err error) {
+	full := make([]string, 0, len(args)+5)
+	full = append(full, "-C", dir, "diff", "--no-ext-diff", "--no-textconv")
+	full = append(full, args...)
+	cmd := NewGitCmd(ctx, full...)
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderrBuf
+	runErr, cleanupErr := runGitCommand(cmd)
+	return stderrBuf.Bytes(), finishGitCommand(ctx, runErr, cleanupErr, stderrBuf.Bytes())
+}
+
+// RunCombinedWithStdin runs git in dir with stdin and returns combined stdout
+// and stderr along with any CommandError.
+func RunCombinedWithStdin(ctx context.Context, dir string, stdin io.Reader, args ...string) (combined []byte, err error) {
+	full := make([]string, 0, len(args)+2)
+	full = append(full, "-C", dir)
+	full = append(full, args...)
+	cmd := NewGitCmd(ctx, full...)
+	cmd.Stdin = stdin
+	var combinedBuf bytes.Buffer
+	cmd.Stdout = &combinedBuf
+	cmd.Stderr = &combinedBuf
+	runErr, cleanupErr := runGitCommand(cmd)
+	return combinedBuf.Bytes(), finishGitCommand(ctx, runErr, cleanupErr, combinedBuf.Bytes())
 }

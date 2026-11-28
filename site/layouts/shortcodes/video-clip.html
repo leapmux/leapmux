@@ -1,0 +1,18 @@
+{{- /*
+  video-clip renders a light/dark looping MP4 clip pair managed by
+  assets/js/site-media.js (theme-aware, viewport-aware, reduced-motion-aware).
+
+      {{< video-clip src="parallel-worktrees" poster="tabs-tiling-layout" alt="..." caption="..." >}}
+*/ -}}
+{{- partial "theme-video.html" (dict
+  "page" .Page
+  "src" (.Get "src")
+  "poster" (.Get "poster")
+  "alt" (.Get "alt")
+  "caption" (.Get "caption")
+  "width" (.Get "width")
+  "height" (.Get "height")
+  "class" "lm-video-clip"
+  "role" "clip"
+  "pos" .Position
+) -}}

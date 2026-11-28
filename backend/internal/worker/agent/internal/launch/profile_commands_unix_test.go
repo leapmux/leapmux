@@ -35,6 +35,13 @@ func useBashProfile(t *testing.T, content string) string {
 	return shell
 }
 
+// assertProfileCommandExchange is assertProfileCommandExchangeWithEnvironment
+// without the report of the environment. Only Unix tests call it.
+func assertProfileCommandExchange(t *testing.T, cmd *exec.Cmd, delimiter string, args []string) {
+	t.Helper()
+	assertProfileCommandExchangeWithEnvironment(t, cmd, delimiter, args, nil)
+}
+
 func TestProfileCommandUsesTheAliasOrFunctionItDiscovers(t *testing.T) {
 	const name = "leapmux-profile-command"
 	quote := shellquote.POSIX.Quote
@@ -162,12 +169,13 @@ func TestCheckBinaryDiscardsACompletedProbeWithProcessFailure(t *testing.T) {
 	t.Setenv("PATH", dir)
 	testutil.WriteExecutable(t, filepath.Join(dir, name), "#!/bin/sh\nexit 0\n")
 	names := []string{name}
-	script := renderCommandProbe("sh", nonce, names, false)
-	results, _ := parseCommandProbe(runShellProbe(t.Context(), "/bin/sh", false, script), nonce, names, false)
+	dialect := posixDialect{shell: "sh"}
+	script := renderCommandProbe("sh", nonce, names, false, false)
+	results, _ := parseCommandProbe(runShellProbe(t.Context(), dialect, "/bin/sh", false, script), nonce, names, false)
 	require.Equal(t, ProbeYes, results[name], "the script emits a complete presence result")
 
 	t.Run("the shell exits nonzero after emitting the completion record", func(t *testing.T) {
-		output := runShellProbe(t.Context(), "/bin/sh", false, script+"exit 43\n")
+		output := runShellProbe(t.Context(), dialect, "/bin/sh", false, script+"exit 43\n")
 		require.Empty(t, output)
 	})
 
@@ -179,7 +187,7 @@ func TestCheckBinaryDiscardsACompletedProbeWithProcessFailure(t *testing.T) {
 		})
 		// The helper holds the inherited stdout until cleanup releases the FIFO.
 		script := "(read -r release < " + shellquote.POSIX.Quote(release.Name()) + ") &\n" + script
-		output := runShellProbe(t.Context(), "/bin/sh", false, script)
+		output := runShellProbe(t.Context(), dialect, "/bin/sh", false, script)
 		require.Empty(t, output)
 	})
 
@@ -195,7 +203,7 @@ func TestCheckBinaryDiscardsACompletedProbeWithProcessFailure(t *testing.T) {
 		ctx, cancel := context.WithCancelCause(t.Context())
 		defer cancel(context.Canceled)
 		outputs := make(chan string, 1)
-		go func() { outputs <- runShellProbe(ctx, "/bin/sh", false, script) }()
+		go func() { outputs <- runShellProbe(ctx, dialect, "/bin/sh", false, script) }()
 		type readiness struct {
 			line string
 			err  error
@@ -610,7 +618,7 @@ func TestProfileCandidateStopsWhenPosixEnvironmentSetupFails(t *testing.T) {
 }
 
 func TestProfileCommandDialectMatrix(t *testing.T) {
-	for _, name := range []string{"bash", "zsh", "sh", "ash", "dash", "ksh", "fish", "csh", "tcsh", "nu", "xonsh", "pwsh"} {
+	for _, name := range []string{"bash", "zsh", "sh", "ash", "dash", "ksh", "fish", "csh", "tcsh", "nu", "elvish", "xonsh", "pwsh"} {
 		t.Run(name, func(t *testing.T) {
 			shell := requireProfileShell(t, name, name)
 			profile := t.TempDir()
@@ -728,6 +736,11 @@ func installDialectProfile(t *testing.T, shell, dir, peer, witness string) {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 		file = filepath.Join(dir, "nushell", "config.nu")
 		body = "\"profile\\n\" | save --append " + nuQuote(witness) + "\ndef --wrapped " + candidate + " [...arguments: string] { ^" + nuQuote(peer) + " '-test.run=^TestProfileCommandPeer$' '--' ...$arguments }\n"
+	case "elvish":
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		file = filepath.Join(dir, "elvish", "rc.elv")
+		body = "echo profile >> " + elvishQuote(witness) + "\n" +
+			"fn " + candidate + " {|@arguments| (external " + elvishQuote(peer) + ") '-test.run=^TestProfileCommandPeer$' '--' $@arguments }\n"
 	case "xonsh":
 		t.Setenv("TERM", "xterm-256color")
 		file = filepath.Join(dir, "profile.xsh")
@@ -747,6 +760,55 @@ func installDialectProfile(t *testing.T, shell, dir, peer, witness string) {
 	}
 	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o700))
 	require.NoError(t, os.WriteFile(file, []byte(body), 0o600))
+}
+
+func TestProfileCommandElvishDirectProgramKeepsStreams(t *testing.T) {
+	shell := requireProfileShell(t, "elvish", "elvish")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(profilePeerEnv, "1")
+	args := []string{"", "one argument", "it's quoted", `"quoted"\path`, "*.txt", "--flag", "한글"}
+	cmd, delimiter, _ := wrapTestCommand(t, t.Context(), WrapSpec{
+		Shell:    shell,
+		Launch:   Spec{Program: profileCommandExecutable(t), PrefixArgs: []string{"-test.run=^TestProfileCommandPeer$", "--"}},
+		BaseArgs: args,
+	})
+	assertProfileCommandExchange(t, cmd, delimiter, args)
+}
+
+func TestProfileCommandElvishReadsItsLoginProfile(t *testing.T) {
+	const candidate = "leapmux-elvish-profile-peer"
+	shell := requireProfileShell(t, "elvish", "elvish")
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv(profilePeerEnv, "1")
+	profileDir := filepath.Join(configHome, "elvish")
+	require.NoError(t, os.Mkdir(profileDir, 0o700))
+	peer := elvishQuote(profileCommandExecutable(t))
+	require.NoError(t, os.WriteFile(filepath.Join(profileDir, "provider.elv"), []byte(
+		"fn invoke {|@arguments| (external "+peer+") '-test.run=^TestProfileCommandPeer$' '--' $@arguments }\n",
+	), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(profileDir, "rc.elv"), []byte(
+		"use ./provider\nprintf 'Profile banner without a newline'\nfn "+candidate+" {|@arguments| provider:invoke $@arguments }\n",
+	), 0o600))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	assert.Equal(t, ProbeNo, CheckBinary(ctx, shell, false, candidate))
+	require.Equal(t, ProbeYes, CheckBinary(ctx, shell, true, candidate))
+	bin := t.TempDir()
+	program := filepath.Join(bin, candidate)
+	testutil.WriteExecutable(t, program, "#!/bin/sh\nexit 42\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	path, found := ProgramPath(ctx, shell, true, candidate)
+	require.Equal(t, ProbeYes, found)
+	require.Equal(t, program, path)
+	spec, err := Binaries("leapmux-elvish-missing-first", candidate).Resolve(ctx, shell, true, "Elvish profile command")
+	require.NoError(t, err)
+	args := []string{"", "profile argument", "it's literal"}
+	cmd, delimiter, _ := wrapTestCommand(t, ctx, WrapSpec{
+		Shell: shell, LoginShell: true, WorkingDir: t.TempDir(), Launch: spec, BaseArgs: args,
+	})
+	assertProfileCommandExchange(t, cmd, delimiter, args)
 }
 
 func TestProfileCommandNushellDirectProgramKeepsStreams(t *testing.T) {

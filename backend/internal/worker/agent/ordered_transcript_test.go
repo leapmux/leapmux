@@ -643,3 +643,143 @@ func TestTranscriptWriteReceiptPublishesItsOriginalAuthorityAfterCapture(t *test
 	require.Len(t, sink.Messages(), 2)
 	assert.True(t, sink.Messages()[1].TranscriptOnly)
 }
+
+type unorderedStateLeaseSink struct {
+	*agenttest.Sink
+	child agent.ProviderServices
+}
+
+func (s *unorderedStateLeaseSink) AcquireChildStateSink(string) agent.ChildSinkLease {
+	return agent.ChildSinkLease{Sink: s.child}
+}
+
+func (*unorderedStateLeaseSink) ChildSink(string) agent.ProviderServices { return nil }
+
+func TestOrderedProviderServicesWrapperContracts(t *testing.T) {
+	t.Parallel()
+
+	// WRAPPERS-7 & WRAPPERS-8: nil ChildSink returns nil; AcquireChildStateSink orders child.
+	rawChild := &agenttest.Sink{}
+	root := &unorderedStateLeaseSink{Sink: &agenttest.Sink{}, child: agent.NewProviderServices(rawChild)}
+	ordered := agent.NewOrderedProviderServices(&agent.OutputQueue{}, agent.NewProviderServices(root))
+	assert.Nil(t, ordered.ChildSink("missing"))
+	stateLease := ordered.AcquireChildStateSink("child")
+	require.NotNil(t, stateLease.Sink)
+	assert.NotNil(t, agent.OutputQueueFor(stateLease.Sink))
+
+	// WRAPPERS-9: NewProviderServices(ordered) unwraps cleanly when re-wrapped on the same queue.
+	var q agent.OutputQueue
+	sink := &agenttest.Sink{}
+	innerOrdered := agent.NewOrderedProviderServices(&q, agent.NewProviderServices(sink))
+	rewrapped := agent.NewOrderedProviderServices(&q, agent.NewProviderServices(innerOrdered))
+	require.NoError(t, rewrapped.BindNativeInputTurn(agent.NativeInputReceipt{SessionID: "s", InputID: "i"}, "t1"))
+	assert.False(t, q.HasPending())
+
+	// WRAPPERS-10: PersistPreparedMessage reaches wrapped PreparedTranscriptWriter.
+	var prepQ agent.OutputQueue
+	prepSink := &agenttest.Sink{}
+	interceptor := &preparedMessageInterceptor{TranscriptServices: agent.NewOrderedProviderServices(&prepQ, agent.NewProviderServices(prepSink)), queue: &prepQ}
+	wrappedInterceptor := agent.OrderedTranscript(&prepQ, interceptor)
+	require.NoError(t, agent.PersistPreparedMessage(wrappedInterceptor, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, func() []byte {
+		return []byte(`{"text":"prepared"}`)
+	}))
+	assert.Equal(t, 1, interceptor.calls)
+}
+
+type testDecoratedServices struct {
+	agent.ProviderServices
+	captured int
+}
+
+func (s *testDecoratedServices) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	s.captured++
+	return s.ProviderServices.CaptureMessage(content, span)
+}
+
+func TestDecorateProviderServicesKeepsOutputQueueOutermost(t *testing.T) {
+	t.Parallel()
+
+	// Unordered input stays unwrapped (no outer *orderedProviderServices added).
+	raw := &agenttest.Sink{}
+	var rawDec *testDecoratedServices
+	unwrapped := agent.DecorateProviderServices(agent.NewProviderServices(raw), func(direct agent.ProviderServices) agent.ProviderServices {
+		rawDec = &testDecoratedServices{ProviderServices: direct}
+		return rawDec
+	})
+	assert.Same(t, rawDec, unwrapped)
+	unwrapped.CaptureMessage(agent.MessageContent{Original: []byte(`{"a":1}`)}, agent.SpanInfo{})
+	assert.Equal(t, 1, rawDec.captured)
+
+	// Ordered input keeps *orderedProviderServices outermost even after re-wrapping
+	// through NewModelProgressResetSink, so DirectProviderServices returns the
+	// decorator with no inner *orderedProviderServices trapped below it, and
+	// non-execution ordered effects complete without queue re-entry.
+	var q agent.OutputQueue
+	sink := &agenttest.Sink{}
+	ordered := agent.NewOrderedProviderServices(&q, agent.NewProviderServices(sink))
+	var ordDec *testDecoratedServices
+	decorated := agent.DecorateProviderServices(agent.NewModelProgressResetSink(ordered), func(direct agent.ProviderServices) agent.ProviderServices {
+		ordDec = &testDecoratedServices{ProviderServices: direct}
+		return ordDec
+	})
+	assert.Same(t, &q, agent.OutputQueueFor(decorated))
+	assert.Same(t, ordDec, agent.DirectProviderServices(decorated))
+	assert.NotSame(t, &q, agent.OutputQueueFor(ordDec.ProviderServices))
+
+	rewrapped := agent.NewModelProgressResetSink(decorated)
+	assert.Same(t, &q, agent.OutputQueueFor(rewrapped))
+	require.NoError(t, rewrapped.BindNativeInputTurn(agent.NativeInputReceipt{SessionID: "s", InputID: "i"}, "t1"))
+	captured := rewrapped.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	require.NoError(t, rewrapped.RetractMessagesByIdempotencyKey(captured, []string{"k1"}))
+	assert.False(t, q.HasPending())
+	assert.GreaterOrEqual(t, ordDec.captured, 1)
+
+	// Nil inner or nil decorator returns inner unchanged without invoking wrap.
+	called := false
+	assert.Nil(t, agent.DecorateProviderServices(nil, func(direct agent.ProviderServices) agent.ProviderServices {
+		called = true
+		return direct
+	}))
+	assert.False(t, called)
+	assert.Same(t, ordered, agent.DecorateProviderServices(ordered, nil))
+}
+
+type preparedProgressSink struct {
+	*agenttest.Sink
+	preparedCalls int
+}
+
+func (s *preparedProgressSink) PersistPreparedMessage(
+	source leapmuxv1.MessageSource,
+	template agent.MessageContent,
+	span agent.SpanInfo,
+	prepare func() []byte,
+) error {
+	s.preparedCalls++
+	template.Original = prepare()
+	return s.PersistMessage(source, template, span)
+}
+
+func TestPersistPreparedMessageResetsModelProgressThroughWrapper(t *testing.T) {
+	t.Parallel()
+	sink := &preparedProgressSink{Sink: &agenttest.Sink{}}
+	wrapped := agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
+
+	// User-source and child-span prepared writes must not reset root model progress.
+	wrapped.ReportProgress(agent.ModelTextProgress("model", "abcdefgh"))
+	require.NoError(t, agent.PersistPreparedMessage(wrapped, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{}, agent.SpanInfo{}, func() []byte {
+		return []byte(`{"text":"user"}`)
+	}))
+	require.NoError(t, agent.PersistPreparedMessage(wrapped, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{ParentSpanID: "parent-1"}, func() []byte {
+		return []byte(`{"text":"child"}`)
+	}))
+	assert.Equal(t, 2, sink.preparedCalls)
+	assert.Equal(t, int64(2), sink.ProgressSnapshot().ThinkingTokens)
+
+	// Root agent-source prepared write resets active model progress after persisting.
+	require.NoError(t, agent.PersistPreparedMessage(wrapped, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, func() []byte {
+		return []byte(`{"text":"root reply"}`)
+	}))
+	assert.Equal(t, 3, sink.preparedCalls)
+	assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+}

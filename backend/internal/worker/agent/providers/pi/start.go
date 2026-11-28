@@ -3,8 +3,10 @@ package pi
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -81,10 +83,58 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	resumeArgs, err := piResumeArgs(opts.ResumeSessionID, opts.HomeDir)
-	if err != nil {
+	if err := opts.ValidateSessionSource(); err != nil {
 		cancel()
 		return nil, err
+	}
+	if opts.AgentDirs == nil {
+		cancel()
+		return nil, fmt.Errorf("the Pi provider requires the Worker's private agent directories")
+	}
+	var (
+		resumeArgs []string
+		forkedPath string
+	)
+	if opts.Session.IsFork() {
+		launchEnv := providerkit.FinalizeAgentEnv(os.Environ(), opts)
+		var forkErr error
+		forkedPath, forkErr = forkPiSessionFile(
+			providerkit.StoredSessionQueryForLaunch(opts.HomeDir, launchEnv),
+			opts.Session.ForkID(),
+			opts.Session.ForkSourceWorkingDir(),
+			opts.WorkingDir,
+		)
+		if forkErr != nil {
+			cancel()
+			return nil, forkErr
+		}
+		resumeArgs = []string{"--session", forkedPath}
+	} else {
+		resumeArgs, err = piResumeArgs(opts.Session.ResumeID(), opts.HomeDir)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+	}
+	removeForkedSession := func() {
+		if forkedPath != "" {
+			_ = os.Remove(forkedPath)
+		}
+	}
+	directory, err := opts.AgentDirs.New(ctx, *registration.AgentDir)
+	if err != nil {
+		cancel()
+		removeForkedSession()
+		return nil, err
+	}
+	failLaunch := func(err error) (agent.Agent, error) {
+		cancel()
+		removeForkedSession()
+		return nil, errors.Join(err, directory.Close())
+	}
+	extensionPath, steerBridge, err := writePiSteerBridge(directory.Path())
+	if err != nil {
+		return failLaunch(err)
 	}
 	// Pi has no --working-dir flag (it uses the process cwd). Wrap
 	// already sets cmd.Dir to opts.WorkingDir, so the agent picks up the right
@@ -93,12 +143,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launchSpec,
-		BaseArgs:   append([]string{"--mode", "rpc"}, resumeArgs...),
+		BaseArgs:   append([]string{"--mode", "rpc", "--extension", extensionPath}, resumeArgs...),
 		WorkingDir: opts.WorkingDir,
 	})
 	if err != nil {
-		cancel()
-		return nil, err
+		return failLaunch(err)
 	}
 	cmd := prepared.Cmd
 
@@ -106,7 +155,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
-		return nil, err
+		return failLaunch(err)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
@@ -117,11 +166,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		provider:      cmp.Or(opts.Options[OptionProvider], DefaultProvider),
 		workingDir:    opts.WorkingDir,
 		sink:          sink,
+		directory:     directory,
+		steerBridge:   steerBridge,
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 
 	if err := a.StartCmd(); err != nil {
-		return nil, err
+		return failLaunch(err)
 	}
 	a.DrainStderr(stderrPipe)
 
@@ -131,6 +182,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	cleanup := func() {
 		a.Stop()
 		_ = a.Wait()
+		removeForkedSession()
 	}
 
 	timeout := opts.EffectiveStartupTimeout()

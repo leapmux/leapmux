@@ -2,12 +2,17 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // OIDCProvider implements the Provider interface for generic OpenID Connect providers.
@@ -15,10 +20,68 @@ type OIDCProvider struct {
 	oauth2Config *oauth2.Config
 	verifier     *gooidc.IDTokenVerifier
 	provider     *gooidc.Provider
+	useFormPost  bool
+}
+
+// parseAppleUserDisplayName extracts the optional user display name that Sign
+// in with Apple sends in the form_post `user` JSON parameter on a user's first
+// sign-in ({"name":{"firstName":"Jane","lastName":"Doe"}}). Malformed or absent
+// payloads return "" so login never fails on optional profile metadata.
+func parseAppleUserDisplayName(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var payload struct {
+		Name struct {
+			FirstName string `json:"firstName"`
+			LastName  string `json:"lastName"`
+		} `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	first := strings.TrimSpace(payload.Name.FirstName)
+	last := strings.TrimSpace(payload.Name.LastName)
+	if first == "" {
+		return last
+	}
+	if last == "" {
+		return first
+	}
+	return first + " " + last
+}
+
+// flexibleBool unmarshals both JSON booleans (true/false) and string-encoded
+// booleans ("true"/"false") that Sign in with Apple emits for email_verified.
+type flexibleBool bool
+
+func (b *flexibleBool) UnmarshalJSON(data []byte) error {
+	var rawBool bool
+	if err := json.Unmarshal(data, &rawBool); err == nil {
+		*b = flexibleBool(rawBool)
+		return nil
+	}
+	var rawStr string
+	if err := json.Unmarshal(data, &rawStr); err == nil {
+		switch rawStr {
+		case "true":
+			*b = true
+			return nil
+		case "false":
+			*b = false
+			return nil
+		}
+	}
+	return fmt.Errorf("expected boolean or \"true\"/\"false\" string, got %s", string(data))
 }
 
 // NewOIDCProvider creates an OIDC provider by discovering the issuer's configuration.
-func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, redirectURL string, scopes []string) (*OIDCProvider, error) {
+func NewOIDCProvider(
+	ctx context.Context,
+	issuerURL, clientID, clientSecret, redirectURL string,
+	scopes []string,
+	responseMode leapmuxv1.OAuthResponseMode,
+) (*OIDCProvider, error) {
 	provider, err := gooidc.NewProvider(ctx, issuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery for %s: %w", issuerURL, err)
@@ -42,7 +105,13 @@ func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, red
 		oauth2Config: oauth2Config,
 		verifier:     verifier,
 		provider:     provider,
+		useFormPost:  responseMode == ResponseModeFormPost,
 	}, nil
+}
+
+// UsesFormPost reports whether this OIDC provider requests response_mode=form_post.
+func (p *OIDCProvider) UsesFormPost() bool {
+	return p.useFormPost
 }
 
 // ReauthMaxAge is the max_age this provider sends on a re-authentication,
@@ -95,6 +164,9 @@ func (p *OIDCProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions) 
 	codeOpts := []oauth2.AuthCodeOption{
 		oauth2.S256ChallengeOption(codeVerifier),
 	}
+	if p.useFormPost {
+		codeOpts = append(codeOpts, oauth2.SetAuthURLParam("response_mode", "form_post"))
+	}
 	if opts.ForceReauthentication {
 		codeOpts = append(codeOpts,
 			oauth2.SetAuthURLParam("prompt", "login"),
@@ -104,7 +176,7 @@ func (p *OIDCProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions) 
 	return p.oauth2Config.AuthCodeURL(state, codeOpts...)
 }
 
-func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) (*UserClaims, error) {
+func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string, exOpts ExchangeOptions) (*UserClaims, error) {
 	opts := []oauth2.AuthCodeOption{
 		oauth2.VerifierOption(codeVerifier),
 	}
@@ -124,29 +196,37 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 	}
 
 	var claims struct {
-		Email         string `json:"email"`
-		EmailVerified *bool  `json:"email_verified,omitempty"`
-		Name          string `json:"name"`
+		Email         string        `json:"email"`
+		EmailVerified *flexibleBool `json:"email_verified,omitempty"`
+		Name          string        `json:"name"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("oidc parse claims: %w", err)
 	}
 
 	// INVARIANT: UserClaims.Email carries only an email the provider confirms
-	// as verified. This check ensures email_verified is explicitly true;
-	// missing or false values result in an empty email. The per-provider
-	// trust_email setting controls whether the hub treats such verified emails
-	// as pre-verified for account linking and signup — it does NOT bypass this
-	// provider-level check. See also fetchGitHubVerifiedEmail in github.go.
+	// as verified. This check ensures email_verified is explicitly true (either
+	// JSON boolean true or Apple's string "true"); missing or false values
+	// result in an empty email. The per-provider trust_email setting controls
+	// whether the hub treats such verified emails as pre-verified for account
+	// linking and signup — it does NOT bypass this provider-level check. See
+	// also fetchGitHubVerifiedEmail in github.go.
 	email := ""
-	if claims.EmailVerified != nil && *claims.EmailVerified {
+	if claims.EmailVerified != nil && bool(*claims.EmailVerified) {
 		email = claims.Email
+	}
+
+	name := claims.Name
+	if p.useFormPost && validate.CleanName(name) == "" && exOpts.FormValues != nil {
+		if formName := parseAppleUserDisplayName(exOpts.FormValues.Get("user")); formName != "" {
+			name = formName
+		}
 	}
 
 	return &UserClaims{
 		Subject: idToken.Subject,
 		Email:   email,
-		Name:    claims.Name,
+		Name:    name,
 	}, nil
 }
 

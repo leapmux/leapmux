@@ -45,6 +45,8 @@ var zeroUserIDDenyFuncs = []string{
 	"RequireElevation",
 	"RequireElevatableCredential",
 	"RequireElevatableSession",
+	"RequireElevatableSessionOrControlCLI",
+	"RequireElevationForDurableAuthority",
 }
 
 // TestZeroUserIDDenies exercises the deny-closed contract for every entry in
@@ -295,6 +297,22 @@ func TestZeroUserIDDenies(t *testing.T) {
 				sessionID, err := auth.RequireElevatableSession(sessionUser)
 				require.NoError(t, err, "control: a session credential yields its session id")
 				assert.Equal(t, "s1", sessionID)
+			case "RequireElevatableSessionOrControlCLI":
+				// A nil UserInfo carries neither a session nor a control-CLI API credential.
+				err := auth.RequireElevatableSessionOrControlCLI(nil)
+				require.Error(t, err, "a nil UserInfo has no elevatable session or control-CLI credential")
+
+				sessionUser := &auth.UserInfo{Credential: auth.SessionCredential("s1")}
+				require.NoError(t, auth.RequireElevatableSessionOrControlCLI(sessionUser),
+					"control: a session credential is admitted")
+			case "RequireElevationForDurableAuthority":
+				// A nil UserInfo carries no credential row, so durable-authority elevation refuses it.
+				err := auth.RequireElevationForDurableAuthority(nil, time.Now())
+				require.Error(t, err, "a nil UserInfo must not pass the durable-authority elevation gate")
+
+				solo := &auth.UserInfo{Solo: true}
+				require.NoError(t, auth.RequireElevationForDurableAuthority(solo, time.Now()),
+					"control: solo mode passes the durable-authority elevation gate")
 			default:
 				t.Fatalf("zeroUserIDDenyFuncs lists %q but TestZeroUserIDDenies has no case for it", name)
 			}

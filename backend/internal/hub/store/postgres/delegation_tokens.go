@@ -76,6 +76,52 @@ func (c *pgConn) delegationTokenWithOwner(t gendb.DelegationToken, ownerUsername
 }
 
 func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDelegationTokensParams) (store.Page[store.DelegationTokenWithOwner], error) {
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.DelegationTokenWithOwner]{}, err
+	}
+	if hasPrefix {
+		idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+		if err != nil || empty {
+			return store.Page[store.DelegationTokenWithOwner]{}, err
+		}
+		userID := ""
+		if p.UserID != nil {
+			if *p.UserID == "" {
+				return store.Page[store.DelegationTokenWithOwner]{}, nil
+			}
+			userID = *p.UserID
+		}
+		if filter.Exact {
+			return queryPageErr(ctx, p.Limit,
+				func() (gendb.ListAllDelegationTokensByIDExactParams, error) {
+					return gendb.ListAllDelegationTokensByIDExactParams{
+						UserID:         userID,
+						IncludeRevoked: p.IncludeRevoked,
+						ID:             filter.Lower,
+					}, nil
+				},
+				s.conn.q.ListAllDelegationTokensByIDExact,
+				func(r gendb.ListAllDelegationTokensByIDExactRow) (store.DelegationTokenWithOwner, error) {
+					return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+				})
+		}
+		return queryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllDelegationTokensByIDPrefixParams, error) {
+				return gendb.ListAllDelegationTokensByIDPrefixParams{
+					UserID:         userID,
+					IncludeRevoked: p.IncludeRevoked,
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListAllDelegationTokensByIDPrefix,
+			func(r gendb.ListAllDelegationTokensByIDPrefixRow) (store.DelegationTokenWithOwner, error) {
+				return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			})
+	}
 	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
 	// (include_revoked false/true), dispatched to four generated queries
 	// (mirroring workers.go ListAdmin). The revoked dimension is split rather

@@ -120,6 +120,13 @@
       "group": "context"
     },
     {
+      "id": "session-fork",
+      "label": "Session fork",
+      "description": "LeapMux forks an idle native session into a new agent tab, and the next model turn in the forked session uses prior conversation context without changing the source session. Saved LeapMux chat rows alone do not count.",
+      "showInMatrix": true,
+      "group": "context"
+    },
+    {
       "id": "rate-limit-state",
       "label": "Rate-limit state",
       "description": "Agent info shows a provider-reported quota window, use, or reset time. A retry notice alone does not count.",

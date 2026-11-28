@@ -43,6 +43,12 @@ type turnItem struct {
 	Metadata json.RawMessage `json:"metadata"`
 }
 
+// codewhaleGeneratedItem retains the native owner of a streamed item.
+type codewhaleGeneratedItem struct {
+	id     string
+	turnID string
+}
+
 // toolStart identifies a tool call on its start event.
 type toolStart struct {
 	ID    string          `json:"id"`
@@ -173,7 +179,14 @@ func (a *Agent) handleTurnCompleted(env codewhaleEnvelope) {
 	}
 	turnID := env.TurnID
 	if payload.Turn.ID != "" {
+		if turnID != "" && turnID != payload.Turn.ID {
+			a.markCodewhaleReplyUnproved(turnID)
+			a.markCodewhaleReplyUnproved(payload.Turn.ID)
+		}
 		turnID = payload.Turn.ID
+	}
+	if openText := a.openGeneratedItems[contracts.CodewhaleItemKindAgentMessage]; openText.id != "" && openText.turnID == turnID {
+		a.markCodewhaleReplyUnproved(turnID)
 	}
 	a.Mu.Lock()
 	stale := a.finishedTurns.contains(turnID) || a.turnID != "" && turnID != "" && a.turnID != turnID
@@ -181,6 +194,7 @@ func (a *Agent) handleTurnCompleted(env codewhaleEnvelope) {
 	pending := a.steerCall != nil
 	a.Mu.Unlock()
 	if stale {
+		a.finishCodewhaleNativeReply(turnID, payload.Turn.Status)
 		slog.Debug("codewhale ignored a stale turn end", "agent_id", a.AgentID(), "turn_id", turnID)
 		if err := agent.FlushPendingOutput(a.sink); err != nil {
 			slog.Error("codewhale retry pending output", "agent_id", a.AgentID(), "error", err)
@@ -231,7 +245,11 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 
 	if err := a.sink.PersistTurnEnd(a.turnEndContent(env.raw), agent.SpanInfo{}); err != nil {
 		slog.Error("codewhale persist turn end", "agent_id", a.AgentID(), "error", err)
+		if !agent.OutputRetained(err) {
+			a.markCodewhaleReplyUnproved(turnID)
+		}
 	}
+	a.finishCodewhaleNativeReply(turnID, payload.Turn.Status)
 	if completion == agent.MessageCompletionInterrupted {
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
@@ -272,23 +290,20 @@ func (a *Agent) handleItemStarted(env codewhaleEnvelope) {
 		if item.ID == "" {
 			return
 		}
-		for kind, id := range a.openGeneratedItems {
-			if id == item.ID {
+		for kind, open := range a.openGeneratedItems {
+			if open.id == item.ID {
 				if kind != item.Kind {
 					slog.Debug("codewhale ignored a conflicting generated item kind", "agent_id", a.AgentID(), "item_id", item.ID)
 				}
 				return
 			}
 		}
-		if previous := a.openGeneratedItems[item.Kind]; previous != "" {
+		if previous := a.openGeneratedItems[item.Kind]; previous.id != "" {
 			// A replacement of the same generated kind is a stream resume even without a request snapshot.
 			a.discardGeneration()
 			a.finishSteerRequestBoundary()
 		}
-		if a.openGeneratedItems == nil {
-			a.openGeneratedItems = make(map[string]string)
-		}
-		a.openGeneratedItems[item.Kind] = item.ID
+		a.rememberGeneratedItem(item.Kind, item.ID, env.TurnID)
 		return
 	}
 	if codewhaleNotificationItemKinds[item.Kind] || item.Kind == itemKindUserMessage {
@@ -305,6 +320,13 @@ func (a *Agent) handleItemStarted(env codewhaleEnvelope) {
 		return
 	}
 	a.openToolCall(env, payload.Item.ID, spanID, name, input)
+}
+
+func (a *Agent) rememberGeneratedItem(kind, itemID, turnID string) {
+	if a.openGeneratedItems == nil {
+		a.openGeneratedItems = make(map[string]codewhaleGeneratedItem)
+	}
+	a.openGeneratedItems[kind] = codewhaleGeneratedItem{id: itemID, turnID: turnID}
 }
 
 // handleItemDelta feeds the streamed text of a message or a reasoning item to
@@ -328,6 +350,9 @@ func (a *Agent) handleItemDelta(env codewhaleEnvelope) {
 			a.persistUnknownFrame(env)
 		}
 		return
+	}
+	if a.openGeneratedItems[payload.Kind].id == "" {
+		a.rememberGeneratedItem(payload.Kind, env.ItemID, env.TurnID)
 	}
 	a.generationBuffer.Append(env.ItemID, kind, payload.Delta, providerkit.JoinVerbatim)
 	a.sink.ReportProgress(agent.ModelTextProgress(env.ItemID, payload.Delta))
@@ -471,12 +496,40 @@ func (a *Agent) persistHeldErrors(turnID, repeated string, all bool) {
 func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 	defer a.releaseSteerOutputs([]steerOutputKey{{kind: steerGeneratedOutput, id: item.ID}})
 	completion := completionFor(env.Event)
-	if a.openGeneratedItems[item.Kind] == item.ID {
+	if open := a.openGeneratedItems[item.Kind]; open.id == item.ID &&
+		(open.turnID == env.TurnID || open.turnID == "" || env.TurnID == "") {
 		delete(a.openGeneratedItems, item.Kind)
+	}
+	content := agent.MessageContent{Original: env.raw, Completion: completion}
+	var reply *providerkit.NativeReplyEntry
+	if item.Kind == contracts.CodewhaleItemKindAgentMessage && env.TurnID != "" {
+		reply = a.replies.Turn(env.TurnID)
+		if reply != nil {
+			if item.ID == "" || item.TurnID != "" && item.TurnID != env.TurnID ||
+				env.ItemID != "" && env.ItemID != item.ID {
+				reply.MarkUnproved()
+				reply = nil
+			} else {
+				content.AgentSessionID = a.currentThreadID()
+				content.NativeTurnID = env.TurnID
+				content.IdempotencyKey = codewhaleReplyMessageKey(env.TurnID, item.ID)
+			}
+		}
 	}
 	if strings.TrimSpace(item.Detail) == "" {
 		// The event carries no text of its own, so the deltas are the only copy.
-		if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, []string{item.ID}, completion, a.IsDiscardingOutput()); err != nil {
+		if reply != nil && !a.IsDiscardingOutput() {
+			defer a.sink.ReportProgress(agent.CompleteModelProgress(item.ID))
+			persisted, err := a.generationBuffer.PersistScopeTo(item.ID, completion, a.sink, content, agent.SpanInfo{})
+			if err != nil {
+				slog.Error("codewhale persist streamed text", "agent_id", a.AgentID(), "error", err)
+			}
+			if persisted {
+				reply.RecordItem(content.IdempotencyKey, err)
+			} else if !agent.OutputRetained(err) {
+				reply.MarkUnproved()
+			}
+		} else if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, []string{item.ID}, completion, a.IsDiscardingOutput()); err != nil {
 			slog.Error("codewhale persist streamed text", "agent_id", a.AgentID(), "error", err)
 		}
 		return
@@ -486,9 +539,12 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 	if a.IsDiscardingOutput() {
 		return
 	}
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		agent.MessageContent{Original: env.raw, Completion: completion}, agent.SpanInfo{}); err != nil {
+	err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	if err != nil {
 		slog.Error("codewhale persist message", "agent_id", a.AgentID(), "kind", item.Kind, "error", err)
+	}
+	if reply != nil {
+		reply.RecordItem(content.IdempotencyKey, err)
 	}
 }
 

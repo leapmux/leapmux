@@ -2,15 +2,17 @@ package cline
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // feedTurn starts a turn by hand, with no hub command, so a test drives every
@@ -139,8 +141,8 @@ func TestTheRunsEndWritesATrimmedTurnEnd(t *testing.T) {
 		},
 		"snapshot": map[string]any{"status": "idle"},
 	})
-	waitFor(t, func() bool { return !r.turnActive() }, "the run's end ends the turn")
 	r.hub.reply(requestID, fakeReply{})
+	waitFor(t, func() bool { return !r.turnActive() }, "the run's end ends the turn")
 
 	messages := r.sink.Messages()
 	last := messages[len(messages)-1]
@@ -346,19 +348,6 @@ func TestUsageStatesNoNegativeInputAndNoUnknownWindow(t *testing.T) {
 	assert.EqualValues(t, 5, usage[contracts.ContextUsageFieldOutputTokens])
 }
 
-func TestTurnDurationMs(t *testing.T) {
-	t.Parallel()
-	start := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	duration := turnDurationMs(start, start.Add(1500*time.Millisecond))
-	require.NotNil(t, duration)
-	assert.EqualValues(t, 1500, *duration)
-	zero := turnDurationMs(start, start)
-	require.NotNil(t, zero)
-	assert.Zero(t, *zero)
-	assert.Nil(t, turnDurationMs(time.Time{}, start), "a turn with no start")
-	assert.Nil(t, turnDurationMs(start, start.Add(-time.Second)), "a clock that moved backwards")
-}
-
 func TestRowMetadata(t *testing.T) {
 	t.Parallel()
 	assert.Nil(t, rowMetadata(nil, nil), "nothing to state")
@@ -542,7 +531,7 @@ func TestClineSteerReplyRecordsAnUnlistedSteer(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.feedTurn(t)
-	require.NoError(t, r.agent.SteerInput("Use the second answer.", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Use the second answer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The cut answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)
@@ -558,7 +547,7 @@ func TestClineSteerReplyAfterSubmissionDoesNotInterruptTheNextAnswer(t *testing.
 		r.feed(t, eventPendingPromptSubmitted, map[string]any{"prompt": map[string]any{"delivery": "steer"}})
 		return fakeReply{Payload: map[string]any{"queued": true}}
 	})
-	require.NoError(t, r.agent.SteerInput("Use the second answer.", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Use the second answer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The next answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)
@@ -631,7 +620,7 @@ func TestClineSteerReplyCannotChangeTheReplacementTurn(t *testing.T) {
 		r.agent.beginInputTurn()
 		return fakeReply{Payload: map[string]any{"queued": true}}
 	})
-	require.NoError(t, r.agent.SteerInput("The old steer.", nil))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "The old steer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The replacement answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)
@@ -679,7 +668,7 @@ func TestClineRunEndWithALiveCompactionWritesAFailedEnd(t *testing.T) {
 			r.feedTurn(t)
 			r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
 			r.agent.dispatchMu.Lock()
-			r.agent.endTurn(completion, runEndRow(r.sessionID(), runReasonError, "The turn ended."))
+			r.agent.endTurn(completion, runEndRow(r.sessionID(), runReasonError, "The turn ended."), endTurnOptions{})
 			r.agent.dispatchMu.Unlock()
 			value, exists := r.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
 			require.True(t, exists)
@@ -704,7 +693,7 @@ func TestClineCompactionDiscardClearsLiveStateWithoutARow(t *testing.T) {
 	r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
 	r.agent.DiscardOutput()
 	r.agent.dispatchMu.Lock()
-	r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""))
+	r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""), endTurnOptions{})
 	r.agent.dispatchMu.Unlock()
 	assert.Empty(t, r.sink.Notifications())
 	assert.Empty(t, r.sink.Messages())
@@ -755,7 +744,7 @@ func TestClineRetryEndsWithoutResolvingOnTheNextTurn(t *testing.T) {
 	r.feedTurn(t)
 	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "Retry the model.", "metadata": map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry, "phase": contracts.ClineNoticePhaseStarted}})
 	r.agent.dispatchMu.Lock()
-	r.agent.endTurn(agent.MessageCompletionError, runEndRow(r.sessionID(), runReasonError, "The model failed."))
+	r.agent.endTurn(agent.MessageCompletionError, runEndRow(r.sessionID(), runReasonError, "The model failed."), endTurnOptions{})
 	r.agent.dispatchMu.Unlock()
 	r.feedTurn(t)
 	r.feed(t, eventAssistantDelta, map[string]any{"text": "The next turn."})
@@ -779,7 +768,7 @@ func TestClineMalformedFinalFrameKeepsItsBufferedOutput(t *testing.T) {
 				r.feed(t, delta, map[string]any{"text": "The buffered output."})
 				r.feed(t, event, invalid.payload)
 				r.agent.dispatchMu.Lock()
-				r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""))
+				r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""), endTurnOptions{})
 				r.agent.dispatchMu.Unlock()
 				rows := r.sink.Messages()
 				require.Len(t, rows, 2)
@@ -827,4 +816,193 @@ func TestClineMalformedRunStartDoesNotStartATurn(t *testing.T) {
 	r.feed(t, eventRunStarted, nil)
 	assert.False(t, r.turnActive())
 	assert.Empty(t, r.sink.Messages())
+}
+
+func TestClineAssistantFinishedRetryUsesJavaScriptWhitespace(t *testing.T) {
+	t.Parallel()
+	retryNotice := map[string]any{
+		"message":  "Retry the model.",
+		"metadata": map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry, "phase": contracts.ClineNoticePhaseStarted},
+	}
+
+	t.Run("BOM is blank and does not resolve retry or persist row", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.feedTurn(t)
+		r.feed(t, contracts.ClineEventSessionNotice, retryNotice)
+		r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "\uFEFF"})
+		assert.Empty(t, r.sink.Notifications(), "BOM-only text is blank in JS trim and must not resolve retry")
+		assert.Empty(t, r.sink.Messages())
+	})
+
+	t.Run("NEL is visible and resolves retry and persists row", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.feedTurn(t)
+		r.feed(t, contracts.ClineEventSessionNotice, retryNotice)
+		r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "\u0085"})
+		notices := r.sink.Notifications()
+		require.Len(t, notices, 1, "NEL is non-blank in JS trim and must resolve retry")
+		assert.Equal(t, contracts.NotificationTypeApiRetryResolved, notices[0][contracts.NotificationFieldType])
+		require.Len(t, r.sink.Messages(), 1)
+		assert.Equal(t, "\u0085", payloadOf(t, r.sink.Messages()[0])["text"])
+	})
+}
+
+func TestClineFlushPendingUsesJavaScriptWhitespace(t *testing.T) {
+	t.Parallel()
+	t.Run("BOM-only buffered text is skipped", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.feedTurn(t)
+		r.feed(t, eventAssistantDelta, map[string]any{"text": "\uFEFF"})
+		r.agent.dispatchMu.Lock()
+		r.agent.flushPending(r.agent.out.lead, r.sessionID(), agent.MessageCompletionInterrupted)
+		r.agent.dispatchMu.Unlock()
+		assert.Empty(t, r.sink.Messages())
+	})
+
+	t.Run("NEL buffered text is persisted", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.feedTurn(t)
+		r.feed(t, eventAssistantDelta, map[string]any{"text": "\u0085"})
+		r.agent.dispatchMu.Lock()
+		r.agent.flushPending(r.agent.out.lead, r.sessionID(), agent.MessageCompletionInterrupted)
+		r.agent.dispatchMu.Unlock()
+		rows := r.sink.Messages()
+		require.Len(t, rows, 1)
+		assert.Equal(t, "\u0085", payloadOf(t, rows[0])["text"])
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[0].Completion)
+	})
+}
+
+func TestClineEndTurnEdgeCases(t *testing.T) {
+	t.Parallel()
+	t.Run("teardown closes open tools with error on Complete and interrupted on Interrupted", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name           string
+			completion     agent.MessageCompletion
+			wantToolStatus agent.MessageCompletion
+		}{
+			{name: "Complete becomes Error for open tools", completion: agent.MessageCompletionComplete, wantToolStatus: agent.MessageCompletionError},
+			{name: "Interrupted stays Interrupted for open tools", completion: agent.MessageCompletionInterrupted, wantToolStatus: agent.MessageCompletionInterrupted},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				r := newRig(t)
+				r.feedTurn(t)
+				r.feed(t, contracts.ClineEventToolStarted, map[string]any{
+					"toolCallId": "tool-open-1", "toolName": "run_commands", "input": map[string]any{"command": "sleep 10"},
+				})
+				r.agent.dispatchMu.Lock()
+				r.agent.endTurn(tc.completion, runEndRow(r.sessionID(), runReasonCompleted, ""), endTurnOptions{teardown: true})
+				r.agent.dispatchMu.Unlock()
+
+				assert.Equal(t, []string{"tool-open-1"}, r.sink.ClosedSpans())
+				assert.Contains(t, r.sink.TurnLifecycle(), "reset_spans")
+				rows := r.sink.Messages()
+				require.Len(t, rows, 3)
+				assert.True(t, rows[1].Closing)
+				assert.Equal(t, tc.wantToolStatus, rows[1].Completion)
+				assert.True(t, rows[2].TurnEnd)
+			})
+		}
+	})
+
+	t.Run("successor while stopping retires both previous and successor", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		sessionID := r.sessionID()
+		prevReceipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: "prev-1", TurnID: "prev-1"}
+		succReceipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: "succ-1", TurnID: "succ-1"}
+		prev := &inputReply{receipt: prevReceipt, started: true}
+		succ := &inputReply{receipt: succReceipt, autonomous: true}
+		r.agent.Mu.Lock()
+		r.agent.turn = turnState{active: true, steerable: true, startedAt: r.agent.clock.Now(), inputReply: prev}
+		r.agent.Mu.Unlock()
+		r.agent.cancel()
+
+		r.agent.dispatchMu.Lock()
+		r.agent.endTurn(agent.MessageCompletionComplete, runEndRow(sessionID, runReasonCompleted, ""), endTurnOptions{successor: succ})
+		r.agent.dispatchMu.Unlock()
+
+		assert.False(t, r.turnActive())
+		retirements := r.sink.NativeReplyRetirements()
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retirements[prevReceipt])
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retirements[succReceipt])
+	})
+
+	t.Run("successor with ambiguous previous reply does not retain detachedReply", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		sessionID := r.sessionID()
+		prevReceipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: "prev-amb", TurnID: "prev-amb"}
+		succReceipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: "succ-2", TurnID: "succ-2"}
+		prev := &inputReply{receipt: prevReceipt, started: true, ambiguous: true}
+		succ := &inputReply{receipt: succReceipt, autonomous: true}
+		r.agent.Mu.Lock()
+		r.agent.turn = turnState{active: true, steerable: true, startedAt: r.agent.clock.Now(), inputReply: prev}
+		r.agent.Mu.Unlock()
+
+		r.agent.dispatchMu.Lock()
+		r.agent.endTurn(agent.MessageCompletionComplete, runEndRow(sessionID, runReasonCompleted, ""), endTurnOptions{successor: succ})
+		r.agent.dispatchMu.Unlock()
+
+		require.True(t, r.turnActive())
+		r.agent.Mu.Lock()
+		assert.Nil(t, r.agent.detachedReply, "ambiguous previous reply must not become detachedReply")
+		assert.Same(t, succ, r.agent.turn.inputReply)
+		r.agent.Mu.Unlock()
+		rows := r.sink.Messages()
+		require.Len(t, rows, 1)
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, rows[0].InputTurnOutcome)
+	})
+
+	t.Run("non-retained PersistTurnEnd error retires reply and drops detached previous", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		sessionID := r.sessionID()
+		prevReceipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: "prev-err", TurnID: "prev-err"}
+		succReceipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: "succ-err", TurnID: "succ-err"}
+		prev := &inputReply{receipt: prevReceipt, started: true}
+		succ := &inputReply{receipt: succReceipt, autonomous: true}
+		r.agent.Mu.Lock()
+		r.agent.turn = turnState{active: true, steerable: true, startedAt: r.agent.clock.Now(), inputReply: prev}
+		r.agent.Mu.Unlock()
+		r.agent.sink = &failingClinePersistSink{
+			ProviderServices:  r.agent.sink,
+			persistTurnEndErr: errors.New("non-retained turn end error"),
+		}
+
+		r.agent.dispatchMu.Lock()
+		r.agent.endTurn(agent.MessageCompletionComplete, runEndRow(sessionID, runReasonCompleted, ""), endTurnOptions{successor: succ})
+		r.agent.dispatchMu.Unlock()
+
+		r.agent.Mu.Lock()
+		assert.Nil(t, r.agent.detachedReply)
+		r.agent.Mu.Unlock()
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+			r.sink.NativeReplyRetirements()[prevReceipt])
+	})
+
+	t.Run("IsDiscardingOutput skips PersistTurnEnd and retires input reply", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		sessionID := r.sessionID()
+		receipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: "disc-1", TurnID: "disc-1"}
+		r.agent.Mu.Lock()
+		r.agent.turn = turnState{active: true, steerable: true, startedAt: r.agent.clock.Now(), inputReply: &inputReply{receipt: receipt, started: true}}
+		r.agent.Mu.Unlock()
+		r.agent.DiscardOutput()
+
+		r.agent.dispatchMu.Lock()
+		r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(sessionID, runReasonAborted, ""), endTurnOptions{})
+		r.agent.dispatchMu.Unlock()
+
+		assert.Empty(t, r.sink.Messages())
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+			r.sink.NativeReplyRetirements()[receipt])
+	})
 }

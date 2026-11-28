@@ -6,11 +6,12 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// copilotAnswer builds the neutral envelope the browser's control surface sends.
+// copilotAnswer builds the neutral envelope that AnswerControlRequest sends.
 func copilotAnswer(requestID string, response map[string]any) []byte {
 	raw, _ := json.Marshal(map[string]any{
 		"type": "control_response",
@@ -35,13 +36,14 @@ func copilotNativeResponse(t *testing.T, resolution agent.ControlResponseResolut
 	return envelope.Response.Response
 }
 
+// copilotResolve resolves the answer of response to the request of eventType
+// and data, stored under its own key, as the Worker does.
 func copilotResolve(t *testing.T, eventType string, data map[string]any, response map[string]any) agent.ControlResponseResolution {
 	t.Helper()
-	return copilotPlugin(t).ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "copilot-1",
-		RequestPayload:  copilotStoredFrame(t, eventType, data),
-		ResponseContent: copilotAnswer("copilot-1", response),
-	})
+	payload := copilotStoredFrame(t, eventType, data)
+	key := copilotStoredKey(t, payload)
+	return agenttest.ResolveAnswerInSession(copilotPlugin(t), payload, copilotTestSession, key,
+		agent.ControlAnswer{Content: copilotAnswer(key, response)})
 }
 
 // A single approval is the decision CP-007 verified. The runtime refuses the
@@ -135,13 +137,13 @@ func TestCopilotPermissionRejectionCarriesItsFeedback(t *testing.T) {
 	assert.Equal(t, map[string]any{"kind": "reject", "feedback": "Read another file."}, copilotNativeResponse(t, resolution))
 }
 
-// A refusal with no typed reason stays untyped: the placeholder the control surface
-// sends collapses to nothing rather than reaching the runtime as the user's words.
+// A refusal with no typed reason stays untyped: the placeholder that DenyResponse
+// writes collapses to nothing rather than reaching the runtime as the user's words.
 func TestCopilotBarePermissionRejectionCarriesNoFeedback(t *testing.T) {
 	t.Parallel()
 	resolution := copilotResolve(t, contracts.CopilotEventPermissionRequested,
 		map[string]any{"requestId": "native-1", "permissionRequest": map[string]any{"kind": "read"}},
-		map[string]any{"behavior": "deny", "message": agent.ControlRejectedByUserMessage})
+		map[string]any{"behavior": "deny", "message": contracts.ControlAnswerMessageRejectedByUser})
 	assert.Equal(t, map[string]any{"kind": "reject"}, copilotNativeResponse(t, resolution))
 }
 
@@ -217,34 +219,31 @@ func TestCopilotElicitationPreservesTheFormAnswer(t *testing.T) {
 
 // A decision this build cannot read withholds the forward. The runtime then keeps
 // waiting and the request stays answerable, which a frame it cannot parse would not.
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestCopilotWithholdsAnUnreadableDecision(t *testing.T) {
 	t.Parallel()
 	plugin := copilotPlugin(t)
+	payload := copilotStoredFrame(t, contracts.CopilotEventPermissionRequested, map[string]any{"requestId": "native-1", "permissionRequest": map[string]any{"kind": "read"}})
+	key := copilotStoredKey(t, payload)
 	for name, response := range map[string][]byte{
-		"no behavior":     copilotAnswer("copilot-1", map[string]any{"decision": "approve"}),
-		"unknown action":  copilotAnswer("copilot-1", map[string]any{"action": "maybe"}),
-		"another request": copilotAnswer("copilot-2", map[string]any{"behavior": "allow"}),
-		"not json":        []byte("not json"),
+		"no behavior":    copilotAnswer(key, map[string]any{"decision": "approve"}),
+		"unknown action": copilotAnswer(key, map[string]any{"action": "maybe"}),
 	} {
-		resolution := plugin.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID:       "copilot-1",
-			RequestPayload:  copilotStoredFrame(t, contracts.CopilotEventPermissionRequested, map[string]any{"requestId": "native-1", "permissionRequest": map[string]any{"kind": "read"}}),
-			ResponseContent: response,
-		})
+		resolution := agenttest.ResolveAnswerInSession(plugin, payload, copilotTestSession, key, agent.ControlAnswer{Content: response})
 		assert.True(t, resolution.Withhold, name)
 	}
 }
 
 // A response for a request that is not Copilot's own keeps the shared default, so a
-// row this plugin does not own is never rewritten.
+// row this plugin does not own is never rewritten. Such a row gives no Copilot
+// key, so the Worker refuses it before the plugin reads it
+// (agent.StoredControlRequestAgrees); this pins the plugin's own rule past
+// that check.
 func TestCopilotLeavesAnotherProvidersResponseAlone(t *testing.T) {
 	t.Parallel()
 	response := copilotAnswer("copilot-1", map[string]any{"behavior": "allow"})
-	resolution := copilotPlugin(t).ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "copilot-1",
-		RequestPayload:  json.RawMessage(`{"method":"session/request_permission","params":{}}`),
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswerPastTheKeyCheck(copilotPlugin(t), []byte(`{"method":"session/request_permission","params":{}}`), "copilot-1", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 	assert.Equal(t, agent.PlanModeControlNone, resolution.PlanModeControl)
 	assert.JSONEq(t, string(response), string(resolution.Content))

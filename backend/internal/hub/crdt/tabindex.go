@@ -57,8 +57,11 @@ type TabKey struct {
 	TabID  string
 }
 
-// DiffProjectionForBatch is the commit hot-path entry point: it
-// returns the same IndexDiff DiffProjection would, but skips the
+// An empty row identifies an absent placement.
+type tabPlacementObserver func(before, after TabIndexRow)
+
+// diffProjectionForBatch is the commit hot-path entry point: it
+// returns the same IndexDiff diffProjection would, but skips the
 // per-tab chain walks for tabs the batch cannot possibly transition.
 //
 // The op classification mirrors the validator's tabPlacementCheck
@@ -74,9 +77,9 @@ type TabKey struct {
 // full Project + Diff path because the affected subtree can span any
 // number of pre-existing tabs and tight scoping would re-create most
 // of the per-batch cost we're trying to avoid.
-func DiffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) IndexDiff {
+func diffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp, observe tabPlacementObserver) IndexDiff {
 	if batchHasStructuralOp(batch) {
-		return DiffProjection(Project(prev), Project(next))
+		return diffProjection(Project(prev), Project(next), observe)
 	}
 	touched := touchedTabIDs(batch)
 	if len(touched) == 0 {
@@ -94,8 +97,14 @@ func DiffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmu
 		switch {
 		case !nextOK && prevOK:
 			diff.Deletes = append(diff.Deletes, TabKey{UserID: prevOwned.UserID, TabID: prevOwned.TabID})
+			if observe != nil {
+				observe(prevRow, TabIndexRow{})
+			}
 		case nextOK && (!prevOK || prevRow != nextRow):
 			diff.Upserts = append(diff.Upserts, nextRow)
+			if observe != nil {
+				observe(prevRow, nextRow)
+			}
 		}
 	}
 	return diff
@@ -140,23 +149,33 @@ func indexRow(owned *OwnedTab, rendered bool) TabIndexRow {
 	}
 }
 
-// DiffProjection returns the write plan to take the index from `prev`
+// diffProjection returns the write plan to take the index from `prev`
 // to `next`. The diff is computed from the projection (not the raw
 // state), so projection-repair drops are reflected in the Rendered flag.
-func DiffProjection(prev, next *Projection) IndexDiff {
+func diffProjection(prev, next *Projection, observe tabPlacementObserver) IndexDiff {
 	prevRows := indexRowsOf(prev)
 	nextRows := indexRowsOf(next)
 
 	diff := IndexDiff{}
 	for id, entry := range nextRows {
 		row := indexRow(entry.tab, entry.rendered)
-		if previous, ok := prevRows[id]; !ok || indexRow(previous.tab, previous.rendered) != row {
+		var previousRow TabIndexRow
+		if previous, ok := prevRows[id]; ok {
+			previousRow = indexRow(previous.tab, previous.rendered)
+		}
+		if previousRow != row {
 			diff.Upserts = append(diff.Upserts, row)
+			if observe != nil {
+				observe(previousRow, row)
+			}
 		}
 	}
 	for id, previous := range prevRows {
 		if _, ok := nextRows[id]; !ok {
 			diff.Deletes = append(diff.Deletes, TabKey{UserID: previous.tab.UserID, TabID: id})
+			if observe != nil {
+				observe(indexRow(previous.tab, previous.rendered), TabIndexRow{})
+			}
 		}
 	}
 	return diff

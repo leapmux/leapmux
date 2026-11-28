@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -161,7 +162,7 @@ func TestJunieSteerSendsTheNativeMethod(t *testing.T) {
 			a.SetSessionIDForTest("junie-session")
 			a.SetPromptActiveForTest(true)
 
-			err := a.SteerInput("Steer text while active.", nil)
+			err := agenttest.SteerInput(a, agent.SteerRequest{Content: "Steer text while active."})
 			assert.Equal(t, tc.wantErr, err)
 			sent := false
 			for _, request := range requests() {
@@ -225,7 +226,7 @@ func TestJunieStartedNewTurnEndsAtTheLastRequestCompleteMarker(t *testing.T) {
 	a.HooksForTest().SessionNotificationMetadata = a.observeJunieTurnEnd
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("Steer text while active.", nil))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Steer text while active."}))
 	assert.False(t, a.AgentTurnActive(), "the turn of Junie's own waits for the prompt that runs")
 
 	// The prompt's response hands the busy state to the waiting turn.
@@ -257,4 +258,99 @@ func TestJunieStartedNewTurnEndsAtTheLastRequestCompleteMarker(t *testing.T) {
 	}
 	assert.True(t, steered, "the steered answer is stored as its own completed text")
 	assert.Equal(t, 1, turnEnds, "the prompt's divider is the only turn end: the marker stores no row")
+}
+
+func TestJunieSteerNoActiveTurnIsNotWrappedInDeliveryUncertain(t *testing.T) {
+	t.Parallel()
+	a, _ := newJunieAgentForRPC(t)
+	a.SetPromptActiveForTest(false)
+
+	_, err := a.SteerInput(agent.SteerRequest{InputID: "in-1", Content: "steer while idle"})
+	require.ErrorIs(t, err, agent.ErrNoActiveTurn)
+	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "pre-write ErrNoActiveTurn must not be misclassified as delivery uncertain")
+}
+
+func TestJunieSteerSendsAttachmentOnlyRequest(t *testing.T) {
+	t.Parallel()
+	a, requests := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == junieSteerMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"outcome":"injected"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	a.SetSessionIDForTest("junie-session")
+	a.SetPromptActiveForTest(true)
+
+	_, err := a.SteerInput(agent.SteerRequest{
+		InputID: "in-attach",
+		Attachments: []*leapmuxv1.Attachment{{
+			Filename: "note.txt",
+			MimeType: "text/plain",
+			Data:     []byte("attached note"),
+		}},
+	})
+	require.NoError(t, err)
+	assert.True(t, hasMethod(requests(), junieSteerMethod), "attachment-only steer must reach _session/steering")
+}
+
+func TestJunieMultipleStartedNewTurnsStayActiveUntilLastMarker(t *testing.T) {
+	t.Parallel()
+	a, _ := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == junieSteerMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"outcome":"startedNewTurn"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	a.HooksForTest().SessionNotificationMetadata = a.observeJunieTurnEnd
+	a.SetPromptActiveForTest(true)
+
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "First follow-up."}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Second follow-up."}))
+	a.FinishPromptRequestForTest("session-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	testutil.RequireEventually(t, func() bool { return a.AgentTurnActive() })
+
+	// First lastRequestComplete ends only the first startedNewTurn.
+	a.HandleSessionUpdateForTest(junieSessionUpdateParams("session-1", "agent_message_chunk", "", map[string]any{"lastRequestComplete": true}))
+	assert.True(t, a.AgentTurnActive(), "agent turn must remain active until the second startedNewTurn finishes")
+
+	// Second lastRequestComplete ends the queued agent turns.
+	a.HandleSessionUpdateForTest(junieSessionUpdateParams("session-1", "agent_message_chunk", "", map[string]any{"lastRequestComplete": true}))
+	assert.False(t, a.AgentTurnActive(), "second lastRequestComplete must end the agent turn")
+}
+
+func TestJunieSteerSessionMismatchDoesNotReturnOrphanedReceipt(t *testing.T) {
+	t.Parallel()
+	const newSession = "0195c000-0000-7000-8000-000000000099"
+	a, _ := newJunieAgentForRPC(t)
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest(newSession)
+
+	a.steerReplies.mu.Lock()
+	a.steerReplies.active = &junieSteerTurn{
+		sessionID: "stale-session",
+		inputs:    []junieSteerInput{{receipt: agent.NativeInputReceipt{SessionID: "stale-session", InputID: "stale-in"}, text: "old"}},
+	}
+	a.steerReplies.activeFlag.Store(true)
+	a.steerReplies.mu.Unlock()
+
+	admitted := a.steerReplies.admit(junieSteerInput{
+		receipt: agent.NativeInputReceipt{SessionID: newSession, InputID: "in-1"},
+		text:    "hello",
+	}, sessionstore.JournalCursor{})
+	assert.False(t, admitted, "admit must reject a receipt belonging to a different session than the active turn")
+
+	a.retireJunieSteers()
+	assert.False(t, a.steerReplies.activeFlag.Load(), "retireJunieSteers must clear active flag")
+	a.steerReplies.mu.Lock()
+	assert.Nil(t, a.steerReplies.active)
+	a.steerReplies.mu.Unlock()
 }

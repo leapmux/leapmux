@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "saved_decision_corpus.schema.json",
+  "title": "saved decision corpus",
+  "description": "Shared by TestSavedDecisionCorpusPrompts and TestSavedDecisionCorpusDecisions (backend/internal/worker/agent/providers), which read each request into the stated prompt and rebuild each response from the stated decision, and frontend/src/components/chat/savedDecisionCorpus.test.ts, which reads each prompt and decision through the shared saved-answer display and requires the label.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "cases"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "provider", "requestId", "label", "request", "response", "prompt", "decision"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "provider": { "type": "string", "pattern": "^AGENT_PROVIDER_[A-Z0-9_]+$" },
+          "requestId": {
+            "description": "The id under which the Worker stores the request, which the answer addresses.",
+            "type": "string",
+            "minLength": 1
+          },
+          "note": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "request": { "type": "object" },
+          "response": { "type": "object" },
+          "prompt": {
+            "description": "A leapmux.v1.ControlPrompt in protojson, as the Worker records it.",
+            "type": "object",
+            "minProperties": 1
+          },
+          "decision": {
+            "description": "A leapmux.v1.ControlDecision in protojson, as the Worker records it beside the prompt.",
+            "type": "object",
+            "minProperties": 1
+          },
+          "permissionModeLabels": {
+            "description": "The labels of the agent's permission modes that the browser holds, by mode value.",
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

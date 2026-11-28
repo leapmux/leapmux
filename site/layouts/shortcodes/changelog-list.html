@@ -1,0 +1,34 @@
+{{- /*
+  changelog-list renders every milestone from data/changelog.yaml for /changelog/.
+*/ -}}
+{{- $data := index hugo.Data "changelog" -}}
+{{- $entries := slice -}}
+{{- if and $data $data.entries -}}
+  {{- $entries = $data.entries -}}
+{{- end -}}
+{{- if gt (len $entries) 0 -}}
+{{- $seenDates := dict -}}
+<ol class="lm-changelog-list" role="list">
+  {{- range $entries -}}
+  {{- $count := add (index $seenDates .date | default 0) 1 -}}
+  {{- $seenDates = merge $seenDates (dict .date $count) -}}
+  {{- $anchor := cond (eq $count 1) (printf "release-%s" .date) (printf "release-%s-%d" .date $count) -}}
+  <li class="lm-changelog-entry" id="{{ $anchor }}">
+    <div class="lm-changelog-entry-header">
+      <time class="lm-changelog-date" datetime="{{ .date }}">{{ .label | default .date }}</time>
+      <h2 class="lm-changelog-title">{{ .title }}</h2>
+    </div>
+    {{- with .summary -}}
+    <p class="lm-changelog-summary">{{ . | $.Page.RenderString (dict "display" "inline") }}</p>
+    {{- end -}}
+    {{- with .highlights -}}
+    <ul class="lm-changelog-highlights">
+      {{- range . -}}
+      <li>{{ . | $.Page.RenderString (dict "display" "inline") }}</li>
+      {{- end -}}
+    </ul>
+    {{- end -}}
+  </li>
+  {{- end -}}
+</ol>
+{{- end -}}

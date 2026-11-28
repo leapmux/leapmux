@@ -50,12 +50,12 @@ func newNativeRestartProbeAgent(id string) *nativeRestartProbeAgent {
 
 func (a *nativeRestartProbeAgent) AgentID() string { return a.id }
 
-func (a *nativeRestartProbeAgent) SendInput(content string, _ []*leapmuxv1.Attachment) error {
+func (a *nativeRestartProbeAgent) SendInput(content string, _ []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.sent <- content
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
-func (a *nativeRestartProbeAgent) SendInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *nativeRestartProbeAgent) SendInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.SendInput(content, attachments)
 }
 
@@ -96,7 +96,7 @@ func prepareNativeRestartAgent(t *testing.T) (*Service, *nativeRestartProbeAgent
 	old := newNativeRestartProbeAgent(id)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: id, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY,
-		WorkingDir: workingDir, Options: mode, ResumeSessionID: "native-session-1",
+		WorkingDir: workingDir, Options: mode, Session: agent.ResumeSession("native-session-1"),
 	}, newTestRootOutputSink(t, svc.Output, id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestNativeTurnRestartKeepsQueuedInputForOneResumedProcess(t *testing.T) {
 	case content := <-old.sent:
 		t.Fatalf("queued input reached the old process: %q", content)
 	case opts := <-started:
-		assert.Equal(t, "native-session-1", opts.ResumeSessionID)
+		assert.Equal(t, "native-session-1", opts.Session.ResumeID())
 		assert.Equal(t, "plan", opts.PermissionMode())
 	case <-ctx.Done():
 		t.Fatal("the native turn did not start a session-preserving restart")
@@ -416,13 +416,22 @@ func TestNativeTurnRestartStopsLaunchAfterPostlaunchReadFault(t *testing.T) {
 	svc, old, id := prepareNativeTurnRestart(t)
 	stale, err := svc.Queries.GetAgentByID(ctx, id)
 	require.NoError(t, err)
-	defer installRestartReadFault(svc, 1, errors.New("the postlaunch read failed"))()
+	var replacementStarted atomic.Bool
+	getAgent := svc.getAgentByIDFn
+	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
+		if agentID == id && replacementStarted.Load() {
+			return db.Agent{}, errors.New("the postlaunch read failed")
+		}
+		return getAgent(ctx, agentID)
+	}
 	newAgent := newNativeRestartProbeAgent(id)
 	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
-		return svc.Agents.StartAgentWith(ctx, opts, sink,
+		settings, err := svc.Agents.StartAgentWith(ctx, opts, sink,
 			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 				return newAgent, nil
 			})
+		replacementStarted.Store(err == nil)
+		return settings, err
 	}
 
 	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)

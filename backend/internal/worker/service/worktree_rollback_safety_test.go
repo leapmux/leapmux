@@ -269,7 +269,7 @@ func TestAutomaticWorktreeRollback_PreservesUnprovedOrReplacedTracking(t *testin
 func TestAutomaticWorktreeRollback_CleansAnUntrackedOwnedCreation(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	repo := canonicalRepoDir(t)
-	plan, err := svc.validateCreateWorktree(t.Context(), repo, "not-yet-tracked", "")
+	plan, err := svc.validateCreateWorktree(t.Context(), createWorktreeValidation{workingDir: repo, branch: "not-yet-tracked"})
 	require.NoError(t, err)
 	initial := strings.TrimSpace(run(t, repo, "git", "rev-parse", "--verify", plan.StartPoint+"^{commit}"))
 	run(t, repo, "git", "worktree", "add", "-b", plan.BranchName, plan.WorktreePath, initial)

@@ -16,6 +16,11 @@ type ompProvider struct {
 	agent.ProviderDefaults
 }
 
+// SupportsFork reports that Oh My Pi supports native conversation-history
+// forking by atomically cloning the JSONL session file with a new session ID
+// and cwd.
+func (ompProvider) SupportsFork() bool { return true }
+
 // ChildCapabilities exposes the native child steering and cancellation commands.
 func (ompProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}

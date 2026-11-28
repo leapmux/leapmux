@@ -6,6 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Native notification classification selects the reducer for both live and recovered records.
@@ -22,19 +23,22 @@ func recoverOpenCodeAssistantOutput(messageID string, snapshot *openCodeAssistan
 	if snapshot == nil || snapshot.Content == nil {
 		return errors.New("the recovered OpenCode assistant requires a decoded content array")
 	}
+	completion, failed, err := openCodeSnapshotCompletion(snapshot)
+	if err != nil {
+		return err
+	}
+	retried := providerkit.RawPresent(snapshot.Retry)
 	ordinals := make(map[string]int)
 	for _, raw := range *snapshot.Content {
-		var header struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(raw, &header); err != nil {
+		var part openCodeRecoveredPart
+		if err := json.Unmarshal(raw, &part); err != nil {
 			return err
 		}
-		switch header.Type {
+		switch part.Type {
 		case "text", "reasoning":
-			ordinal := ordinals[header.Type]
-			ordinals[header.Type]++
-			if err := text.recoverPart(messageID, ordinal, raw, snapshot); err != nil {
+			ordinal := ordinals[part.Type]
+			ordinals[part.Type]++
+			if err := text.recoverPart(messageID, ordinal, part, snapshot, completion, failed, retried); err != nil {
 				return err
 			}
 		case "tool":

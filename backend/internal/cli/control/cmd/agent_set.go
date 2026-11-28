@@ -1,59 +1,73 @@
 package cmd
 
 import (
-	"context"
-	"flag"
 	"fmt"
 	"sort"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
-// RunAgentSet updates --model / --effort / --permission-mode /
+// agentSetResult is the result of `agent set`.
+type agentSetResult struct {
+	ID string `json:"id"`
+	// Applied maps each axis that took effect to the value the agent
+	// confirmed.
+	Applied map[string]string `json:"applied"`
+	// NotApplied lists the axes that the provider removed instead of
+	// setting.
+	NotApplied []string `json:"not_applied,omitempty"`
+	// Unresolved lists the axes that the agent did not confirm.
+	Unresolved []string `json:"unresolved,omitempty"`
+}
+
+// runAgentSet updates --model / --effort / --permission-mode /
 // --option key=value (repeatable).
-func RunAgentSet(rawCtx any, args []string) error {
-	var model, effort, permissionMode string
-	optionSettings := stringSliceFlag{}
-	settings := &leapmuxv1.AgentSettings{Options: map[string]string{}}
-	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
-		setup: func(fs *flag.FlagSet) {
-			fs.StringVar(&model, "model", "", "model id (empty = no change)")
-			fs.StringVar(&effort, "effort", "", "effort id (empty = no change)")
-			fs.StringVar(&permissionMode, "permission-mode", "", "permission mode (empty = no change)")
-			fs.Var(&optionSettings, "option", "provider option in key=value form (repeatable)")
-		},
-		validate: func() error {
-			opts, err := buildAgentSetOptions(model, effort, permissionMode, optionSettings.values)
-			if err != nil {
-				return control.EmitErrorWith("invalid_request", err)
-			}
-			settings.Options = opts
-			return nil
-		},
-		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
-			resp := &leapmuxv1.UpdateAgentSettingsResponse{}
-			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
-				AgentId:  agentID,
-				Settings: settings,
-			}, resp); err != nil {
-				return err
-			}
-			applied, notApplied, unresolved := appliedFromSettlements(settings.GetOptions(), resp.GetOptionSettlements())
-			data := map[string]any{"agent_id": agentID, "applied": applied}
-			// Only surface not_applied when something didn't take, so the common all-applied case
-			// stays uncluttered.
-			if len(notApplied) > 0 {
-				data["not_applied"] = notApplied
-			}
-			if len(unresolved) > 0 {
-				data["unresolved"] = unresolved
-			}
-			return control.EmitData(data)
-		},
-	})
+func runAgentSet(inv *cli.Invocation) (any, error) {
+	for _, name := range []string{"model", "effort", "permission-mode"} {
+		if inv.Changed(name) && strings.TrimSpace(stringFlag(inv, name)) == "" {
+			return nil, cli.Usagef("--%s is empty", name)
+		}
+	}
+	options := inv.StringArray("option")
+	opts, err := buildAgentSetOptions(
+		strings.TrimSpace(stringFlag(inv, "model")),
+		strings.TrimSpace(stringFlag(inv, "effort")),
+		strings.TrimSpace(stringFlag(inv, "permission-mode")),
+		options,
+	)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	if len(opts) == 0 {
+		return nil, cli.Usagef("nothing to set").
+			WithHint("pass --model, --effort, --permission-mode or --option")
+	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
+	if err != nil {
+		return nil, err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
+		return nil, err
+	}
+	settings := &leapmuxv1.AgentSettings{Options: opts}
+	resp := &leapmuxv1.UpdateAgentSettingsResponse{}
+	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId:  got.ID,
+		Settings: settings,
+	}, resp); err != nil {
+		return nil, err
+	}
+	applied, notApplied, unresolved := appliedFromSettlements(settings.GetOptions(), resp.GetOptionSettlements())
+	return agentSetResult{ID: got.ID, Applied: applied, NotApplied: notApplied, Unresolved: unresolved}, nil
 }
 
 // appliedFromSettlements classifies each requested axis. A confirmed
@@ -86,11 +100,23 @@ func appliedFromSettlements(
 // contradictory pair like `--effort high --option effort=low` (or a repeated `--option k=`)
 // can't silently resolve to whichever assignment the loop happens to apply last.
 func buildAgentSetOptions(model, effort, permissionMode string, options []string) (map[string]string, error) {
+	for _, flag := range []struct {
+		name  string
+		value string
+	}{
+		{name: "model", value: model},
+		{name: "effort", value: effort},
+		{name: "permission-mode", value: permissionMode},
+	} {
+		if flag.value != "" && strings.TrimSpace(flag.value) == "" {
+			return nil, fmt.Errorf("--%s is empty", flag.name)
+		}
+	}
 	// Seed the three dedicated flags through the same builder the spawn path uses (spawnOptions),
 	// so the "build an option map from --model/--effort/--permission-mode, omitting empties" rule
 	// lives in one place. The dup check below then also catches an --option that collides with a
 	// dedicated flag, since both land in this one map.
-	out := spawnOptions(model, effort, permissionMode)
+	out := spawnOptions(strings.TrimSpace(model), strings.TrimSpace(effort), strings.TrimSpace(permissionMode))
 	for _, kv := range options {
 		k, v, err := splitKV(kv)
 		if err != nil {
@@ -104,27 +130,18 @@ func buildAgentSetOptions(model, effort, permissionMode string, options []string
 	return out, nil
 }
 
-// stringSliceFlag implements flag.Value for repeatable string flags.
-type stringSliceFlag struct {
-	values []string
-}
-
-func (s *stringSliceFlag) String() string { return fmt.Sprintf("%v", s.values) }
-func (s *stringSliceFlag) Set(v string) error {
-	s.values = append(s.values, v)
-	return nil
-}
-
 func splitKV(s string) (string, string, error) {
-	k, v, ok := strings.Cut(s, "=")
+	rawKey, rawVal, ok := strings.Cut(s, "=")
 	if !ok {
 		return "", "", fmt.Errorf("expected key=value, got %q", s)
 	}
-	// Reject an empty key (`--option =value`) and an empty value (`--option key=`) at parse
-	// time. Without this the empty key persists no axis (the worker drops an unknown id) and the
-	// empty value is a silent no-op (the worker skips an empty value rather than clearing) -- both
-	// would report "applied" with the assignment silently vanished. Failing fast is clearer, and
-	// clearing an option is not supported via the CLI.
+	k := strings.TrimSpace(rawKey)
+	v := strings.TrimSpace(rawVal)
+	// Reject an empty or whitespace-only key (`--option =value`) and value (`--option key=`) at
+	// parse time. Without this the empty key persists no axis (the worker drops an unknown id) and
+	// the empty value is a silent no-op (the worker skips an empty value rather than clearing) --
+	// both would report "applied" with the assignment silently vanished. Failing fast is clearer,
+	// and clearing an option is not supported via the CLI.
 	if k == "" {
 		return "", "", fmt.Errorf("empty option key in %q", s)
 	}

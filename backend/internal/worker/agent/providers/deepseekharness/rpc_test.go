@@ -86,7 +86,7 @@ func TestRemoteRPCReadReplaysAReusedConnectionAfterResponseLoss(t *testing.T) {
 
 func TestRemoteRPCMutationDoesNotReplayAfterResponseLoss(t *testing.T) {
 	t.Parallel()
-	for _, method := range []string{"goals/create", "goals/edit", "goals/clear", "goals/pause", "goals/resume", "session/prompt", "session/create", "commands/execute", "fileUploads/upload", "session/selectModel", "session/cancel", "session/updateQueue", "subagents/prompt", "subagents/interruptByParent", "$events/result", "unknown/query"} {
+	for _, method := range []string{"goals/create", "goals/edit", "goals/clear", "goals/pause", "goals/resume", "session/prompt", "session/create", "commands/execute", "fileUploads/upload", "session/selectModel", "session/cancel", "session/updateQueue", "subagents/prompt", "subagents/interruptByUser", "subagents/interruptByParent", "$events/result", "unknown/query"} {
 		t.Run(method, func(t *testing.T) {
 			t.Parallel()
 			rpc, requests := responseLossRPC(t)

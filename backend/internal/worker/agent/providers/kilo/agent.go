@@ -3,14 +3,19 @@ package kilo
 import (
 	"context"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 )
 
 // Agent manages a single Kilo ACP process.
 type Agent struct {
 	opencode.FamilyBase
-	steers kiloSteerState
+	steers        kiloSteerState
+	nativeReplies kiloNativeReplies
+	workingDir    string
 	// usageRefresh wakes refreshUsageLoop. newAgent creates it, and it never
 	// changes afterwards.
 	usageRefresh chan struct{}
@@ -28,6 +33,8 @@ type Agent struct {
 func newAgent(swarm bool) *Agent {
 	a := &Agent{usageRefresh: make(chan struct{}, 1), swarm: swarm}
 	a.MemberEvents = a.observeKiloGoal
+	a.ConfigureHooks = a.configureHooks
+	a.QuestionTurnID = a.nativeQuestionTurnID
 	a.MemberOptionGroups = a.swarmOptionGroups
 	a.DaemonReady = func(ctx context.Context) {
 		a.requestUsageRefresh()
@@ -38,18 +45,45 @@ func newAgent(swarm bool) *Agent {
 	return a
 }
 
+func (a *Agent) configureHooks(hooks *acp.Hooks) {
+	hooks.AssistantTextKey = kiloAssistantTextKey
+	hooks.AssistantTextPrepared = a.nativeReplies.recordText
+	hooks.RootPromptTransport = a.prepareNativePrompt
+	baseControlOwner := hooks.ControlOwner
+	hooks.ControlOwner = func(sessionID string, line *providerkit.ParsedLine, needsTurn bool) (acp.ControlOwnerResolution, error) {
+		var res acp.ControlOwnerResolution
+		if baseControlOwner != nil {
+			var err error
+			res, err = baseControlOwner(sessionID, line, needsTurn)
+			if err != nil || res.Refuse {
+				return res, err
+			}
+		}
+		if needsTurn && res.TurnID == "" && line.Method == acp.MethodSessionRequestPermission {
+			params, _ := providerkit.RawObject(line.Params)
+			toolCallID := providerkit.StringField(params["toolCall"], contracts.ACPSupplementIdentityToolCallID)
+			if toolCallID != "" {
+				effectiveSession := res.SessionID
+				if effectiveSession == "" {
+					effectiveSession = sessionID
+				}
+				res.TurnID = a.nativePermissionTurnID(effectiveSession, toolCallID)
+			}
+		}
+		return res, nil
+	}
+}
+
 // Compile-time proof that Agent implements Agent. acp.Start is generic over
 // T and can only assert this at runtime (any(a).(Agent)); this guard turns a
 // dropped or renamed method into a build error rather than a launch-time
 // "does not implement Agent".
 var _ agent.Agent = (*Agent)(nil)
 
-// Kilo steers through a second ACP prompt and keeps its late answer as a turn.
-// This assertion keeps the capability when the family or Kilo agent changes.
+// Kilo delivers a steer as a separate prompt and preserves its late answer.
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
 
-// Kilo stops one subagent and steers a running one through the family base,
-// as OpenCode does.
+// Kilo can interrupt or steer a running subagent on its own native session.
 var _ agent.ChildInterrupter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)

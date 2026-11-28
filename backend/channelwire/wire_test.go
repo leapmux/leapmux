@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"connectrpc.com/connect/v2"
 	"github.com/coder/websocket"
@@ -595,7 +599,8 @@ func widestInnerRpcEnvelope(t *testing.T, payloadSize int) []byte {
 // is unaffected.
 func TestUserEventsURL_ResumeParams(t *testing.T) {
 	t.Run("nil cursor emits only workspace_ids", func(t *testing.T) {
-		got := UserEventsURL("https://hub", []string{"w1", "w2"}, nil, 0)
+		got, err := UserEventsURL("https://hub", UserEventsOptions{WorkspaceIDs: []string{"w1", "w2"}})
+		require.NoError(t, err)
 		assert.Equal(t, "wss://hub/ws/userevents?workspace_ids=w1%2Cw2", got)
 	})
 	// The emit gate must be the DECODER's accept rule, not the weaker all-zero
@@ -611,19 +616,22 @@ func TestUserEventsURL_ResumeParams(t *testing.T) {
 			{Physical: 5, Logical: -1, ClientId: "c"},
 			{Physical: 5, Logical: 0, ClientId: ""},
 		} {
-			got := UserEventsURL("https://hub", nil, cursor, 7)
+			got, err := UserEventsURL("https://hub", UserEventsOptions{ResumeCursor: cursor, ResumeEpoch: 7})
+			require.NoError(t, err)
 			assert.NotContains(t, got, "resume_after_hlc", "cursor %v round-trips to a 400", cursor)
 			assert.NotContains(t, got, "resume_epoch")
 		}
 	})
 	t.Run("cursor appends resume params", func(t *testing.T) {
 		hlc := &leapmuxv1.HLC{Physical: 1754100000000, Logical: 3, ClientId: "c-abc"}
-		got := UserEventsURL("https://hub", nil, hlc, 7)
+		got, err := UserEventsURL("https://hub", UserEventsOptions{ResumeCursor: hlc, ResumeEpoch: 7})
+		require.NoError(t, err)
 		assert.Contains(t, got, "resume_after_hlc=1754100000000.3.c-abc")
 		assert.Contains(t, got, "resume_epoch=7")
 	})
 	t.Run("nil cursor emits no resume params", func(t *testing.T) {
-		got := UserEventsURL("https://hub", nil, nil, 1)
+		got, err := UserEventsURL("https://hub", UserEventsOptions{ResumeEpoch: 1})
+		require.NoError(t, err)
 		assert.NotContains(t, got, "resume_after_hlc")
 		assert.NotContains(t, got, "resume_epoch")
 	})
@@ -637,7 +645,12 @@ func TestUserEventsURL_ResumeParams(t *testing.T) {
 // snapshot with no 400 and no log.
 func TestUserEventsURL_RoundTripsThroughTheHubReader(t *testing.T) {
 	hlc := &leapmuxv1.HLC{Physical: 1754100000000, Logical: 3, ClientId: "c-abc"}
-	raw := UserEventsURL("https://hub", []string{"w1"}, hlc, 7)
+	raw, err := UserEventsURL("https://hub", UserEventsOptions{
+		WorkspaceIDs: []string{"w1"},
+		ResumeCursor: hlc,
+		ResumeEpoch:  7,
+	})
+	require.NoError(t, err)
 	u, err := url.Parse(raw)
 	require.NoError(t, err)
 	cursor, epoch, err := ParseResumeCursorFromQuery(u.Query())
@@ -806,6 +819,471 @@ func TestParseResumeCursorFromQuery(t *testing.T) {
 			require.Error(t, err, "malformed resume params must surface an error (→ HTTP 400)")
 		})
 	}
+}
+
+func TestUserEventsURLAndParsers(t *testing.T) {
+	t.Run("round trips topics, layout workspace, and binary layout cursor", func(t *testing.T) {
+		rawCursor := []byte{0x00, 0xff, 0x10, 0x20, 0xab, 0xcd, 0xef}
+		got, err := UserEventsURL("https://hub.example", UserEventsOptions{
+			WorkspaceIDs: []string{"w1", "w2"},
+			Topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS, // duplicate deduped
+			},
+			LayoutWorkspaceID: "ws-layout",
+			LayoutAfterCursor: rawCursor,
+		})
+		require.NoError(t, err)
+		u, err := url.Parse(got)
+		require.NoError(t, err)
+		assert.Equal(t, "wss", u.Scheme)
+		assert.Equal(t, contracts.WSRouteUserEvents, u.Path)
+
+		topics, err := ParseUserEventsTopicsFromQuery(u.Query())
+		require.NoError(t, err)
+		assert.Equal(t, []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+		}, topics)
+		assert.Equal(t, "ws-layout", ParseLayoutWorkspaceIDFromQuery(u.Query()))
+
+		decodedCursor, err := ParseLayoutCursorFromQuery(u.Query())
+		require.NoError(t, err)
+		assert.Equal(t, rawCursor, decodedCursor)
+	})
+
+	t.Run("rejects unspecified and unknown topics with ErrInvalidUserEventTopic", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			topics []leapmuxv1.UserEventTopic
+		}{
+			{name: "unspecified", topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED}},
+			{name: "unknown positive ordinal", topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic(99)}},
+			{name: "unknown negative ordinal", topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic(-1)}},
+			{name: "valid followed by unspecified", topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED,
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := UserEventsURL("https://hub.example", UserEventsOptions{Topics: tc.topics})
+				require.Error(t, err)
+				assert.Empty(t, got)
+				assert.ErrorIs(t, err, ErrInvalidUserEventTopic)
+			})
+		}
+	})
+
+	t.Run("absent topics and layout cursor return nil", func(t *testing.T) {
+		topics, err := ParseUserEventsTopicsFromQuery(url.Values{})
+		require.NoError(t, err)
+		assert.Nil(t, topics)
+
+		cursor, err := ParseLayoutCursorFromQuery(url.Values{})
+		require.NoError(t, err)
+		assert.Nil(t, cursor)
+	})
+
+	t.Run("rejects unknown or empty topic names", func(t *testing.T) {
+		for _, raw := range []string{"unknown", "workers,bogus", "workers,", ",crdt"} {
+			_, err := ParseUserEventsTopicsFromQuery(url.Values{wsParamTopics: {raw}})
+			require.Error(t, err, "topics=%q must fail", raw)
+		}
+	})
+
+	t.Run("rejects invalid base64 layout cursor", func(t *testing.T) {
+		_, err := ParseLayoutCursorFromQuery(url.Values{wsParamLayoutAfterCursor: {"***not-base64***"}})
+		require.Error(t, err)
+	})
+
+	t.Run("round trips crdt topic", func(t *testing.T) {
+		got, err := UserEventsURL("https://hub.example", UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+			},
+		})
+		require.NoError(t, err)
+		u, err := url.Parse(got)
+		require.NoError(t, err)
+		assert.Equal(t, "crdt", u.Query().Get(wsParamTopics))
+
+		topics, err := ParseUserEventsTopicsFromQuery(u.Query())
+		require.NoError(t, err)
+		assert.Equal(t, []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+		}, topics)
+	})
+
+	t.Run("deduplicates and trims whitespace in topics query", func(t *testing.T) {
+		topics, err := ParseUserEventsTopicsFromQuery(url.Values{wsParamTopics: {" crdt , workers , crdt "}})
+		require.NoError(t, err)
+		assert.Equal(t, []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+		}, topics)
+
+		blankTopics, err := ParseUserEventsTopicsFromQuery(url.Values{wsParamTopics: {"   "}})
+		require.NoError(t, err)
+		assert.Nil(t, blankTopics)
+	})
+}
+
+func TestTruncateCloseReason(t *testing.T) {
+	t.Run("keeps empty and within-limit strings unchanged", func(t *testing.T) {
+		assert.Equal(t, "", TruncateCloseReason(""))
+		exact := strings.Repeat("a", maxCloseReasonBytes)
+		assert.Equal(t, exact, TruncateCloseReason(exact))
+	})
+
+	t.Run("truncates ASCII at 123 bytes", func(t *testing.T) {
+		got := TruncateCloseReason(strings.Repeat("a", 200))
+		assert.Len(t, got, maxCloseReasonBytes)
+		assert.True(t, utf8.ValidString(got))
+	})
+
+	t.Run("does not split a 3-byte rune straddling byte 123", func(t *testing.T) {
+		// 121 ASCII bytes + 3-byte rune ('한' = 3 bytes, occupies 121..123) + trailing ASCII.
+		in := strings.Repeat("a", 121) + "한" + "tail"
+		got := TruncateCloseReason(in)
+		assert.Equal(t, strings.Repeat("a", 121), got)
+		assert.LessOrEqual(t, len(got), maxCloseReasonBytes)
+		assert.True(t, utf8.ValidString(got))
+	})
+
+	t.Run("keeps a 3-byte rune ending exactly at byte 123", func(t *testing.T) {
+		in := strings.Repeat("a", 120) + "한" + "tail"
+		got := TruncateCloseReason(in)
+		assert.Equal(t, strings.Repeat("a", 120)+"한", got)
+		assert.Len(t, got, maxCloseReasonBytes)
+		assert.True(t, utf8.ValidString(got))
+	})
+
+	t.Run("does not split a 4-byte rune straddling byte 123", func(t *testing.T) {
+		// 121 ASCII bytes + 4-byte rune (occupies 121..124).
+		in := strings.Repeat("a", 121) + "🚀" + "tail"
+		got := TruncateCloseReason(in)
+		assert.Equal(t, strings.Repeat("a", 121), got)
+		assert.LessOrEqual(t, len(got), maxCloseReasonBytes)
+		assert.True(t, utf8.ValidString(got))
+	})
+}
+
+func TestUserEventsPolicyCloseReasonFormatAndParse(t *testing.T) {
+	for _, code := range []string{"not_found", "failed_precondition", "invalid_argument", "permission_denied"} {
+		t.Run("round trips "+code, func(t *testing.T) {
+			formatted := FormatUserEventsPolicyCloseReason(code, "workspace missing")
+			assert.Equal(t, code+": workspace missing", formatted)
+			gotCode, gotMsg, ok := ParseUserEventsPolicyCloseReason(formatted)
+			require.True(t, ok)
+			assert.Equal(t, code, gotCode)
+			assert.Equal(t, "workspace missing", gotMsg)
+		})
+
+		t.Run("round trips "+code+" with empty message", func(t *testing.T) {
+			formatted := FormatUserEventsPolicyCloseReason(code, "")
+			assert.Equal(t, code, formatted)
+			gotCode, gotMsg, ok := ParseUserEventsPolicyCloseReason(formatted)
+			require.True(t, ok)
+			assert.Equal(t, code, gotCode)
+			assert.Equal(t, "", gotMsg)
+		})
+	}
+
+	t.Run("truncates overlong multi-byte message to valid UTF-8 <= 123 bytes", func(t *testing.T) {
+		longMsg := strings.Repeat("가", 60)
+		formatted := FormatUserEventsPolicyCloseReason("not_found", longMsg)
+		assert.LessOrEqual(t, len(formatted), maxCloseReasonBytes)
+		assert.True(t, utf8.ValidString(formatted))
+		gotCode, gotMsg, ok := ParseUserEventsPolicyCloseReason(formatted)
+		require.True(t, ok)
+		assert.Equal(t, "not_found", gotCode)
+		assert.NotEmpty(t, gotMsg)
+		assert.True(t, utf8.ValidString(gotMsg))
+	})
+
+	t.Run("empty or whitespace code returns truncated message without leading separator", func(t *testing.T) {
+		assert.Equal(t, "workspace missing", FormatUserEventsPolicyCloseReason("", "workspace missing"))
+		assert.Equal(t, "workspace missing", FormatUserEventsPolicyCloseReason("   \t ", "  workspace missing  "))
+		assert.Equal(t, "", FormatUserEventsPolicyCloseReason("   ", "   "))
+
+		overlong := strings.Repeat("가", 60)
+		got := FormatUserEventsPolicyCloseReason(" ", overlong)
+		assert.LessOrEqual(t, len(got), maxCloseReasonBytes)
+		assert.True(t, utf8.ValidString(got))
+		assert.False(t, strings.HasPrefix(got, ": "))
+		assert.NotEmpty(t, got)
+	})
+
+	t.Run("rejects unrecognized or non-structured reasons", func(t *testing.T) {
+		for _, reason := range []string{
+			"",
+			contracts.CloseReasonTooManyConnections,
+			contracts.CloseReasonForbidden,
+			"internal: unexpected failure",
+			"not_found_extra: nope",
+			"plain error message",
+		} {
+			code, msg, ok := ParseUserEventsPolicyCloseReason(reason)
+			assert.False(t, ok, "reason=%q must not match", reason)
+			assert.Empty(t, code)
+			assert.Empty(t, msg)
+		}
+	})
+}
+
+func TestOpenUserEventsWS_AuthorizationHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		bearerToken string
+		wantPresent bool
+		wantValue   string
+	}{
+		{
+			name:        "empty bearerToken omits Authorization header",
+			bearerToken: "",
+			wantPresent: false,
+		},
+		{
+			name:        "non-empty bearerToken sets Authorization Bearer header",
+			bearerToken: "secret-token",
+			wantPresent: true,
+			wantValue:   "Bearer secret-token",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headersCh := make(chan http.Header, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headersCh <- r.Header.Clone()
+				conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+					Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+				})
+				if err != nil {
+					return
+				}
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+			}))
+			t.Cleanup(srv.Close)
+
+			ws, err := OpenUserEventsWS(t.Context(), srv.Client(), srv.URL, tc.bearerToken, UserEventsOptions{})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = ws.Close(websocket.StatusNormalClosure, "") })
+
+			hdr := <-headersCh
+			values, present := hdr["Authorization"]
+			assert.Equal(t, tc.wantPresent, present)
+			if tc.wantPresent {
+				assert.Equal(t, []string{tc.wantValue}, values)
+			}
+		})
+	}
+}
+
+func TestOpenUserEventsWS_TransportDialFailureIsNotHandshakeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := srv.URL
+	srv.Close()
+
+	_, err := OpenUserEventsWS(t.Context(), nil, closedURL, "token", UserEventsOptions{})
+	require.Error(t, err)
+	var hsErr *HandshakeError
+	assert.False(t, errors.As(err, &hsErr), "transport dial failure with no HTTP response must not return *HandshakeError")
+	assert.ErrorContains(t, err, "dial /ws/userevents:")
+}
+
+func TestOpenUserEventsWS_CapsHandshakeErrorBodyAt1024Bytes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(strings.Repeat("a", 1024) + strings.Repeat("b", 512)))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := OpenUserEventsWS(t.Context(), srv.Client(), srv.URL, "token", UserEventsOptions{})
+	require.Error(t, err)
+	var hsErr *HandshakeError
+	require.ErrorAs(t, err, &hsErr)
+	assert.Equal(t, http.StatusForbidden, hsErr.StatusCode)
+	assert.Len(t, hsErr.Body, 1024)
+	assert.Equal(t, strings.Repeat("a", 1024), hsErr.Body)
+}
+
+func TestOpenUserEventsWS_SurfacesHTTPHandshakeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "scope forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := OpenUserEventsWS(t.Context(), srv.Client(), srv.URL, "token", UserEventsOptions{})
+	require.Error(t, err)
+	var hsErr *HandshakeError
+	require.ErrorAs(t, err, &hsErr)
+	assert.Equal(t, http.StatusForbidden, hsErr.StatusCode)
+	assert.Equal(t, "scope forbidden", hsErr.Body)
+	assert.Contains(t, err.Error(), "HTTP 403")
+}
+
+func TestOpenUserEventsWS_RejectsInvalidTopicBeforeDialing(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "should not be dialed", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, topic := range []leapmuxv1.UserEventTopic{
+		leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED,
+		leapmuxv1.UserEventTopic(99),
+	} {
+		_, err := OpenUserEventsWS(t.Context(), srv.Client(), srv.URL, "token", UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{topic},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidUserEventTopic)
+	}
+	assert.Zero(t, hits.Load(), "invalid topic must fail before dialing the server")
+}
+
+func TestIsTooManyConnectionsError(t *testing.T) {
+	assert.False(t, IsTooManyConnectionsError(nil))
+	assert.False(t, IsTooManyConnectionsError(errors.New("plain error")))
+	assert.False(t, IsTooManyConnectionsError(websocket.CloseError{
+		Code:   websocket.StatusPolicyViolation,
+		Reason: contracts.CloseReasonForbidden,
+	}))
+	assert.True(t, IsTooManyConnectionsError(websocket.CloseError{
+		Code:   websocket.StatusPolicyViolation,
+		Reason: contracts.CloseReasonTooManyConnections,
+	}))
+	assert.True(t, IsTooManyConnectionsError(fmt.Errorf("dial relay: %w", websocket.CloseError{
+		Code:   websocket.StatusPolicyViolation,
+		Reason: contracts.CloseReasonTooManyConnections,
+	})))
+}
+
+func TestConnectErrorFromWebSocket(t *testing.T) {
+	t.Run("nil and unclassified errors return false", func(t *testing.T) {
+		for _, err := range []error{
+			nil,
+			errors.New("network reset"),
+			websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: contracts.CloseReasonSnapshotTooLarge},
+			&HandshakeError{StatusCode: http.StatusInternalServerError, Body: "boom", Err: errors.New("500")},
+		} {
+			got, ok := ConnectErrorFromWebSocket(err)
+			assert.False(t, ok, "err=%v must not match", err)
+			assert.Nil(t, got)
+		}
+	})
+
+	t.Run("ErrInvalidUserEventTopic maps to CodeInvalidArgument", func(t *testing.T) {
+		raw := fmt.Errorf("%w: %v", ErrInvalidUserEventTopic, leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED)
+		got, ok := ConnectErrorFromWebSocket(raw)
+		require.True(t, ok)
+		assert.Equal(t, connect.CodeInvalidArgument, got.Code())
+		assert.Equal(t, raw.Error(), got.Message())
+		assert.ErrorIs(t, got, ErrInvalidUserEventTopic)
+	})
+
+	t.Run("WebSocket close errors map to Connect codes and preserve cause", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			closeErr websocket.CloseError
+			wantCode connect.Code
+			wantMsg  string
+		}{
+			{
+				name:     "too_many_connections",
+				closeErr: websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: contracts.CloseReasonTooManyConnections},
+				wantCode: connect.CodeUnavailable,
+				wantMsg:  "the Hub rejected the connection: too many open connections",
+			},
+			{
+				name:     "try_again_later with reason",
+				closeErr: websocket.CloseError{Code: websocket.StatusTryAgainLater, Reason: "restarting"},
+				wantCode: connect.CodeUnavailable,
+				wantMsg:  "restarting",
+			},
+			{
+				name:     "try_again_later with empty reason",
+				closeErr: websocket.CloseError{Code: websocket.StatusTryAgainLater},
+				wantCode: connect.CodeUnavailable,
+				wantMsg:  "the Hub is temporarily unavailable",
+			},
+			{
+				name:     "forbidden token",
+				closeErr: websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: contracts.CloseReasonForbidden},
+				wantCode: connect.CodePermissionDenied,
+				wantMsg:  "the Hub rejected the connection: permission denied",
+			},
+			{
+				name:     "policy not_found",
+				closeErr: websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: FormatUserEventsPolicyCloseReason("not_found", "workspace missing")},
+				wantCode: connect.CodeNotFound,
+				wantMsg:  "workspace missing",
+			},
+			{
+				name:     "policy failed_precondition",
+				closeErr: websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: FormatUserEventsPolicyCloseReason("failed_precondition", "cursor stale")},
+				wantCode: connect.CodeFailedPrecondition,
+				wantMsg:  "cursor stale",
+			},
+			{
+				name:     "policy invalid_argument",
+				closeErr: websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: FormatUserEventsPolicyCloseReason("invalid_argument", "bad cursor")},
+				wantCode: connect.CodeInvalidArgument,
+				wantMsg:  "bad cursor",
+			},
+			{
+				name:     "policy permission_denied with empty message",
+				closeErr: websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: FormatUserEventsPolicyCloseReason("permission_denied", "")},
+				wantCode: connect.CodePermissionDenied,
+				wantMsg:  "permission_denied",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				wrapped := fmt.Errorf("read: %w", tc.closeErr)
+				got, ok := ConnectErrorFromWebSocket(wrapped)
+				require.True(t, ok)
+				assert.Equal(t, tc.wantCode, got.Code())
+				assert.Equal(t, tc.wantMsg, got.Message())
+				var gotClose websocket.CloseError
+				require.ErrorAs(t, got, &gotClose)
+				assert.Equal(t, tc.closeErr, gotClose)
+			})
+		}
+	})
+
+	t.Run("HandshakeError statuses map to Connect codes and preserve cause", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			status   int
+			body     string
+			wantCode connect.Code
+			wantMsg  string
+		}{
+			{name: "400", status: http.StatusBadRequest, body: "unknown topic", wantCode: connect.CodeInvalidArgument, wantMsg: "unknown topic"},
+			{name: "401", status: http.StatusUnauthorized, body: "expired token", wantCode: connect.CodeUnauthenticated, wantMsg: "expired token"},
+			{name: "403", status: http.StatusForbidden, body: "missing scope", wantCode: connect.CodePermissionDenied, wantMsg: "missing scope"},
+			{name: "404", status: http.StatusNotFound, body: "not found", wantCode: connect.CodeNotFound, wantMsg: "not found"},
+			{name: "429", status: http.StatusTooManyRequests, body: "too many requests", wantCode: connect.CodeUnavailable, wantMsg: "too many requests"},
+			{name: "503 empty body falls back to Error", status: http.StatusServiceUnavailable, body: "", wantCode: connect.CodeUnavailable, wantMsg: "dial /ws/userevents: HTTP 503: boom"},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				hsErr := &HandshakeError{StatusCode: tc.status, Body: tc.body, Err: errors.New("boom")}
+				got, ok := ConnectErrorFromWebSocket(hsErr)
+				require.True(t, ok)
+				assert.Equal(t, tc.wantCode, got.Code())
+				assert.Equal(t, tc.wantMsg, got.Message())
+				var unwrapped *HandshakeError
+				require.ErrorAs(t, got, &unwrapped)
+				assert.Same(t, hsErr, unwrapped)
+			})
+		}
+	})
 }
 
 // It lives here rather than in the hub service suite because the function

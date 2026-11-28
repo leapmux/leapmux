@@ -6,11 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/util/shellquote"
-	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 // A provider command is a single bare token even in shells that require a
@@ -302,31 +300,37 @@ func pwshNativeLookupSetup() string {
 `
 }
 
-func isCsh(shell string) bool { return shell == "csh" || shell == "tcsh" }
+// cshUnaliasBuiltins is the first line of each csh command that the package
+// builds. An alias replaces a builtin at the start of a line, and tcsh and csh
+// let a profile alias each builtin that the commands call there: set, setenv,
+// unsetenv, exec, else, foreach and break. The line removes those aliases. It
+// stands alone, because csh substitutes the aliases of a whole line before it
+// runs any command of that line. tcsh refuses an alias named unalias.
+//
+// It removes no other alias, so a selected wrapper alias keeps the echo,
+// which, eval and source of its profile. cshDialect.buildCommand removes the
+// alias of exit only before its own exit, for the same reason. The other words
+// that the commands use, such as then, endif and end, take no alias.
+//
+// No line of the file can remove an alias named if: it breaks the line that
+// sources the file (see cshInvocationPrefix) before the file runs.
+const cshUnaliasBuiltins = "unalias set setenv unsetenv exec else foreach break\n"
 
-func lookupSetup(shell string, nativeOnly bool) string {
-	switch {
-	case terminal.IsPwsh(shell):
-		return pwshLookupSetup
-	case shell == "nu":
-		return nuLookupSetup
-	case shell == "fish":
-		return fishLookupSetup
-	case shell == "xonsh":
-		return xonshLookupSetup
-	case isCsh(shell):
-		return ""
-	default:
-		return posixProtocolSetup(shell) + posixLookupSetup(shell)
+// protocolLine emits a complete record. The first record needs a separator
+// because a profile can print a banner without a trailing newline.
+func (posixDialect) protocolLine(line string, first bool) string {
+	format := "%s\\n"
+	if first {
+		format = "\\n" + format
 	}
+	return "__leapmux_print '" + format + "' " + shellquote.POSIX.Quote(line) + " || exit $?\n"
 }
 
-// renderCommandProbe runs each lookup in the same profile and working directory.
-// Metadata is line-framed separately from the profile's output.
-func renderCommandProbe(shell, nonce string, names []string, nativeOnly bool) string {
-	var script strings.Builder
-	script.WriteString(lookupSetup(shell, nativeOnly))
-	if shell == "bash" && !nativeOnly {
+func (d posixDialect) renderProbe(nonce string, names []string, nativeOnly, _ bool) string {
+	setup := posixProtocolSetup(d.shell) + posixLookupSetup(d.shell)
+	if d.shell == "bash" && !nativeOnly {
+		var script strings.Builder
+		script.WriteString(setup)
 		fmt.Fprintf(&script, "__lm_probe_records=('' '%s:start')\n", nonce)
 		for index, name := range names {
 			fmt.Fprintf(&script, "__leapmux_lookup %s command\n", shellquote.POSIX.Quote(name))
@@ -335,104 +339,92 @@ func renderCommandProbe(shell, nonce string, names []string, nativeOnly bool) st
 		fmt.Fprintf(&script, "__leapmux_print '%%s\\n' \"${__lm_probe_records[@]}\" '%s:complete'\n", nonce)
 		return script.String()
 	}
-	if nativeOnly && terminal.IsPwsh(shell) {
-		script.WriteString(pwshNativeLookupSetup())
-	}
-	script.WriteString(protocolLine(shell, nonce+":start", true))
-	for index, name := range names {
-		prefix := nonce + ":" + strconv.Itoa(index) + ":"
-		script.WriteString(commandProbeResult(shell, name, prefix, nativeOnly))
-	}
-	script.WriteString(protocolLine(shell, nonce+":complete", false))
-	return script.String()
+	return renderStandardProbe(setup, d, d.probeResult, nonce, names, nativeOnly)
 }
 
-// protocolLine emits a complete record. The first record needs a separator
-// because a profile can print a banner without a trailing newline.
-func protocolLine(shell, line string, first bool) string {
-	var separator, record string
-	switch {
-	case terminal.IsPwsh(shell):
-		separator = "[Console]::Out.WriteLine(''); "
-		record = "[Console]::Out.WriteLine(" + shellquote.PowerShell.Quote(line) + ")\n"
-	case shell == "nu":
-		separator = "%print ''; "
-		record = "%print " + nuQuote(line) + "\n"
-	case shell == "xonsh":
-		if first {
-			line = "\n" + line
-		}
-		return "__leapmux_write(__lm_sys.stdout, " + pythonString(line) + ")\n"
-	case shell == "fish":
-		separator = "builtin printf '\\n'; "
-		record = "builtin printf '%s\\n' " + fishQuote(line) + "\n"
-	case isCsh(shell):
-		separator = "'/bin/echo' ''\n"
-		record = "'/bin/echo' " + cshQuote(line) + "\n"
-	default:
-		format := "%s\\n"
-		if first {
-			format = "\\n" + format
-		}
-		return "__leapmux_print '" + format + "' " + shellquote.POSIX.Quote(line) + " || exit $?\n"
-	}
-	if first {
-		return separator + record
-	}
-	return record
-}
-
-func commandProbeResult(shell, name, prefix string, nativeOnly bool) string {
+func (d posixDialect) probeResult(name, present, absent string, nativeOnly bool) string {
 	mode := "command"
 	if nativeOnly {
 		mode = "path"
 	}
-	present, absent := prefix+"yes", prefix+"no"
-	quoted := shellquote.POSIX.Quote(name)
-	switch {
-	case terminal.IsPwsh(shell):
-		if nativeOnly {
-			return fmt.Sprintf("$path = __leapmux_native %s; if ($null -ne $path) { [Console]::Out.WriteLine('%s:' + $path) } else { [Console]::Out.WriteLine('%s') }\n",
-				shellquote.PowerShell.Quote(name), present, absent)
-		}
-		return fmt.Sprintf("if ($null -ne (__leapmux_lookup %s)) { [Console]::Out.WriteLine('%s') } else { [Console]::Out.WriteLine('%s') }\n",
-			shellquote.PowerShell.Quote(name), present, absent)
-	case shell == "nu":
-		value := nuQuote(present)
-		if nativeOnly {
-			value = "(" + nuQuote(present+":") + " + ($__lm_result.path | %path expand))"
-		}
-		return fmt.Sprintf("let __lm_result = (leapmux-lookup %s %t); if $__lm_result != null { %%print %s } else { %%print '%s' }\n",
-			nuQuote(name), nativeOnly, value, absent)
-	case shell == "xonsh":
-		return xonshProbeResult(name, present, absent, nativeOnly)
-	case shell == "fish":
-		if nativeOnly {
-			return fmt.Sprintf("__leapmux_lookup %s path\nif test \"$__lm_kind\" = external; if not string match -q '/*' -- \"$__lm_path\"; set __lm_path \"$PWD/$__lm_path\"; end; builtin printf '%%s:%%s\\n' '%s' \"$__lm_path\"; else; builtin printf '%%s\\n' '%s'; end\n",
-				fishQuote(name), present, absent)
-		}
-		return fmt.Sprintf("__leapmux_lookup %s command\nif test \"$__lm_kind\" != missing; builtin printf '%%s\\n' '%s'; else; builtin printf '%%s\\n' '%s'; end\n",
-			fishQuote(name), present, absent)
-	case isCsh(shell):
-		if nativeOnly {
-			return cshNativeProbe(name, present, absent)
-		}
-		return cshLookup(name, true) + fmt.Sprintf("if ( \"$__lm_kind\" != missing ) then\n'/bin/echo' '%s'\nelse\n'/bin/echo' '%s'\nendif\n", present, absent)
-	default:
-		setup := "__leapmux_lookup " + quoted + " " + mode + "\n"
-		if !nativeOnly {
-			return setup + fmt.Sprintf("if [ \"$__lm_kind\" != missing ]; then __leapmux_print '%%s\\n' '%s'; else __leapmux_print '%%s\\n' '%s'; fi\n", present, absent)
-		}
-		directory := "$(__leapmux_builtin pwd -P)"
-		if shell == "zsh" {
-			directory = "$PWD"
-		}
-		normalize := `case "$__lm_path" in /*) ;; *) __lm_path="` + directory + `/$__lm_path";; esac` + "\n"
-		if runtime.GOOS == "windows" {
-			normalize += `if [ -x /usr/bin/cygpath ]; then __lm_path=$(/usr/bin/cygpath -w -- "$__lm_path") || exit 1; fi
-`
-		}
-		return setup + "if [ \"$__lm_kind\" = external ]; then\n" + normalize +
-			fmt.Sprintf("__leapmux_print '%%s:%%s\\n' '%s' \"$__lm_path\"\nelse\n__leapmux_print '%%s\\n' '%s'\nfi\n", present, absent)
+	setup := "__leapmux_lookup " + shellquote.POSIX.Quote(name) + " " + mode + "\n"
+	if !nativeOnly {
+		return setup + fmt.Sprintf("if [ \"$__lm_kind\" != missing ]; then __leapmux_print '%%s\\n' '%s'; else __leapmux_print '%%s\\n' '%s'; fi\n", present, absent)
 	}
+	directory := "$(__leapmux_builtin pwd -P)"
+	if d.shell == "zsh" {
+		directory = "$PWD"
+	}
+	normalize := `case "$__lm_path" in /*) ;; *) __lm_path="` + directory + `/$__lm_path";; esac` + "\n"
+	if runtime.GOOS == "windows" {
+		normalize += `if [ -x /usr/bin/cygpath ]; then __lm_path=$(/usr/bin/cygpath -w -- "$__lm_path") || exit 1; fi
+`
+	}
+	return setup + "if [ \"$__lm_kind\" = external ]; then\n" + normalize +
+		fmt.Sprintf("__leapmux_print '%%s:%%s\\n' '%s' \"$__lm_path\"\nelse\n__leapmux_print '%%s\\n' '%s'\nfi\n", present, absent)
+}
+
+func (pwshDialect) protocolLine(line string, first bool) string {
+	record := "[Console]::Out.WriteLine(" + shellquote.PowerShell.Quote(line) + ")\n"
+	if first {
+		return "[Console]::Out.WriteLine(''); " + record
+	}
+	return record
+}
+
+func (d pwshDialect) renderProbe(nonce string, names []string, nativeOnly, _ bool) string {
+	setup := pwshLookupSetup
+	if nativeOnly {
+		setup += pwshNativeLookupSetup()
+	}
+	return renderStandardProbe(setup, d, d.probeResult, nonce, names, nativeOnly)
+}
+
+func (pwshDialect) probeResult(name, present, absent string, nativeOnly bool) string {
+	if nativeOnly {
+		return fmt.Sprintf("$path = __leapmux_native %s; if ($null -ne $path) { [Console]::Out.WriteLine('%s:' + $path) } else { [Console]::Out.WriteLine('%s') }\n",
+			shellquote.PowerShell.Quote(name), present, absent)
+	}
+	return fmt.Sprintf("if ($null -ne (__leapmux_lookup %s)) { [Console]::Out.WriteLine('%s') } else { [Console]::Out.WriteLine('%s') }\n",
+		shellquote.PowerShell.Quote(name), present, absent)
+}
+
+func (nuDialect) protocolLine(line string, first bool) string {
+	record := "%print " + nuQuote(line) + "\n"
+	if first {
+		return "%print ''; " + record
+	}
+	return record
+}
+
+func (d nuDialect) renderProbe(nonce string, names []string, nativeOnly, _ bool) string {
+	return renderStandardProbe(nuLookupSetup, d, d.probeResult, nonce, names, nativeOnly)
+}
+
+func (nuDialect) probeResult(name, present, absent string, nativeOnly bool) string {
+	value := nuQuote(present)
+	if nativeOnly {
+		value = "(" + nuQuote(present+":") + " + ($__lm_result.path | %path expand))"
+	}
+	return fmt.Sprintf("let __lm_result = (leapmux-lookup %s %t); if $__lm_result != null { %%print %s } else { %%print '%s' }\n",
+		nuQuote(name), nativeOnly, value, absent)
+}
+
+func (cshDialect) protocolLine(line string, first bool) string {
+	record := "'/bin/echo' " + cshQuote(line) + "\n"
+	if first {
+		return "'/bin/echo' ''\n" + record
+	}
+	return record
+}
+
+func (d cshDialect) renderProbe(nonce string, names []string, nativeOnly, _ bool) string {
+	return renderStandardProbe(cshUnaliasBuiltins, d, d.probeResult, nonce, names, nativeOnly)
+}
+
+func (cshDialect) probeResult(name, present, absent string, nativeOnly bool) string {
+	if nativeOnly {
+		return cshNativeProbe(name, present, absent)
+	}
+	return cshLookup(name, true) + fmt.Sprintf("if ( \"$__lm_kind\" != missing ) then\n'/bin/echo' '%s'\nelse\n'/bin/echo' '%s'\nendif\n", present, absent)
 }

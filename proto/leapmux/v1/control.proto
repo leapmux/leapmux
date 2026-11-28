@@ -25,9 +25,9 @@ import "leapmux/v1/common.proto";
 service ControlIPCService {
   option (leapmux.v1.host) = SERVICE_HOST_WORKER_IPC;
   // CallInner dispatches a unary inner-RPC. An error that a worker's handler
-  // answers comes back in-band, in InnerRpcResponse.error, with its code,
-  // whether the handler runs on this worker or on a sibling worker. A failure
-  // to reach the sibling worker, and every hub failure, comes back as a
+  // or a relayed hub procedure answers comes back in-band, in
+  // InnerRpcResponse.error, with its code. A failure to reach the sibling
+  // worker or the hub, or a refusal by ControlIPC itself, comes back as a
   // ConnectRPC error.
   rpc CallInner(CallInnerRequest) returns (InnerRpcResponse);
   // StreamInner is the server-streaming counterpart for events / message
@@ -83,6 +83,7 @@ message WhoamiResponse {
   string worker_id = 3;    // spawning worker
   string tab_id = 4;       // spawning tab id (agent or terminal)
   TabType tab_type = 5;    // matches the rest of the protos
+  string hub_url = 6;      // hub URL the worker connects to (when known)
 }
 
 // UpdateStreamRequest carries a revision or a cancel, never both. The router

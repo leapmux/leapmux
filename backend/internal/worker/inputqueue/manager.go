@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/util/drain"
 )
@@ -17,6 +19,7 @@ import (
 type coordinator struct {
 	mu          sync.Mutex
 	draining    bool
+	dispatches  drain.Counter
 	steerPolicy agent.SteerPolicy
 	echoSteer   *pendingEchoSteer
 	// drainAgain records a drain request that arrived while the drain loop held
@@ -478,11 +481,39 @@ func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) 
 	return m.EnqueueWithMutation(ctx, input, nil)
 }
 
+// StageInitialMessage writes the first input for a root agent created in tx.
+// The new agent is private to tx, so the queue needs no coordinator lock or
+// publication. When inputID is blank, a fresh ID is generated; otherwise the
+// caller-supplied ID is validated and stored verbatim. The caller wakes the
+// queue after it records the startup outcome.
+func (m *Manager) StageInitialMessage(ctx context.Context, tx *sql.Tx, agentID, inputID, text string, sender *AgentSender) error {
+	itemID := strings.TrimSpace(inputID)
+	if itemID == "" {
+		itemID = id.Generate()
+	}
+	prepared, err := m.store.prepareNewItemForEnqueue(NewItem{
+		ID: itemID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		Sender: sender, Text: text, ReclassifyOnEdit: true,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = enqueuePreparedItemWithEphemeral(ctx, tx, prepared.item, prepared.key, m.store.now(), nil)
+	return err
+}
+
 // EnqueueReportingAdded is Enqueue that also reports whether this call added the
 // item. A repeat of an item that the queue holds, or that it already delivered,
 // adds nothing and reports false. A caller that must act once for each item acts
 // only on true.
 func (m *Manager) EnqueueReportingAdded(ctx context.Context, input NewItem) (Snapshot, bool, error) {
+	snapshot, receipt, err := m.EnqueueWithReceipt(ctx, input)
+	return snapshot, receipt.Added, err
+}
+
+// EnqueueWithReceipt returns the queue snapshot and the verified outcome
+// of the enqueue, including an accepted input's transcript sequence.
+func (m *Manager) EnqueueWithReceipt(ctx context.Context, input NewItem) (Snapshot, EnqueueReceipt, error) {
 	return m.enqueue(ctx, input, nil)
 }
 
@@ -493,23 +524,26 @@ func (m *Manager) EnqueueWithMutation(ctx context.Context, input NewItem, apply 
 	return snapshot, err
 }
 
-func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
-	// The classifier rewrites a slash command into its own kind, so the test
-	// must see the kind the store will store, not the one the client sent.
-	kind := m.store.Classify(input.Kind, input.Text)
-	// The store refuses an automatic-retry kind for every agent.
-	if err := m.refuseUnacceptedKind(input.AgentID, kind); err != nil {
-		return Snapshot{}, false, err
+func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, EnqueueReceipt, error) {
+	// Prepare and hash once outside the coordinator lock: classification
+	// rewrites slash commands and agent-sent messages into their stored kind,
+	// and hashing attachments reads up to MaxItemBytes.
+	prepared, err := m.store.prepareNewItemForEnqueue(input)
+	if err != nil {
+		return Snapshot{}, EnqueueReceipt{}, err
+	}
+	if err := m.refuseUnacceptedKind(prepared.item.AgentID, prepared.item.Kind); err != nil {
+		return Snapshot{}, EnqueueReceipt{}, err
 	}
 	// mutateAndDrain can refuse before it calls the store, and then nothing was
 	// added.
-	added := false
-	snapshot, err := m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
-		inner, innerAdded, innerErr := m.store.enqueue(ctx, input, apply)
-		added = innerAdded
+	var receipt EnqueueReceipt
+	snapshot, err := m.mutateAndDrain(prepared.item.AgentID, alwaysChanged(func() (Snapshot, error) {
+		inner, innerReceipt, innerErr := m.store.enqueuePrepared(ctx, prepared, apply)
+		receipt = innerReceipt
 		return inner, innerErr
 	}))
-	return snapshot, added && err == nil, err
+	return snapshot, receipt, err
 }
 
 func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -527,6 +561,24 @@ func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error
 		m.rearmMaturityLocked(c, snapshot)
 	}
 	return snapshot, err
+}
+
+// GetItem returns a snapshot and the full un-truncated text of inputID from
+// one consistent read without acquiring a mutating edit lease.
+func (m *Manager) GetItem(ctx context.Context, agentID, inputID string) (Snapshot, string, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, "", ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snap, text, err := m.store.GetItem(ctx, agentID, inputID)
+	if err != nil {
+		return Snapshot{}, "", err
+	}
+	m.rearmMaturityLocked(c, snap)
+	return snap, text, nil
 }
 
 func (m *Manager) BeginEdit(ctx context.Context, agentID, inputID, clientID string, takeover bool) (Snapshot, string, []Attachment, error) {
@@ -721,6 +773,12 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	defer m.endActivity()
 	c := m.coordinator(agentID)
 	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return Snapshot{}, ErrConflict
+	}
+	c.dispatches.Add()
+	defer c.dispatches.Done()
 	snapshot, err := m.store.Retry(ctx, agentID, inputID, confirmUncertain)
 	if err != nil {
 		m.unlockAndPublish(c)
@@ -834,7 +892,18 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	if m.dispatcher == nil || !m.dispatcher.SupportsSteering(agentID) {
 		return Snapshot{}, ErrSteeringUnsupported
 	}
-	policy := m.dispatcher.SteerPolicy(agentID)
+	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return Snapshot{}, ErrConflict
+	}
+	c.dispatches.Add()
+	c.mu.Unlock()
+	defer c.dispatches.Done()
+	policy, err := m.dispatcher.SteerPolicy(agentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	c.mu.Lock()
 	peek, err := m.store.Snapshot(ctx, agentID)
 	if err != nil {
@@ -970,7 +1039,23 @@ func (m *Manager) finishSteerLocked(c *coordinator, ctx context.Context, prepare
 		}
 		return snapshot, steerFailed, steerDrainIfIdle, nil
 	}
-	if !turnEnded && !policy.SurvivesTurnEnd {
+	rowAtEchoSteer := policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind)
+	hasNativeReceipt := result.NativeReceipt.SessionID != "" || result.NativeReceipt.InputID != "" || result.NativeReceipt.TurnID != ""
+	if !turnEnded && rowAtEchoSteer && hasNativeReceipt {
+		snapshot, storeErr := m.recordDispatchFailure(c, ctx, prepared, &DeliveryError{
+			Outcome: DispatchUncertain,
+			Err:     fmt.Errorf("RowAtEcho steer returned a synchronous native input receipt"),
+		})
+		if storeErr != nil {
+			return snapshot, steerFailed, steerDrainNone, storeErr
+		}
+		return snapshot, steerFailed, steerDrainIfIdle, nil
+	}
+	// For non-RowAtEcho providers, a native receipt confirms acceptance even if
+	// the target turn ended while dispatch waited. Sending that input again
+	// would duplicate it.
+	confirmedAdmission := !rowAtEchoSteer && result.NativeReceipt.SessionID != "" && result.NativeReceipt.InputID != ""
+	if !turnEnded && !policy.SurvivesTurnEnd && !confirmedAdmission {
 		current, storeErr := m.store.Snapshot(ctx, agentID)
 		if storeErr != nil {
 			return Snapshot{}, steerFailed, steerDrainNone, storeErr
@@ -992,7 +1077,7 @@ func (m *Manager) finishSteerLocked(c *coordinator, ctx context.Context, prepare
 	// A control reply's row is LeapMux's own record, accepted at the steer:
 	// a provider may repeat a steered answer at its own echo long after the
 	// model call that holds it, and the answer's row must not wait for that.
-	if policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind) {
+	if rowAtEchoSteer {
 		snapshot, persisted, err = m.holdForEcho(c, ctx, prepared)
 	} else {
 		snapshot, persisted, err = m.acceptDispatch(c, ctx, prepared, result)
@@ -1148,6 +1233,12 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 	}
 	c := m.coordinator(agentID)
 	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return Snapshot{}, ErrConflict
+	}
+	c.dispatches.Add()
+	defer c.dispatches.Done()
 	return m.preemptWithBypassLocked(c, ctx, agentID, inputID, false)
 }
 
@@ -1272,11 +1363,13 @@ func (m *Manager) Advance(ctx context.Context, agentID string, hasRecovery func(
 		return snapshot, err
 	}
 	c.advancing = true
+	c.dispatches.Add()
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		c.advancing = false
 		c.mu.Unlock()
+		c.dispatches.Done()
 	}()
 
 	return m.advanceClaimed(ctx, agentID, c, hasRecovery)
@@ -1327,11 +1420,14 @@ func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordin
 	recoveryAtStart := hasRecovery != nil && hasRecovery(agentID)
 	var steerPolicy agent.SteerPolicy
 	if supportsSteer {
-		steerPolicy = m.dispatcher.SteerPolicy(agentID)
+		var err error
+		steerPolicy, err = m.dispatcher.SteerPolicy(agentID)
+		if err != nil {
+			return Snapshot{}, err
+		}
 		c.mu.Lock()
 		skipPeek := c.retired || c.plannedRestarts > 0
 		var peek Snapshot
-		var err error
 		if !skipPeek {
 			peek, err = m.store.Snapshot(ctx, agentID)
 		}
@@ -1637,6 +1733,18 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 	return err
 }
 
+// WaitForRetiredDispatch joins input dispatch admitted before RetireAgent.
+// It includes effects that publish after the coordinator releases its lock.
+func (m *Manager) WaitForRetiredDispatch(ctx context.Context, agentID string) error {
+	c := m.coordinator(agentID)
+	select {
+	case <-c.dispatches.DoneChan():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // RecoverState reconciles interrupted persisted state without dispatching
 // queued input. Bootstrap uses it before the Worker receives its owner and
 // supplies beforeRecover to sweep active background tasks inside the same
@@ -1763,6 +1871,7 @@ func (m *Manager) scheduleDrainFrom(agentID string, admission agent.InputReadine
 		return
 	}
 	c.draining = true
+	c.dispatches.Add()
 	c.mu.Unlock()
 	if lease != nil {
 		lease.Release()
@@ -1770,6 +1879,7 @@ func (m *Manager) scheduleDrainFrom(agentID string, admission agent.InputReadine
 	}
 	go func() {
 		defer m.endActivity()
+		defer c.dispatches.Done()
 		m.drain(agentID, c)
 	}()
 }
@@ -1802,10 +1912,17 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		// recorded before it is spent. Only one that arrives during the provider
 		// call carries news that this loop still misses.
 		c.drainAgain = false
+		policy, policyErr := m.dispatcher.SteerPolicy(agentID)
+		if policyErr != nil {
+			m.enqueueFailureLocked(c, "read the agent input queue steering policy", "agent_id", agentID, "error", policyErr)
+			c.draining = false
+			m.unlockAndPublish(c)
+			return
+		}
 		// The steer-row policy decides the reservation: a question answer that
 		// the active turn steers holds its row for the provider's echo, exactly
 		// as a manual steer does.
-		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID, m.dispatcher.SteerPolicy(agentID).RowAtEcho)
+		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID, policy.RowAtEcho)
 		if err != nil {
 			m.enqueueFailureLocked(c, "agent input queue prepare failed", "agent_id", agentID, "error", err)
 			c.draining = false
@@ -1826,7 +1943,6 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		if prepared.Steering {
 			// Mirror Steer: the provider policy owns the row timing, and the
 			// echo tracker is what a later report resolves.
-			policy := m.dispatcher.SteerPolicy(agentID)
 			m.dispatcher.PrepareSteer(agentID)
 			c.mu.Lock()
 			c.steerPolicy = policy

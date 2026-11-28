@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -61,6 +62,11 @@ type Sink struct {
 	modeChanges        []ModeChange
 	settingsRefreshes  []SettingsRefresh
 	sessionInfos       []map[string]interface{}
+
+	nativeReplyTurns        []agent.NativeReplyTurn
+	nativeReplyRetirements  map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome
+	nativeControlInputs     []agent.NativeControlInputs
+	nativeInputTurnBindings map[agent.NativeInputReceipt]string
 	// leapMuxNotifications holds every PersistLeapMuxNotification payload in
 	// arrival order. These are the worker's OWN notification envelopes, which no
 	// provider writes, so a test reads the meaning rather than provider bytes.
@@ -79,6 +85,7 @@ type Sink struct {
 	// The test sink retains repeats so a test can detect the provider defect.
 	requeuedInputs   []RequeuedInput
 	steerEchoReports []SteerEchoReport
+	steerResolutions []agent.SteerResolution
 	// RequeueErr makes RequeueDroppedInput return an error instead of recording the call.
 	// The provider must report that the queue refused the input.
 	// Set this field at construction. Reads require no lock.
@@ -193,6 +200,9 @@ type Message struct {
 	stored               bool
 	Source               leapmuxv1.MessageSource
 	AgentSessionID       string
+	NativeInputID        string
+	NativeTurnID         string
+	InputTurnOutcome     leapmuxv1.AgentInputTurnOutcome
 	IdempotencyKey       string
 	Content              []byte
 	SupplementalContent  []byte
@@ -293,6 +303,7 @@ func (s *Sink) persistMessageLocked(source leapmuxv1.MessageSource, content agen
 		spans = slices.Clone(owner.spans)
 	}
 	s.messages = append(s.messages, Message{Source: source, AgentSessionID: identity.sessionID, IdempotencyKey: identity.key, Content: append([]byte(nil), content.Original...), SupplementalContent: append([]byte(nil), content.Supplemental...),
+		NativeInputID: content.NativeInputID, NativeTurnID: content.NativeTurnID, InputTurnOutcome: content.InputTurnOutcome,
 		stored:   s.PersistErr == nil,
 		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, TurnEnd: turnEnd, SpansOpenAtPersist: spans,
 		TranscriptOnly: owner != nil && !owner.currentLocked()})
@@ -543,6 +554,75 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 	return nil
 }
 
+func (s *Sink) SetNativeControlInputs(binding agent.NativeControlInputs) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding.InputIDs = slices.Clone(binding.InputIDs)
+	s.nativeControlInputs = append(s.nativeControlInputs, binding)
+	return nil
+}
+
+func (s *Sink) NativeControlInputBindings() []agent.NativeControlInputs {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bindings := slices.Clone(s.nativeControlInputs)
+	for i := range bindings {
+		bindings[i].InputIDs = slices.Clone(bindings[i].InputIDs)
+	}
+	return bindings
+}
+
+func (s *Sink) PublishNativeReplyTurn(turn agent.NativeReplyTurn) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turn.Items = slices.Clone(turn.Items)
+	turn.Inputs = slices.Clone(turn.Inputs)
+	s.nativeReplyTurns = append(s.nativeReplyTurns, turn)
+	return nil
+}
+
+func (s *Sink) NativeReplyTurns() []agent.NativeReplyTurn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turns := slices.Clone(s.nativeReplyTurns)
+	for i := range turns {
+		turns[i].Items = slices.Clone(turns[i].Items)
+		turns[i].Inputs = slices.Clone(turns[i].Inputs)
+	}
+	return turns
+}
+
+func (s *Sink) BindNativeInputTurn(receipt agent.NativeInputReceipt, turnID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nativeInputTurnBindings == nil {
+		s.nativeInputTurnBindings = make(map[agent.NativeInputReceipt]string)
+	}
+	s.nativeInputTurnBindings[receipt] = turnID
+	return nil
+}
+
+func (s *Sink) NativeInputTurnBindings() map[agent.NativeInputReceipt]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.nativeInputTurnBindings)
+}
+func (s *Sink) RetireNativeInputTurn(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nativeReplyRetirements == nil {
+		s.nativeReplyRetirements = make(map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome)
+	}
+	s.nativeReplyRetirements[receipt] = outcome
+	return nil
+}
+
+func (s *Sink) NativeReplyRetirements() map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.nativeReplyRetirements)
+}
+
 // SetTurnState records the provider's turn flag transitions in order, so a
 // provider test can assert the exact sequence it published.
 func (s *Sink) SetTurnState(state agent.TurnState, seq uint64) {
@@ -558,29 +638,28 @@ func (s *Sink) SetTurnState(state agent.TurnState, seq uint64) {
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
 }
 
-// RequeuedInput is one input that a provider handed back through
+// RequeuedInput is one steer that a provider handed back through
 // RequeueDroppedInput.
 type RequeuedInput struct {
-	DropID      string
-	Content     string
-	Attachments []*leapmuxv1.Attachment
+	// Request is the steer request that the provider handed back.
+	Request agent.SteerRequest
 	// TurnActive is the last turn state that the provider published before the
 	// call, and false when it published none.
 	TurnActive bool
 }
 
-// RequeueDroppedInput records the input that the provider handed back. It also
-// records the call in TurnLifecycle as `requeue:<dropID>`, so a test can assert
-// that the input reached the queue before the turn ended.
-func (s *Sink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+// RequeueDroppedInput records the steer that the provider handed back. It also
+// records the call in TurnLifecycle as `requeue:<input id>`, so a test can
+// assert that the input reached the queue before the turn ended.
+func (s *Sink) RequeueDroppedInput(dropped agent.SteerRequest) error {
 	if s.RequeueErr != nil {
 		return s.RequeueErr
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	active := len(s.TurnActiveCalls) > 0 && s.TurnActiveCalls[len(s.TurnActiveCalls)-1]
-	s.requeuedInputs = append(s.requeuedInputs, RequeuedInput{DropID: dropID, Content: content, Attachments: attachments, TurnActive: active})
-	s.turnLifecycle = append(s.turnLifecycle, "requeue:"+dropID)
+	s.requeuedInputs = append(s.requeuedInputs, RequeuedInput{Request: dropped, TurnActive: active})
+	s.turnLifecycle = append(s.turnLifecycle, "requeue:"+dropped.InputID)
 	return nil
 }
 
@@ -616,6 +695,24 @@ func (s *Sink) CaptureSteerReport(count int, outcome agent.SteerOutcome) func() 
 		}
 		return nil
 	}
+}
+
+func (s *Sink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	return func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.PersistErr != nil {
+			return s.PersistErr
+		}
+		s.steerResolutions = append(s.steerResolutions, resolution)
+		return nil
+	}
+}
+
+func (s *Sink) SteerResolutions() []agent.SteerResolution {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.steerResolutions)
 }
 
 func (s *Sink) ReportSteersEchoed(count int) {
@@ -908,6 +1005,23 @@ func (s *Sink) CancelControlRequest(string)                      {}
 func (s *Sink) CancelControlRequestInstance(string, string)      {}
 func (s *Sink) UpdateSessionID(sessionID string) {
 	s.updateSessionID(sessionID, false)
+}
+
+func (s *Sink) BindChildSessionID(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sessionID == "" {
+		return agent.ErrChildIdentityRefused
+	}
+	if session := s.sessionFact.Load(); session != nil && session.id != "" {
+		if session.id != sessionID {
+			return agent.ErrChildIdentityRefused
+		}
+		return nil
+	}
+	s.sessionIDs = append(s.sessionIDs, sessionID)
+	s.sessionFact.Store(&testSessionFact{id: sessionID})
+	return nil
 }
 
 func (s *Sink) AdoptNativeSession(sessionID string) {
@@ -2075,15 +2189,24 @@ func (nop) ReadMessageByIdempotencyKey(string, string) (*agent.StoredMessage, er
 func (nop) RetractMessagesByIdempotencyKey(agent.MessageContent, []string) error {
 	return nil
 }
-func (nop) IsMessageRetracted(agent.MessageContent, string) (bool, error)     { return false, nil }
-func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)      { return false, nil }
-func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
-func (nop) SetTurnState(agent.TurnState, uint64)                              {}
-func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error { return nil }
-func (nop) CaptureBackgroundTaskExit(bool) func() error                       { return nil }
-func (nop) CaptureBackgroundTaskStartFailure() func() error                   { return nil }
-func (nop) OutputQueue() *agent.OutputQueue                                   { return nil }
+func (nop) IsMessageRetracted(agent.MessageContent, string) (bool, error) { return false, nil }
+func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)  { return false, nil }
+func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error     { return nil }
+func (nop) SetTurnState(agent.TurnState, uint64)                          {}
+func (nop) SetNativeControlInputs(agent.NativeControlInputs) error        { return nil }
+func (nop) PublishNativeReplyTurn(agent.NativeReplyTurn) error            { return nil }
+func (nop) BindNativeInputTurn(agent.NativeInputReceipt, string) error    { return nil }
+func (nop) RetireNativeInputTurn(agent.NativeInputReceipt, leapmuxv1.AgentInputTurnOutcome) error {
+	return nil
+}
+func (nop) RequeueDroppedInput(agent.SteerRequest) error    { return nil }
+func (nop) CaptureBackgroundTaskExit(bool) func() error     { return nil }
+func (nop) CaptureBackgroundTaskStartFailure() func() error { return nil }
+func (nop) OutputQueue() *agent.OutputQueue                 { return nil }
 func (nop) CaptureSteerReport(int, agent.SteerOutcome) func() error {
+	return func() error { return nil }
+}
+func (nop) CaptureSteerResolution(agent.SteerResolution) func() error {
 	return func() error { return nil }
 }
 func (nop) ReportSteersEchoed(int)    {}
@@ -2107,6 +2230,7 @@ func (nop) CancelControlRequest(string)                       {}
 func (nop) CancelControlRequestInstance(string, string)       {}
 func (nop) MessageSessionID() string                          { return "" }
 func (nop) UpdateSessionID(string)                            {}
+func (nop) BindChildSessionID(string) error                   { return nil }
 func (nop) AdoptNativeSession(string)                         {}
 func (nop) UpdatePermissionMode(string)                       {}
 func (nop) NotifyPermissionModeChanged(string, string)        {}

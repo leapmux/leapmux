@@ -158,7 +158,7 @@ func TestACPFailedPromptAndUnsentPromptPreservePriorOpenTools(t *testing.T) {
 	b.hooks.PreparePrompt = func(string, []agent.ClassifiedAttachment, []map[string]any) error {
 		return errors.New("prepare failed")
 	}
-	require.Error(t, b.SendInput("next", nil))
+	require.Error(t, agenttest.SendInput(b, "next", nil))
 	assert.True(t, b.HasOpenRootTool("prior-tool"))
 	assert.Empty(t, closingRows(sink, "prior-tool"))
 }

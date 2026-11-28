@@ -148,9 +148,9 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 	// every row this sweep writes carries the session that produced it.
 	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 	a.closedSpans.Reset()
-	a.steers.DropAll()
-	a.steers.Settle(a.sink)
+	a.dropUnreadNativeSteers()
 	a.clearNativeControls()
+	a.discardNativeReplyCaptures()
 	// The tool calls that the outgoing turn counted end with that turn, so the first
 	// turn of the replacement starts from zero.
 	a.turnToolUses = 0

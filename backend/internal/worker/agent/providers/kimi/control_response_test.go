@@ -22,8 +22,8 @@ const (
 	kimiStoredQuestion     = `{"type":"interaction","kind":"question","status":"pending","interaction_id":"question_1","agent_id":"main","session_id":"session_1","request":{"questions":[{"id":"q_0","question":"Color?","options":[{"id":"opt_0_0","label":"Red"},{"id":"opt_0_1","label":"Blue"}],"allow_other":true},{"id":"q_1","question":"Tags?","options":[{"id":"opt_1_0","label":"a"},{"id":"opt_1_1","label":"b"}],"multi_select":true}]}}`
 )
 
-// browserAnswer is the neutral envelope the browser sends, with the Kimi fields
-// beside the behavior.
+// browserAnswer is the neutral envelope that AnswerControlRequest builds, with
+// the Kimi fields beside the behavior.
 func browserAnswer(t *testing.T, requestID, behavior string, fields map[string]any) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior}
@@ -35,11 +35,13 @@ func browserAnswer(t *testing.T, requestID, behavior string, fields map[string]a
 	return data
 }
 
+// resolve resolves content, with the plan settings of an approval, to the
+// request stored as requestID, as the Worker does. Only the approval of the
+// main agent's plan carries settings (agent.AnswerNeutralPlan), so a test
+// states plan for that approval alone.
 func resolve(t *testing.T, requestID, stored string, content []byte, plan *leapmuxv1.PlanApprovalSettings) agent.ControlResponseResolution {
 	t.Helper()
-	return kimiProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID: requestID, RequestPayload: json.RawMessage(stored), ResponseContent: content, PlanApproval: plan,
-	})
+	return agenttest.ResolveAnswer(kimiProvider{}, []byte(stored), requestID, agent.ControlAnswer{Content: content, PlanApproval: plan})
 }
 
 // nativeResponse reads the server body out of a resolved envelope.
@@ -92,7 +94,7 @@ func TestKimiResolvePermission(t *testing.T) {
 
 	t.Run("a refusal with the placeholder reason carries none", func(t *testing.T) {
 		t.Parallel()
-		res := resolve(t, "approval_1", kimiStoredApproval, browserAnswer(t, "approval_1", "deny", map[string]any{"message": agent.ControlRejectedByUserMessage}), nil)
+		res := resolve(t, "approval_1", kimiStoredApproval, browserAnswer(t, "approval_1", "deny", map[string]any{"message": contracts.ControlAnswerMessageRejectedByUser}), nil)
 		assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected"}, nativeResponse(t, res.Content))
 	})
 
@@ -196,24 +198,19 @@ func TestKimiResolvePlan(t *testing.T) {
 }
 
 // A subagent's plan review is the subagent's own: its answer moves no mode of
-// the main agent, and no plan approval of the main agent's runs for it.
+// the main agent, and no plan approval of the main agent's runs for it. It
+// reads as a permission, whose answer carries no plan settings, so the
+// resolution must not add the default mode of a plan exit either.
 func TestKimiResolveASubagentPlan(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
 		behavior string
 		fields   map[string]any
-		plan     *leapmuxv1.PlanApprovalSettings
 		native   map[string]any
 	}{
 		"an approval": {
 			behavior: "allow",
-			plan:     &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.KimiModeYolo},
-			native:   map[string]any{"kind": "approval", "decision": "approved"},
-		},
-		"an approval that asks for a fresh context": {
-			behavior: "allow",
-			plan:     &leapmuxv1.PlanApprovalSettings{ClearContext: true, PermissionMode: contracts.KimiModeAuto},
 			native:   map[string]any{"kind": "approval", "decision": "approved"},
 		},
 		"an approval of one of the plan's own options": {
@@ -239,10 +236,16 @@ func TestKimiResolveASubagentPlan(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			res := resolve(t, "approval_4", kimiStoredSubagentPlan, browserAnswer(t, "approval_4", tc.behavior, tc.fields), tc.plan)
-			require.False(t, res.Withhold)
-			assert.Equal(t, agent.PlanModeControlNone, res.PlanModeControl, "the main agent does not leave plan mode")
-			assert.Equal(t, tc.native, nativeResponse(t, res.Content), "no permission mode rides the answer")
+			for _, plan := range []*leapmuxv1.PlanApprovalSettings{
+				nil,
+				{PermissionMode: contracts.KimiModeYolo},
+				{ClearContext: true, PermissionMode: contracts.KimiModeAuto},
+			} {
+				res := resolve(t, "approval_4", kimiStoredSubagentPlan, browserAnswer(t, "approval_4", tc.behavior, tc.fields), plan)
+				require.False(t, res.Withhold)
+				assert.Equal(t, agent.PlanModeControlNone, res.PlanModeControl, "the main agent does not leave plan mode")
+				assert.Equal(t, tc.native, nativeResponse(t, res.Content), "no permission mode rides the answer")
+			}
 		})
 	}
 
@@ -288,14 +291,20 @@ func TestKimiResolveGoalStart(t *testing.T) {
 	assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected"}, nativeResponse(t, res.Content))
 }
 
+// A refusal adds no permission mode of a plan exit, even when plan approval
+// settings are supplied beside the refusal.
 func TestKimiResolveAPlainRefusalOfThePlan(t *testing.T) {
 	t.Parallel()
-	res := resolve(t, "approval_2", kimiStoredPlan, browserAnswer(t, "approval_2", "deny", map[string]any{"message": "Too broad."}),
-		&leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.KimiModeAuto})
-	require.False(t, res.Withhold)
-	assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected", "feedback": "Too broad."}, nativeResponse(t, res.Content),
-		"a refusal switches no mode, whatever the banner picked")
-	assert.Equal(t, agent.PlanModeControlExit, res.PlanModeControl, "the answer is the plan exit's own")
+	for _, plan := range []*leapmuxv1.PlanApprovalSettings{
+		nil,
+		{PermissionMode: contracts.KimiModeAuto},
+	} {
+		res := resolve(t, "approval_2", kimiStoredPlan, browserAnswer(t, "approval_2", "deny", map[string]any{"message": "Too broad."}), plan)
+		require.False(t, res.Withhold)
+		assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected", "feedback": "Too broad."}, nativeResponse(t, res.Content),
+			"a refusal switches no mode")
+		assert.Equal(t, agent.PlanModeControlExit, res.PlanModeControl, "the answer is the plan exit's own")
+	}
 }
 
 func TestKimiResolveQuestion(t *testing.T) {
@@ -359,7 +368,7 @@ func TestKimiResolveQuestion(t *testing.T) {
 
 	t.Run("a refusal with no reason dismisses the question and sends nothing", func(t *testing.T) {
 		t.Parallel()
-		for _, fields := range []map[string]any{nil, {"message": agent.ControlRejectedByUserMessage}} {
+		for _, fields := range []map[string]any{nil, {"message": contracts.ControlAnswerMessageRejectedByUser}} {
 			res := resolve(t, "question_1", kimiStoredQuestion, browserAnswer(t, "question_1", "deny", fields), nil)
 			require.False(t, res.Withhold)
 			assert.Equal(t, map[string]any{"kind": "question", "dismissed": true}, nativeResponse(t, res.Content))
@@ -379,20 +388,70 @@ func TestKimiResolveQuestion(t *testing.T) {
 func TestKimiResolveWithholdsWhatItCannotRead(t *testing.T) {
 	t.Parallel()
 
+	allow := []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow"}}}`)
 	for name, tc := range map[string]struct {
 		stored  string
 		content []byte
+		refusal string
 	}{
-		"no decision":                      {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{}}}`)},
-		"an unknown behavior":              {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"maybe"}}}`)},
-		"content that is not JSON":         {kimiStoredApproval, []byte(`not json`)},
-		"another request's answer":         {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_9","response":{"behavior":"allow"}}}`)},
-		"a stored request of another kind": {`{"type":"tool.call.started"}`, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow"}}}`)},
-		"fields of the wrong type":         {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow","scope":7}}}`)},
+		"no decision": {
+			kimiStoredApproval,
+			[]byte(`{"response":{"request_id":"approval_1","response":{}}}`),
+			agent.RefusalNoDecision,
+		},
+		"an unknown behavior": {
+			kimiStoredApproval,
+			[]byte(`{"response":{"request_id":"approval_1","response":{"behavior":"maybe"}}}`),
+			agent.RefusalNoDecision,
+		},
+		"fields of the wrong type": {
+			kimiStoredApproval,
+			[]byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow","scope":7}}}`),
+			agent.RefusalUnreadableAnswer,
+		},
+		"a stored request of another kind": {
+			`{"type":"tool.call.started","interaction_id":"approval_1"}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"absent inner request": {
+			`{"type":"interaction","kind":"approval","status":"pending","interaction_id":"approval_1"}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"null inner request": {
+			`{"type":"interaction","kind":"approval","status":"pending","interaction_id":"approval_1","request":null}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"resolved status": {
+			`{"type":"interaction","kind":"approval","status":"resolved","interaction_id":"approval_1","request":{"tool_name":"Bash"}}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"empty status": {
+			`{"type":"interaction","kind":"approval","status":"","interaction_id":"approval_1","request":{"tool_name":"Bash"}}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"unknown interaction kind": {
+			`{"type":"interaction","kind":"unknown","status":"pending","interaction_id":"approval_1","request":{"tool_name":"Bash"}}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
 	} {
 		res := resolve(t, "approval_1", tc.stored, tc.content, nil)
-		assert.True(t, res.Withhold, name)
+		require.True(t, res.Withhold, name)
+		assert.EqualError(t, res.Refusal(), tc.refusal, name)
 	}
+
+	// Malformed JSON ResponseContent has no request_id, so invoke
+	// ResolveControlResponse directly to pin Kimi's own guard.
+	malformed := kimiProvider{}.ResolveControlResponse(agenttest.ControlResponseContextOf(
+		[]byte(kimiStoredApproval), "approval_1", agent.ControlAnswer{Content: []byte(`{not json`)},
+	))
+	require.True(t, malformed.Withhold)
+	assert.EqualError(t, malformed.Refusal(), agent.RefusalNoDecision)
 }
 
 func TestKimiPlanExitMode(t *testing.T) {

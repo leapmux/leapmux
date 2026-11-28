@@ -137,7 +137,7 @@ describe('antigravityExtractRow', () => {
     expect(call?.result).toBeUndefined()
   })
 
-  it('reads the selected labels and write-in text from a finished question step', () => {
+  it('reads native answers across a skipped question position', () => {
     const questions = [
       {
         question: 'Which color?',
@@ -146,6 +146,7 @@ describe('antigravityExtractRow', () => {
           { id: 'b', text: 'Blue' },
         ],
       },
+      null,
       { question: 'Why?' },
       { question: 'Which size?' },
     ]
@@ -169,8 +170,9 @@ describe('antigravityExtractRow', () => {
                   ...questions[0],
                   selectedOptionIds: ['b', 'a'],
                 },
-                { ...questions[1], writeInResponse: 'Match the sample.' },
-                { ...questions[2], skipped: true },
+                { skipped: true },
+                { ...questions[2], writeInResponse: 'Match the sample.' },
+                { ...questions[3], skipped: true },
               ],
             },
           },

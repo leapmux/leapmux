@@ -3,6 +3,7 @@ package grok
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func TestGrokControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T) {
@@ -23,6 +26,7 @@ func TestGrokControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T)
 	// other providers' identity tests do, so each dialog reaches the reader.
 	a.SetSessionIDForTest("")
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, contracts.GrokMethodAskUserQuestion)
+	agenttest.AssertPublishedControlKeys(t, grokProvider{}, sink)
 }
 
 func TestGrokPublishesEachOfItsOwnDialogs(t *testing.T) {
@@ -101,6 +105,41 @@ func TestGrokResolvedInteractionRetiresAnOpenCard(t *testing.T) {
 	assert.Equal(t, []string{requestID}, sink.CanceledControls())
 }
 
+func TestGrokInterruptCancelsBeforeDismissingAQuestion(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	a.SetPromptActiveForTest(true)
+	original := a.StdinForTest()
+	stdin := &agenttest.Stdin{}
+	a.SetStdinForTest(stdin)
+	defer a.SetStdinForTest(original)
+	a.HandleOutput(frame(t, map[string]any{
+		"id": 77, "method": contracts.GrokMethodAskUserQuestion,
+		"params": map[string]any{"sessionId": grokTestSession, "toolCallId": "waiting-question", "questions": []any{}},
+	}))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.NoError(t, a.SendNotification("test/barrier", nil))
+
+	cancelAt, replyAt := -1, -1
+	for index, raw := range strings.Split(strings.TrimSpace(stdin.String()), "\n") {
+		var message struct {
+			Method string `json:"method"`
+			ID     int    `json:"id"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(raw), &message))
+		if message.Method == acp.MethodSessionCancel {
+			cancelAt = index
+		}
+		if message.Method == "" && message.ID == 77 {
+			replyAt = index
+		}
+	}
+	require.NotEqual(t, -1, cancelAt)
+	require.NotEqual(t, -1, replyAt)
+	assert.Less(t, cancelAt, replyAt, "the dismissed question must not start another model request")
+}
+
 func TestGrokResolvedInteractionLeavesAnAnsweredCardAlone(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
@@ -112,7 +151,7 @@ func TestGrokResolvedInteractionLeavesAnAnsweredCardAlone(t *testing.T) {
 	// The reader answers. The answer retires the record of the request.
 	answer, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 9, "result": map[string]any{"outcome": "accepted", "answers": map[string]any{}}})
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(requestID, answer)))
 	syncPeer(t, a)
 
 	// Grok echoes the resolution for the reader's own answer too.
@@ -144,6 +183,76 @@ func TestGrokResolvedInteractionRetiresAToolPermission(t *testing.T) {
 	}))
 
 	assert.Equal(t, []string{requestID}, sink.CanceledControls())
+}
+
+func TestGrokForwardedPermissionUsesTheChildNotice(t *testing.T) {
+	t.Parallel()
+	for _, ambiguous := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ambiguous=%t", ambiguous), func(t *testing.T) {
+			t.Parallel()
+			a, parent, requests := newGrokAgent(t, agent.Options{}, nil)
+			const childSession = "child-session"
+			const toolID = "tool-call"
+			child := recordGrokChildPermissions(t, a, childSession)
+			pending := map[string]any{"sessionUpdate": "pending_interaction", "tool_call_id": toolID, "kind": "permission"}
+			a.HandleOutput(notification(t, childSession, pending))
+			// A root turn can finish while the background child still waits.
+			a.clearPermissionChecks(grokTestSession)
+			if ambiguous {
+				a.HandleOutput(notification(t, grokTestSession, pending))
+			}
+			request := frame(t, map[string]any{
+				"id": 11, "method": "session/request_permission",
+				"params": map[string]any{"sessionId": grokTestSession, "toolCall": map[string]any{"toolCallId": toolID}},
+			})
+			a.HandleOutput(request)
+			assert.Empty(t, parent.PublishedControls())
+			if ambiguous {
+				assert.Empty(t, child.PublishedControls())
+				syncPeer(t, a)
+				results := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
+				assert.JSONEq(t, `{"outcome":{"outcome":"cancelled"}}`, results["11"])
+				return
+			}
+			require.Equal(t, 1, child.PublishedControlCount())
+			published := child.LastPublishedControl()
+			assert.Equal(t, childSession, published.AgentSessionID)
+			assert.JSONEq(t, string(request), string(published.Payload))
+			a.HandleOutput(notification(t, childSession, map[string]any{"sessionUpdate": "interaction_resolved", "tool_call_id": toolID}))
+			assert.Equal(t, []string{published.RequestID}, child.CanceledControls())
+			assert.Empty(t, parent.CanceledControls())
+		})
+	}
+}
+
+func recordGrokChildPermissions(t *testing.T, a *Agent, childSession string) *agenttest.ControlSink {
+	t.Helper()
+	const rowKey = "child-row"
+	a.ApplySubagentObservation(&acp.SubagentObservation{
+		RowKey: rowKey, ChildAgentKey: rowKey, ChildAgentSessionID: childSession,
+		Title: "Native child", Status: bgtask.StatusRunning,
+	})
+	require.True(t, a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: grokTestSession, SessionID: childSession, RowKey: rowKey}))
+	child := &agenttest.ControlSink{}
+	baseOwner := a.HooksForTest().ControlOwner
+	a.HooksForTest().ControlOwner = func(sessionID string, line *providerkit.ParsedLine, needsTurn bool) (acp.ControlOwnerResolution, error) {
+		res, err := baseOwner(sessionID, line, needsTurn)
+		if err != nil {
+			return res, err
+		}
+		resolved := res.SessionID
+		if resolved == "" {
+			resolved = sessionID
+		}
+		if resolved != "" && !a.IsCurrentSession(resolved) {
+			assert.False(t, res.Refuse)
+			assert.NotNil(t, res.Sink)
+			assert.Equal(t, childSession, resolved)
+			res.Sink = child
+		}
+		return res, nil
+	}
+	return child
 }
 
 func TestGrokResolvedInteractionOfAnUnknownCallChangesNothing(t *testing.T) {
@@ -287,7 +396,8 @@ func TestGrokRefusesADialogOfARetiredSession(t *testing.T) {
 func TestGrokResolutionInAnotherSessionLeavesTheCardOpen(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newGrokAgent(t, agent.Options{}, nil)
-	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: a.CurrentSessionID(), SessionID: "child-session", RowKey: "call_spawn"})
+	const childSession = "child-session"
+	child := recordGrokChildPermissions(t, a, childSession)
 	permission := func(id int, sessionID string) []byte {
 		return frame(t, map[string]any{
 			"id": id, "method": "session/request_permission",
@@ -300,13 +410,15 @@ func TestGrokResolutionInAnotherSessionLeavesTheCardOpen(t *testing.T) {
 	}
 	a.HandleOutput(permission(11, grokTestSession))
 
-	a.HandleOutput(notification(t, "child-session", map[string]any{"sessionUpdate": "interaction_resolved", "tool_call_id": "call_0"}))
+	a.HandleOutput(notification(t, childSession, map[string]any{"sessionUpdate": "interaction_resolved", "tool_call_id": "call_0"}))
 	assert.Empty(t, sink.CanceledControls(), "the child's resolution is not the parent's")
 
 	// The child's own request with the same tool-call id resolves in the child.
-	a.HandleOutput(permission(12, "child-session"))
-	a.HandleOutput(notification(t, "child-session", map[string]any{"sessionUpdate": "interaction_resolved", "tool_call_id": "call_0"}))
-	assert.Equal(t, []string{"jsonrpc:12"}, sink.CanceledControls())
+	a.HandleOutput(permission(12, childSession))
+	require.Equal(t, 1, child.PublishedControlCount())
+	a.HandleOutput(notification(t, childSession, map[string]any{"sessionUpdate": "interaction_resolved", "tool_call_id": "call_0"}))
+	assert.Equal(t, []string{"jsonrpc:12"}, child.CanceledControls())
+	assert.Empty(t, sink.CanceledControls())
 
 	a.SetPromptActiveForTest(true)
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
@@ -441,12 +553,39 @@ func TestGrokFinalToolUpdateClearsTheCheck(t *testing.T) {
 	a.HandleOutput(notification(t, grokTestSession, map[string]any{
 		"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "permission",
 	}))
-	a.HooksForTest().ToolOutputComplete("call_2")
+	a.HooksForTest().ToolOutputComplete(grokTestSession, "call_2")
 	running, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
 	require.True(t, ok)
 	fields, ok := running.(map[string]interface{})
 	require.True(t, ok)
 	assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck])
+}
+
+func TestGrokChildToolCompletionPreservesTheParentCheck(t *testing.T) {
+	t.Parallel()
+	a, parent, _ := newGrokAgent(t, agent.Options{}, nil)
+	const childSession = "child-session"
+	const rowKey = "child-row"
+	const toolID = "shared-tool-id"
+	a.ApplySubagentObservation(&acp.SubagentObservation{
+		RowKey: rowKey, ChildAgentKey: rowKey, ChildAgentSessionID: childSession,
+		Title: "Native child", Status: bgtask.StatusRunning,
+	})
+	require.True(t, a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: grokTestSession, SessionID: childSession, RowKey: rowKey}))
+	a.HandleOutput(sessionUpdate(t, childSession, map[string]any{
+		"sessionUpdate": "tool_call", "toolCallId": toolID, "kind": "execute", "title": "Child command", "status": "in_progress",
+	}))
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": toolID, "kind": "permission",
+	}))
+	a.HandleOutput(sessionUpdate(t, childSession, map[string]any{
+		"sessionUpdate": "tool_call_update", "toolCallId": toolID, "status": "completed",
+	}))
+	running, ok := parent.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok)
+	fields, ok := running.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, true, fields[contracts.RunningToolFieldPermissionCheck])
 }
 
 // A stopped turn clears every permission-check badge. Normal and error turns
@@ -524,4 +663,32 @@ func TestGrokElicitCompleteOfAnotherServerChangesNothing(t *testing.T) {
 		"params": map[string]any{"sessionId": grokTestSession, "serverName": "other", "elicitationId": "flow-7"},
 	}))
 	assert.Empty(t, sink.CanceledControls(), "a foreign completion changes nothing")
+}
+
+func TestGrokCompleteToolOutputWithEmptySessionClearsUnboundCheck(t *testing.T) {
+	t.Parallel()
+	a, baseSink, _ := newGrokAgent(t, agent.Options{}, nil)
+	a.SetSinkForTest(agent.NewProviderServices(&failOnceChildSpawnerSink{ControlSink: baseSink}))
+
+	// Spawn a child whose BindChildSessionID fails once so its child sink stays unbound (MessageSessionID == "").
+	a.HandleOutput(spawnCall(t, "spawn-unbound", "Unbound child", "Run task", true))
+	a.HandleOutput(spawned(t, "child-unbound", "Unbound child", map[string]any{"agentAddress": "aa1.unbound"}))
+
+	// Record permission checks with the same toolCallID on both bound root and unbound child.
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": "call_shared", "kind": "permission",
+	}))
+	a.HandleOutput(notification(t, "child-unbound", map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": "call_shared", "kind": "permission",
+	}))
+
+	// acp.conversation passes sink.MessageSessionID() == "" for the unbound child sink.
+	a.HooksForTest().ToolOutputComplete("", "call_shared")
+
+	a.stateMu.Lock()
+	_, childPresent := a.controls.checks[controlKey{sessionID: "child-unbound", toolCallID: "call_shared"}]
+	_, rootPresent := a.controls.checks[controlKey{sessionID: grokTestSession, toolCallID: "call_shared"}]
+	a.stateMu.Unlock()
+	assert.False(t, childPresent, "completing tool output on an unbound sink must clear its pending permission check")
+	assert.True(t, rootPresent, "bound root session's permission check with the same toolCallID must remain open")
 }

@@ -292,7 +292,7 @@ type Server struct {
 	webauthnSessions *hubwebauthn.SessionStore
 	deviceAuths      service.DeviceAuthorizationStore
 	server           *http.Server
-	// listeners owns every TCP socket, including the one -listen gave, and
+	// listeners owns every TCP socket, including the one --listen gave, and
 	// rebinds them when the extra_listen_addresses setting changes.
 	listeners *listenerSet
 	// listenerErrs carries a TCP listener that stopped without being asked
@@ -331,6 +331,7 @@ type Server struct {
 	workerMgr         *workermgr.Manager
 	workerConnector   *service.WorkerConnectorService
 	authService       *service.AuthService
+	workspaceSvc      *service.WorkspaceService
 	crdtRegistry      *crdt.Registry
 	revocationWatcher runtimeLeaseWatcher
 	// workerEffects runs the out-of-database half of a worker's removal, for
@@ -767,12 +768,12 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 			return nil, err
 		}
 		return mgr, nil
-	}, slog.Default())
+	}, slog.Default(), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
 	acquired.crdtRegistry = crdtRegistry
 
 	// A deletion the notifier completes tells the owner's /ws/userevents
 	// subscribers that its worker list changed.
-	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, crdtRegistry.BroadcastWorkersChanged)
+	notifierSvc := notifier.New(wMgr, pendingReqs, apiTimeout)
 
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
 	// deregistration (evict); see auth.DelegationScopeCache.
@@ -1195,7 +1196,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	if cfg.SoloMode {
 		extraAddrs, extraErr := settings.ExtraListenAddresses(startupSnap)
 		if extraErr != nil {
-			slog.Warn("the stored extra listen addresses could not be read; serving only the -listen address",
+			slog.Warn("the stored extra listen addresses could not be read; serving only the --listen address",
 				"error", extraErr)
 		} else {
 			listeners.ApplyBestEffort(extraAddrs)
@@ -1263,6 +1264,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		workerMgr:         wMgr,
 		workerConnector:   connectorSvc,
 		authService:       authSvc,
+		workspaceSvc:      workspaceSvc,
 		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
 		workerEffects:     workerEffects,
@@ -1290,7 +1292,7 @@ func (s *Server) SettingsManager() *settings.Manager {
 }
 
 // PrimaryListenAddr is the TCP address a browser reaches this hub at, in the
-// form -listen carries, or "" when the hub binds no TCP address at all.
+// form --listen carries, or "" when the hub binds no TCP address at all.
 //
 // The launchers print it. They cannot read cfg.Listen for that any more: a
 // stored extra address can widen it (127.0.0.1:4327 merged into *:4327) or
@@ -1317,9 +1319,9 @@ func (s *Server) AccessURL() string {
 // machine can reach.
 //
 // The solo launcher asks, AFTER NewServer returns, so its exposure warning
-// reads the sockets the hub actually bound rather than the -listen string. A
+// reads the sockets the hub actually bound rather than the --listen string. A
 // stored extra address is bound by then, and that is the whole difference:
-// -listen alone cannot see the address a settings row published.
+// --listen alone cannot see the address a settings row published.
 func (s *Server) HasNonLoopbackAddress() bool {
 	return listenset.AnyNonLoopback(s.listeners.Bound())
 }
@@ -1445,7 +1447,7 @@ func (s *Server) ReissueLocalWorkerToken(ctx context.Context, workerID string) (
 		if readErr != nil {
 			return "", fmt.Errorf("read local worker after token replacement: %w", readErr)
 		}
-		if current.DeletedAt != nil || current.DeregisteringAt != nil {
+		if current.DeletedAt != nil {
 			return "", fmt.Errorf("reissue local worker %s: %w", workerID, store.ErrNotFound)
 		}
 		return "", fmt.Errorf("reissue local worker %s: token changed concurrently: %w", workerID, store.ErrConflict)
@@ -1456,18 +1458,7 @@ func (s *Server) ReissueLocalWorkerToken(ctx context.Context, workerID string) (
 // RetireLocalWorker removes the solo launcher's unusable local worker row at
 // once, then runs the deregistration effects for it.
 //
-// MarkDeleted, not Deregister: the launcher owns the worker process and knows it
-// is not running, so the 7-day deregistration grace would only keep a token
-// valid that sits in the preserved .corrupt-* state file. A row that is already
-// gone is a no-op -- there is nothing to retire.
-//
-// The Apply error is logged, not returned. The row is already deleted, so a
-// returned error would fail the launch and keep state.json, and the next launch
-// would find no row and take the not-found branch -- the retry the error
-// promises never happens. At launch the retired Worker holds no connection, so a
-// failed Apply can skip only the owner's workers-changed broadcast, and the next
-// listing omits the deleted row anyway. See admin_user_service.go's DeleteUser
-// for the same rule.
+// A row that is already gone is a no-op -- there is nothing to retire.
 func (s *Server) RetireLocalWorker(ctx context.Context, workerID string) error {
 	w, err := s.store.Workers().GetByID(ctx, workerID)
 	if err != nil {
@@ -1482,10 +1473,7 @@ func (s *Server) RetireLocalWorker(ctx context.Context, workerID string) error {
 	if err := s.store.Workers().MarkDeleted(ctx, workerID); err != nil {
 		return fmt.Errorf("retire local worker %s: %w", workerID, err)
 	}
-	if err := s.workerEffects.Apply(ctx, workerID, w.RegisteredBy); err != nil {
-		slog.Warn("retired a local worker but could not run its deregistration effects",
-			"worker_id", workerID, "error", err)
-	}
+	s.workerEffects.Apply(ctx, workerID, w.RegisteredBy)
 	return nil
 }
 
@@ -1768,11 +1756,11 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// 5b. End the hub's own lifetime context: every piece of detached work it
 	// carries, such as the refresh flight and the bearer-validation flight,
-	// ends here, so none of it reads the store
-	// the steps below close.
+	// ends here, so none of it reads the store the steps below close.
 	s.cancelServing()
 
-	// 6. Stop CRDT managers while their journal store is still available.
+	// 6. Stop CRDT lifecycle drains and managers while their journal store is
+	// still available.
 	s.crdtRegistry.Shutdown(s.shutdownDeadline.Cap(crdtShutdownTimeout))
 
 	// 7. Stop the watcher before removing its durable cursor, then close the

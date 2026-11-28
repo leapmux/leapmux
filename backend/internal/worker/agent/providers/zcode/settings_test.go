@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -1400,12 +1399,9 @@ func TestZCodePlanFlag_ADeclinedPlanKeepsPlanMode(t *testing.T) {
 
 	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
-	resolution := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload:  zcodeStoredPayload(t, sink),
-		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorDeny, "Split step 2.", nil),
-	})
+	_, resolution := zcodeResolve(t, zcodeStoredPayload(t, sink), zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorDeny, "Split step 2.", nil))
 	require.NotEmpty(t, resolution.Content)
-	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(sink.LastPublishedControl().RequestID, resolution.Content)))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
 	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
 
@@ -1433,12 +1429,9 @@ func TestZCodePlanFlag_AnApprovedPlanReturnsToTheNativeMode(t *testing.T) {
 	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
 
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
-	resolution := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload:  zcodeStoredPayload(t, sink),
-		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorAllow, "", nil),
-	})
+	_, resolution := zcodeResolve(t, zcodeStoredPayload(t, sink), zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorAllow, "", nil))
 	require.NotEmpty(t, resolution.Content)
-	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(sink.LastPublishedControl().RequestID, resolution.Content)))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
 	a.HandleOutput(zcodeModeChangedLine(t, 3, zcodeModeChangedPayload{
 		Mode: contracts.ZCodeModeEdit, PlanEnabled: false,

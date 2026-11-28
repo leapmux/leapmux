@@ -117,8 +117,11 @@ export interface BrowserPreferences {
    * `false` explicitly to opt out.
    */
   revealAfterDownload?: boolean
-  /** Desktop/browser terminal OSC notifications (OSC 9 / 777 / 99). Default off. */
-  terminalOsNotifications?: boolean
+  /**
+   * Desktop/browser notifications for terminal OSC alerts (OSC 9 / 777 / 99)
+   * and for `leapmux control notify` while the page is hidden. Default off.
+   */
+  desktopNotifications?: boolean
   /**
    * Device overrides of the five Desktop account keys. Absent means "use the
    * account value", like every other dual tier, and they ride inside this same

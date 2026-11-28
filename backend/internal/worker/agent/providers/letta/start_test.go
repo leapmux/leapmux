@@ -495,7 +495,7 @@ func TestSendInputRefusesAnAddresslessInput(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 
-	err := a.SendInput("This input has no runtime to address.", nil)
+	err := agenttest.SendInput(a, "This input has no runtime to address.", nil)
 	require.Error(t, err, "an input with no runtime identity is refused")
 	assert.Contains(t, err.Error(), "runtime", "the refusal states the missing identity")
 	assert.Empty(t, sink.TurnActives(), "a refused input arms no turn")
@@ -517,7 +517,7 @@ func TestSendRawInputSendsTheAnswerOverTheSocket(t *testing.T) {
 
 	answer := []byte(`{"kind":"approval_response","request_id":"perm-call-1","decision":{"behavior":"allow"}}`)
 	a.HandleOutput(permissionFrame("perm-call-1", "Bash", "call-1"))
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
 
 	command := fake.nextCommand(t)
 	assert.Equal(t, "input", command["type"], "the answer travels as an input command")
@@ -541,8 +541,8 @@ func TestSendRawInputRefusesANonAnswer(t *testing.T) {
 	a.conversationID = "local-conv-1"
 	a.Mu.Unlock()
 
-	require.Error(t, a.SendRawInput([]byte(`{"kind":"create_message"}`), agent.StopContext{}), "a non-answer is refused")
-	require.Error(t, a.SendRawInput([]byte(`not json`), agent.StopContext{}), "an unparseable answer is refused")
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"kind":"create_message"}`)}), "a non-answer is refused")
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(`not json`)}), "an unparseable answer is refused")
 	select {
 	case command := <-fake.commands:
 		t.Fatalf("a refused answer still wrote a command: %v", command)

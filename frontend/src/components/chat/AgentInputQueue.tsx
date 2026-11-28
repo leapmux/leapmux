@@ -1,6 +1,7 @@
 import type { CollisionDetector, DragEventHandler } from '@thisbeyond/solid-dnd'
 import type { LucideIcon } from 'lucide-solid'
 import type { Accessor, Component } from 'solid-js'
+import type { TabTitleLookup } from './agentMessageSender'
 import type { AgentInputQueueSnapshot, QueuedAgentInput, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { closestCenter, DragDropProvider, SortableProvider } from '@thisbeyond/solid-dnd'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
@@ -15,6 +16,7 @@ import TriangleExclamationPoint from 'lucide-solid/icons/triangle-exclamation-po
 import UserPen from 'lucide-solid/icons/user-pen'
 import Zap from 'lucide-solid/icons/zap'
 import { createMemo, createSignal, Show } from 'solid-js'
+import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { DragHandle } from '~/components/common/DragHandle'
 import { Icon } from '~/components/common/Icon'
@@ -27,6 +29,8 @@ import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import * as styles from './AgentInputQueue.css'
 import { dragIdOf, isDeliveryFailedState, isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueuePolicy'
+import { agentMessageSenderLabel } from './agentMessageSender'
+import { capitalize } from './rendererUtils'
 
 export interface AgentInputQueueProps {
   snapshot?: AgentInputQueueSnapshot
@@ -38,6 +42,11 @@ export interface AgentInputQueueProps {
    * neither.
    */
   queueHeadDispatch: QueueHeadDispatch
+  /**
+   * The title of a tab that the browser holds, by its id. A message from another
+   * agent states its sender by the title of the sender's tab.
+   */
+  tabTitle?: TabTitleLookup
   onEdit: (item: QueuedAgentInput, takeover: boolean) => void
   onCancelEdit: (item: QueuedAgentInput) => void
   onDelete: (item: QueuedAgentInput) => void
@@ -66,6 +75,8 @@ const OPERATION_LABELS = {
   [AgentInputKind.CONTROL_FEEDBACK]: 'Control feedback',
   [AgentInputKind.QUESTION_ANSWER]: 'Answer',
   [AgentInputKind.AUTO_RETRY_SERVER_ERROR]: 'Auto-retry (server error)',
+  // A row that states its sender shows the sender's tab instead.
+  [AgentInputKind.AGENT_MESSAGE]: 'Message from another agent',
 } satisfies Record<AgentInputKind, string>
 
 /**
@@ -319,9 +330,22 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
     const retryable = () => isDeliveryFailedState(item().state)
     const canRecover = () => !!props.snapshot?.processRecovery && !!props.onRecover && isHead() && !isLocked() && !item().editOwnerClientId
     // The edit slot holds ONE button, and who owns the edit decides
-    // which. A memo keeps the four cases in one place, so the icon,
+    // which. A memo keeps the five cases in one place, so the icon,
     // the name and the handler of a case cannot drift apart.
     const editAction = createMemo(() => {
+      // The Worker states, in the snapshot, each item that it refuses to
+      // edit, such as a message that an agent wrote, with the words of its
+      // refusal. The button stays, disabled, so that its tooltip says why the
+      // row offers no edit. The browser keeps no rule of its own.
+      const refusal = item().editRefusal
+      if (refusal) {
+        return {
+          icon: PencilOff,
+          label: capitalize(refusal),
+          disabled: true,
+          onClick: () => {},
+        }
+      }
       if (requiresTakeover()) {
         return {
           icon: UserPen,
@@ -388,7 +412,14 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
         <div class={styles.body}>
           <div class={styles.preview}>{item().text || '(attachments only)'}</div>
           <div class={styles.metadata}>
-            {operationLabel(item().kind)}
+            <Show when={item().sender} keyed fallback={operationLabel(item().kind)}>
+              {sender => (
+                <span class={styles.sender} data-testid={`queued-input-sender-${item().id}`}>
+                  <AgentProviderIcon provider={sender.provider} size={12} />
+                  {agentMessageSenderLabel(sender, props.tabTitle)}
+                </span>
+              )}
+            </Show>
             {' · '}
             {stateLabel(item().state)}
             <Show when={scheduleLabel(item())}>

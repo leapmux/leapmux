@@ -24,11 +24,18 @@ func (p zcodeProgressPublication) ReportProgress(update agent.ProgressUpdate) {
 
 type zcodeProgressSink struct {
 	agent.ProviderServices
-	scopes []string
-	source agent.MessageContent
+	scopes        []string
+	source        agent.MessageContent
+	nativeInputID string
+	nativeTurnID  string
+	turnScoped    bool
 }
 
 func (s zcodeProgressSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	if s.turnScoped {
+		content.NativeInputID = s.nativeInputID
+		content.NativeTurnID = s.nativeTurnID
+	}
 	if content.Publication != nil {
 		return content.Clone()
 	}
@@ -65,7 +72,17 @@ func (s zcodeProgressSink) ReportProgress(update agent.ProgressUpdate) {
 	s.ProviderServices.ReportProgress(update)
 }
 
-func (a *Agent) zcodeProgressSinkForTurn(owner *zcodeTurnState) zcodeProgressSink {
+type zcodeTurnReplyScope struct {
+	nativeInputID string
+	nativeTurnID  string
+}
+
+func (a *Agent) zcodeProgressSinkForTurn(owner *zcodeTurnState) agent.ProviderServices {
+	sink, _ := a.zcodeReplySinkForTurn(owner)
+	return sink
+}
+
+func (a *Agent) zcodeReplySinkForTurn(owner *zcodeTurnState) (agent.ProviderServices, zcodeTurnReplyScope) {
 	a.Mu.Lock()
 	scopes := make([]string, 0, len(owner.contentByScope))
 	for scope := range owner.contentByScope {
@@ -75,6 +92,21 @@ func (a *Agent) zcodeProgressSinkForTurn(owner *zcodeTurnState) zcodeProgressSin
 	if source.Publication == nil && owner.pendingNative != nil {
 		source = owner.pendingNative.source
 	}
+	var scope zcodeTurnReplyScope
+	if owner.inputConfirmed && !owner.replyUnproved {
+		scope.nativeInputID = owner.inputID
+		scope.nativeTurnID = owner.id
+		if len(owner.steerReceipts) > 0 && !owner.steerReplyUnproved {
+			// Each input bound to this turn can read shared rows after its own.
+			scope.nativeInputID = ""
+		}
+	}
 	a.Mu.Unlock()
-	return zcodeProgressSink{ProviderServices: a.sink, scopes: scopes, source: source}
+	sink := agent.DecorateProviderServices(a.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return zcodeProgressSink{
+			ProviderServices: direct, scopes: scopes, source: source, turnScoped: true,
+			nativeInputID: scope.nativeInputID, nativeTurnID: scope.nativeTurnID,
+		}
+	})
+	return sink, scope
 }

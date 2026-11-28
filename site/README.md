@@ -28,12 +28,28 @@ theme. The LeapMux user manual is served from `/docs/`.
 From the repository root:
 
 ```bash
-task site            # builds the site into site/public/
+task site                      # builds and verifies the site into site/public/
+task generate-site-screenshots # regenerates light/dark docs PNGs and MP4 clips
+task generate-site-cli-cast    # regenerates the live CLI asciicast v2 replay
 ```
 
-That validates the matrix and runs `cd site && GOWORK=off go tool hugo --gc --minify`. The first run
-compiles Hugo from source (cached afterwards) and downloads the Hextra module,
-so it needs network access.
+`task site` installs the locked site tools (`pagefind`, `wrangler`,
+`asciinema-player`), validates the matrix JSON files, runs
+`cd site && GOWORK=off go tool hugo --gc --minify --cleanDestinationDir`,
+generates `site/public/config-reference.json`, builds and prunes the Pagefind
+search index, copies the locked `asciinema-player` bundle into
+`site/public/vendor/asciinema-player/`, and runs
+`scripts/verify-coding-agent-site.mjs`. The first run compiles Hugo from source
+(cached afterward) and downloads the Hextra module, so it needs network access.
+
+`task generate-site-screenshots` builds the embedded frontend binary, boots an
+isolated LeapMux Hub and Worker with deterministic Git worktrees and the local
+mock model server via `frontend/scripts/generate-site-screenshots.ts`, and
+writes updated light and dark Retina PNGs under `site/static/images/docs/` and
+MP4 clips under `site/static/videos/docs/`. `task generate-site-cli-cast` runs
+real `leapmux` CLI commands against the isolated stack and writes
+`site/static/casts/cli-fleet-demo.cast`. Run either task explicitly whenever
+the UI, CLI output, or fixtures change.
 
 ## Local preview
 
@@ -57,10 +73,10 @@ site/
 │   ├── _index.md       # Home page (https://leapmux.dev/)
 │   └── docs/           # User manual (https://leapmux.dev/docs/)
 │       ├── _index.md   # Manual landing page
-│       └── <section>/  # getting-started / using / admin / reference,
+│       └── <section>/  # getting-started / recipes / using / admin / reference
 │           ├── _index.md   # section index (cards)
 │           └── *.md        # chapters, ordered by `weight`
-└── static/             # Logo and favicon
+└── static/             # Logo, favicon, agent-guide.md, and docs screenshots
 ```
 
 To add or edit a chapter, drop a Markdown file in the right `content/docs/<section>/`

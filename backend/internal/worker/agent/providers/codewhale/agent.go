@@ -60,6 +60,9 @@ type Agent struct {
 	// event, never around an HTTP request: a handler that needs a request runs it
 	// on its own goroutine.
 	dispatchMu sync.Mutex
+	// replies retains exact ordinary replies across the HTTP response and event
+	// stream. It is guarded by dispatchMu.
+	replies providerkit.NativeReplyLedger
 	// steerMu serializes native steer requests and their receipt identification.
 	steerMu      sync.Mutex
 	approvalWork providerkit.CoalescingWork
@@ -68,7 +71,7 @@ type Agent struct {
 	// event, so a process that dies mid-message still leaves its text behind.
 	generationBuffer providerkit.GenerationBuffer
 	// openGeneratedItems identifies the unfinished item of each generated kind. Guarded by dispatchMu.
-	openGeneratedItems map[string]string
+	openGeneratedItems map[string]codewhaleGeneratedItem
 	// modelRequestObserved enables the native request boundary for steer ordering. Guarded by dispatchMu.
 	modelRequestObserved bool
 	// heldErrors waits for each native turn error before it stores an error item. Guarded by dispatchMu.
@@ -207,25 +210,25 @@ func (a *Agent) markTurnFinished(turnID string) bool {
 
 // SendInput starts a turn with the user's message. It returns once the runtime
 // created the turn, never when the turn ends.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments)
 }
 
 // SendInputForSession starts a turn only when sessionID is still the agent's
 // thread.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	threadID, turnID := a.threadID, a.turnID
 	effort := a.settings.effort
@@ -233,32 +236,39 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	a.Mu.Unlock()
 
 	if threadID == "" {
-		return fmt.Errorf("the Codewhale agent has no thread")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Codewhale agent has no thread")
 	}
 	// Normal dispatch never joins the running turn. Steering is its own
 	// operation, and the runtime refuses a second turn anyway.
 	if turnID != "" {
-		return fmt.Errorf("%w: %s", agent.ErrAgentBusy, turnID)
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: %s", agent.ErrAgentBusy, turnID)
 	}
 
 	prompt, images, err := buildTurnInput(content, agent.ClassifyAttachments(attachments), imageInput)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	request := startTurnRequest{Prompt: prompt, Images: images}
 	if effort != "" && effort != agent.EffortAuto {
 		request.ReasoningEffort = effort
 	}
+	var receipt agent.NativeInputReceipt
+	a.beginCodewhaleReplyStart()
+	defer func() { a.finishCodewhaleReplyStart(receipt) }()
 	turn, err := a.startTurn(threadID, request)
 	if err != nil {
-		return classifyTurnStartError(err)
+		return receipt, classifyTurnStartError(err)
 	}
-	// The reply states the turn before its first event can, so the flag moves at
-	// once and a second message waits for this turn rather than drawing a 409.
+	if turn.ID == "" {
+		return receipt, fmt.Errorf("%w: Codewhale omitted the new turn ID", agent.ErrDeliveryUncertain)
+	}
+	// The response can arrive before the first event. Mark the turn so another
+	// input waits for it. A turn whose completion already arrived stays finished.
 	if a.markTurnStarted(turn.ID) {
 		a.PublishTurnActive()
 	}
-	return nil
+	receipt = codewhaleInputReceipt(threadID, turn.ID)
+	return receipt, nil
 }
 
 // classifyTurnStartError maps a failed turn start onto the sentinels the input
@@ -296,7 +306,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput sends one native steer. Its HTTP success can mean queued, so it writes no user row.
 // Text attachments enter the native prompt. The shared queue retains the original attachments.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	content, attachments := request.Content, request.Attachments
 	a.steerMu.Lock()
 	defer a.steerMu.Unlock()
 	a.Mu.Lock()
@@ -304,40 +315,54 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	threadID, turnID := a.threadID, a.turnID
 	a.Mu.Unlock()
 	if stopped {
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	if threadID == "" || turnID == "" {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	prompt, images, err := buildTurnInput(content, agent.ClassifyAttachments(attachments), imageInputSupported)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if len(images) > 0 {
-		return fmt.Errorf("the Codewhale runtime cannot add an image to a running turn; send it as a new message")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Codewhale runtime cannot add an image to a running turn; send it as a new message")
 	}
-	before, baselineOK := readTurnItemIDs(a.store, turnID)
-	if !baselineOK {
-		slog.Debug("codewhale could not read the native steer baseline", "agent_id", a.AgentID(), "turn_id", turnID)
+	// A control reply or untracked caller already holds a transcript row and carries no dispatch attempt.
+	tracked := request.InputID != "" && request.AttemptID != ""
+	var before map[string]bool
+	var baselineOK bool
+	if tracked {
+		before, baselineOK = readTurnItemIDs(a.store, turnID)
+		if !baselineOK {
+			slog.Debug("codewhale could not read the native steer baseline", "agent_id", a.AgentID(), "turn_id", turnID)
+		}
 	}
 	a.dispatchMu.Lock()
 	a.Mu.Lock()
 	if a.StoppedLocked() || a.threadID != threadID || a.turnID != turnID || a.finishedTurns.contains(turnID) {
 		a.Mu.Unlock()
 		a.dispatchMu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if a.steers.unidentified() {
 		a.Mu.Unlock()
 		a.dispatchMu.Unlock()
-		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
+		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
 	}
-	ticket := a.steers.begin(turnID, prompt, before, baselineOK)
+	if !tracked {
+		a.Mu.Unlock()
+		a.dispatchMu.Unlock()
+		return agent.NativeInputReceipt{}, a.settleUntrackedSteerReply(steerKey{turnID: turnID, input: strings.TrimSpace(prompt)}, a.steerTurn(threadID, turnID, prompt))
+	}
+	ticket := a.steers.begin(agent.SteerResolution{
+		InputID: request.InputID, AttemptID: request.AttemptID,
+		Receipt: agent.NativeInputReceipt{SessionID: threadID, TurnID: turnID},
+	}, prompt, before, baselineOK)
 	a.steerCall = ticket
 	a.Mu.Unlock()
 	a.dispatchMu.Unlock()
 	defer a.finishSteerCall(ticket)
-	return a.settleSteerReply(ticket, a.steerTurn(threadID, turnID, prompt))
+	return agent.NativeInputReceipt{}, a.settleSteerReply(ticket, a.steerTurn(threadID, turnID, prompt))
 }
 
 // Interrupt stops the running turn. When no turn runs, it closes any open tool
@@ -501,6 +526,7 @@ func (a *Agent) finishAfterExit(completion agent.MessageCompletion) {
 	a.closeOpenWorkflows()
 	a.closeOpenShells()
 	a.settleSteersAfterExit()
+	a.retireCodewhaleRepliesAfterExit()
 	a.Mu.Lock()
 	cleared := a.turnID != ""
 	a.finishedTurns.add(a.turnID)

@@ -1,10 +1,9 @@
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
 import { providerQuotableText, providerRow, providerToolMeta } from '~/test-support/toolCallFixture'
-import { createControlAnswerState } from '../../controls/types'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import { piNeedsRequest } from './spanRole'
@@ -551,120 +550,6 @@ describe('pi quotable text', () => {
     expect(providerQuotableText(AgentProvider.PI, { type: 'message_end' }, {
       category: { kind: 'hidden' },
     })).toBeNull()
-  })
-})
-
-describe('pi extension UI integration', () => {
-  const plugin = providerFor(AgentProvider.PI)!
-
-  it('treats Pi input/select extension UI requests as ask-user-question', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'input' })).toBe(true)
-    expect(plugin?.controls?.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'select' })).toBe(true)
-  })
-
-  it('rejects non-question dialog methods from the ask-user-question shortcut', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'confirm' })).toBe(false)
-    expect(plugin?.controls?.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'editor' })).toBe(false)
-  })
-
-  it('maps Pi select options into shared AskUserQuestion options', () => {
-    expect(plugin?.controls?.askUserQuestion!.extractQuestions({
-      type: 'extension_ui_request',
-      id: 'req-1',
-      method: 'select',
-      title: 'Pick one',
-      options: ['Allow', 'Block'],
-    })).toEqual([
-      {
-        id: 'req-1',
-        question: 'Pick one',
-        options: [
-          { label: 'Allow' },
-          { label: 'Block' },
-        ],
-      },
-    ])
-  })
-
-  it('sends Pi select AskUserQuestion responses as extension_ui_response values', async () => {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
-    await plugin?.controls?.askUserQuestion!.sendAnswer(
-      {
-        requestId: 'req-1',
-        agentId: 'agent-1',
-        payload: { type: 'extension_ui_request', method: 'select' },
-      },
-      onRespond,
-      [
-        {
-          id: 'req-1',
-          question: 'Pick one',
-          options: [
-            { label: 'Allow' },
-            { label: 'Block' },
-          ],
-        },
-      ],
-      createControlAnswerState({
-        selections: {
-          0: ['Block'],
-        },
-      }),
-    )
-
-    expect(onRespond).toHaveBeenCalledOnce()
-    const respondCall = onRespond.mock.calls[0]
-    expect(respondCall).toBeDefined()
-    const [bytes] = respondCall ?? []
-    expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
-      type: 'extension_ui_response',
-      id: 'req-1',
-      value: 'Block',
-    })
-  })
-
-  it('builds confirm responses with confirmed=true on empty content', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'confirm' }, '', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', confirmed: true })
-  })
-
-  it('builds confirm responses with confirmed=false when the user typed feedback', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'confirm' }, 'this looks wrong', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', confirmed: false })
-  })
-
-  it('builds select responses with the typed value', () => {
-    const resp = plugin?.controls?.buildControlResponse!({
-      type: 'extension_ui_request',
-      method: 'select',
-      options: ['Allow', 'Block'],
-    }, 'Allow', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', value: 'Allow' })
-  })
-
-  it('cancels select responses with empty content', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'select' }, '', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', cancelled: true })
-  })
-
-  it('builds input responses preserving the exact value', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'input' }, ' typed text  ', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', value: ' typed text  ' })
-  })
-
-  it('builds empty input responses as value rather than cancellation', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'input' }, '', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', value: '' })
-  })
-
-  it('builds editor responses preserving the exact value', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'editor' }, 'multiline\ntext\n', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', value: 'multiline\ntext\n' })
-  })
-
-  it('cancels unknown methods to keep Pi unblocked', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'futureMethod' }, 'whatever', 'req-1')
-    expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', cancelled: true })
   })
 })
 

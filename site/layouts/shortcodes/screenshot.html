@@ -1,0 +1,16 @@
+{{- /*
+  screenshot renders a light/dark documentation screenshot pair swapped via
+  pure CSS (.dark), with a framed presentation and optional caption.
+
+      {{< screenshot src="hero-workspace" alt="LeapMux workspace" caption="Tiled agents and terminals" width="1440" height="900" eager="true" >}}
+*/ -}}
+{{- partial "theme-screenshot.html" (dict
+  "page" .Page
+  "src" (.Get "src")
+  "alt" (.Get "alt")
+  "caption" (.Get "caption")
+  "width" (.Get "width")
+  "height" (.Get "height")
+  "eager" (eq (printf "%v" (.Get "eager")) "true")
+  "pos" .Position
+) -}}

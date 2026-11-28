@@ -1,158 +1,153 @@
 ---
 title: "Workspaces"
-description: "The top-level container in LeapMux for tiled agent, terminal, file, and image tabs: create, rename, delete, organize, and switch between workspaces."
+description: "Create, organize, archive, delete, and sync workspaces across devices in LeapMux."
 type: docs
 weight: 1
 ---
 
-A **workspace** is the top-level container you work inside. It holds a tiling layout of tabs — coding agents, terminals, and file browsers — each tab tied to a Worker (machine), a working directory, and (usually) a git branch. Workspaces persist across restarts (see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/) for how agent and terminal sessions are restored). This chapter covers creating, renaming, deleting, organizing, and switching between workspaces.
+A **workspace** is the top-level container you work inside. It holds a tiling layout of coding agent, terminal, file, and image tabs. Each tab runs on a Worker (machine) in a working directory, usually on its own git branch or worktree. Workspaces persist across restarts and sync live across every browser and desktop app where you sign in.
 
-For the bigger picture of how workspaces fit alongside Hubs, Workers, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For everything you do *inside* a workspace — tabs, splits, grids, and floating windows — see [Tabs & Layout](/docs/using/tabs-and-layout/).
+For how workspaces relate to Hubs, Workers, tiles, and tabs, see [Concepts & Topologies](/docs/getting-started/concepts/). For everything inside a workspace — tabs, splits, grids, and floating windows — see [Tabs & Layout](/docs/using/tabs-and-layout/).
 
-## What a workspace is
+## What a workspace holds
 
-- One workspace is open at a time.
-- Workspaces are owner-only: only the owner can see, rename, or delete a workspace. There is no sharing.
-- Agent and terminal state lives only in the Worker's local database and is never uploaded to the Hub. Frontend↔Worker traffic is end-to-end encrypted in transit. The Hub stores the workspace's title, tab positions, and layout geometry, but never the content. See [Security & Threat Model](/docs/admin/security/).
+- You view one workspace at a time, while all other non-archived workspaces remain live in the background.
+- Workspaces are strictly owner-only: only your account can view, edit, or delete them.
+- Agent transcripts, terminal sessions, and file contents stay on the Worker and travel over an end-to-end encrypted (E2EE) channel. The Hub stores only workspace metadata (titles, sections, tab positions, and layout geometry) so it can sync your layout without reading your code or conversations. See [Security & Authentication](/docs/admin/security-and-auth/).
 
 ## Creating a workspace
 
-Open the **New workspace** dialog from the left sidebar:
+{{< screenshot src="new-workspace-dialog" alt="LeapMux New workspace dialog showing Worker, Agent Provider, Title, Working Directory tree, Resume session, and Git options" caption="The New workspace dialog selects the Worker, coding-agent provider, working directory, optional session to resume, and git mode." width="996" height="792" >}}
 
-1. Hover over a workspace section header (for example **In progress**) and click the **+** button. The button creates a workspace in that section. It appears on every workspace section except **Archived**, and its tooltip shows the section name and the shortcut (for example `New workspace in In progress (⌥⌘N)`).
-2. Alternatively, trigger the keyboard shortcut bound to the *New workspace dialog* action (see [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/)).
+Open the **New workspace** dialog in one of three ways:
 
-The dialog is titled **New workspace** and contains these fields:
+1. Open the **`⋯`** actions menu on any non-archived workspace section header (such as **In progress**) and choose **New workspace...**.
+2. Open that same **`⋯`** menu and pick a repository under **New workspace in** to pre-fill the Worker, path, and last-used git mode for a recent repository.
+3. Press `⌥⌘N` / `Ctrl+Alt+N` when no dialog is open (or click **Create a new workspace...** on the empty canvas).
 
 | Field | What it does |
 | --- | --- |
-| **Worker** | Pick which Worker (machine) hosts the workspace's first agent. See [Managing Workers](/docs/admin/managing-workers/). |
-| Agent provider | Choose the agent backend (for example Claude Code or Codex). A refresh control re-queries the Worker for available providers. See [Coding Agents](/docs/using/coding-agents/). |
-| **Title** | The workspace name. Pre-filled with a random three-word title-cased name. The refresh button beside the label (tooltip **Generate random name**) regenerates the suggestion. Type your own to replace it. It cannot be empty. |
-| Directory | The working directory to open on the Worker. The same picker the other dialogs use: browse the tree, or type a path in the box above it. |
-| Resume an existing session | Optional. A menu of recent sessions for the chosen directory and provider, so the workspace's first agent continues an earlier conversation. See [Resuming a session](/docs/using/coding-agents/#resuming-an-existing-session). |
-| Git options | Once a Worker is chosen, choose the git mode for the working directory — for example opening directly or in a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
+| **Worker** | Picks the machine that hosts the workspace's first agent. See [Managing Workers](/docs/admin/managing-workers/). |
+| **Agent provider** | Picks the coding-agent CLI (for example, Claude Code or Codex). Use the refresh button to re-query available providers on the Worker. |
+| **Title** | Sets the workspace title. Pre-filled with a random three-word title; click **Generate random name** to pick another, or type your own. |
+| **Working Directory** | Browses the Worker's filesystem or accepts a typed path. Includes a **Go to home directory** button, a hidden-files toggle, a refresh button, and a drive selector on Windows Workers. |
+| **Resume an existing session** | Optional. Reopens a recent conversation for the chosen provider and directory instead of starting fresh. See [Coding Agents](/docs/using/coding-agents/#resuming-sessions). |
+| **Git options** | Appears once you select a git repository on a Worker. Lets you stay on the current branch, switch branches, or create a new branch or linked worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
-Click **Create** to confirm. Creating a workspace starts its first agent automatically, then opens the new workspace.
+Click **Create** to launch the first agent and switch into the new workspace. If the initial agent fails to start, LeapMux rolls back workspace creation automatically so you are not left with an empty workspace.
 
-{{< callout type="info" >}}
-Workspace titles are checked and tidied server-side. If a title cannot be used, the dialog shows the reason inline.
-{{< /callout >}}
+## Organizing workspaces in the sidebar
 
-{{< callout >}}
-If anything fails after the workspace row is created — for example the agent cannot start — LeapMux rolls the creation back automatically, so you are not left with an empty workspace.
-{{< /callout >}}
+{{< screenshot src="sidebar-workspaces" alt="LeapMux left sidebar showing workspaces, git worktree branch groups, Claude Code, Codex, and Antigravity tabs, Archived section, and connected Workers" caption="The left sidebar groups workspaces into collapsible sections and organizes each workspace's tabs by repository and git branch." width="446" height="900" >}}
 
-## The sidebar workspace tree
+The left sidebar organizes workspaces into collapsible **sections**. Two default sections always exist:
 
-The left sidebar lists workspaces grouped into collapsible **sections**. Every user starts with these default workspace sections:
+- **In progress** — expanded by default; holds new workspaces unless you create them in a custom section.
+- **Archived** — collapsed by default; holds read-only archived workspaces.
 
-| Section | Contains |
-| --- | --- |
-| **In progress** | Your workspaces that are not assigned to another section. New workspaces land here by default. |
-| **Archived** | Workspaces you have archived. Collapsed by default. |
+Click any section header to collapse or expand it. Collapse state persists across reloads.
 
-All workspace sections except **Archived** are expanded by default; click a section header to collapse or expand it.
+### Section header actions menu (`⋯`)
 
-### Custom sections
+{{< screenshot src="workspace-section-menu" alt="LeapMux In progress section header actions menu showing New workspace, New workspace in recent repositories, Filter workspaces, Sort by, Collapse all, Expand all, Reveal active workspace, and New section" caption="Click the ⋯ actions button on any workspace section header to create, filter, sort, collapse, or organize workspaces." width="1006" height="588" >}}
 
-In addition to the default sections, your sidebar can hold **custom sections** that you use to group workspaces. A custom section behaves like **In progress**: it is expanded by default, it carries a **+** button to create a workspace directly in it, and it is a valid drag target and a **Move to** target (see [Moving and archiving](#moving-and-archiving) below). Each section is per-user, so creating, renaming, or deleting a section changes only *your* sidebar.
+Every workspace section header — including **Archived** — has a **`⋯`** actions menu:
 
-{{< callout type="info" >}}
-The current UI provides no way to **create**, **rename**, or **delete** custom sections, so the only sections you will see are the two defaults.
-{{< /callout >}}
+| Action | Availability | What it does |
+| --- | --- | --- |
+| **New workspace...** | Non-archived sections | Opens the **New workspace** dialog targeting this section. |
+| **New workspace in** | Non-archived sections with recent repos | Quick-launches **New workspace** pre-filled for a recent repository with its remembered git mode. |
+| **Filter workspaces** | All sections | Shows or hides a per-section filter input to narrow visible workspaces by title. |
+| **Sort by** | All sections | Sets the sort criterion and direction (ascending or descending) for workspace sections. |
+| **Collapse all** / **Expand all** | All non-empty sections | Collapses or expands every workspace tab tree in the section. |
+| **Reveal active workspace** | Section holding the active workspace | Expands the section and scrolls the active workspace into view. |
+| **Unarchive all** | Non-empty **Archived** section | Moves every archived workspace back to **In progress**. |
+| **Empty archive...** | Non-empty **Archived** section | Permanently deletes every archived workspace after confirmation. |
+| **New section...** | All sections | Creates a custom section to group related workspaces (for example, by project or sprint). |
+| **Rename section...** | Custom sections | Renames a custom section. |
+| **Delete section...** | Custom sections | Deletes a custom section after confirmation, moving its workspaces back to **In progress**. |
 
-### Workspace rows
+### Workspace rows and tab trees
 
-Each workspace row shows:
+Each workspace row displays an expand chevron, the workspace title (falling back to **Untitled**), a repository diff-stats badge summarizing added, deleted, and untracked changes across its tabs, and an accent bar when active.
 
-- A **chevron** on the left that expands or collapses the workspace's tab tree.
-- The workspace **title** (falls back to **Untitled** when blank).
-- A diff-stats badge summarizing added / deleted / untracked lines across the workspace's tabs.
-- The active workspace is highlighted with an accent bar.
+- **Click** a row to switch to that workspace.
+- **Double-click** an active (non-archived) workspace row to rename it inline.
+- **Click the chevron** to expand its per-workspace tab tree, grouped as **Repository → Branch → Tabs**. Tabs without git metadata appear ungrouped.
+- **Drag** a workspace row to reorder it or move it into another section. Dragging into **Archived** opens the archive confirmation dialog.
 
-Row interactions:
+Clicking a tab inside an inactive workspace switches to that workspace and activates the tab. Double-click an agent or terminal leaf to rename it inline; middle-click or click **×** to close it (when the workspace is not archived).
 
-- **Single click** selects the workspace and switches to it.
-- **Double click** starts an inline rename.
-- **Click the chevron** to expand the tab tree.
-- Drag a workspace to **reorder** it or **move** it between sections. Dragging into **Archived** routes through the archive confirmation.
+## Renaming, moving, archiving, and deleting
 
-{{< callout type="info" >}}
-Expanded/collapsed state is remembered between page reloads, so the tree comes back the way you left it.
-{{< /callout >}}
+{{< screenshot src="workspace-context-menu" alt="LeapMux workspace context menu in the left sidebar showing repository paths and Rename, Archive, and Delete actions" caption="Open a workspace's context menu to rename, move between sections, archive, or delete it." width="1036" height="503" >}}
 
-### The per-workspace tab tree
+Open a workspace row's **`⋯`** context menu (or right-click the row) to manage it:
 
-Expand a workspace to see its tabs organized as a tree:
+- **Move to** — moves the workspace into **In progress** or any custom section without dragging.
+- **Rename** — edits the title inline (`Enter` or click away to save, `Esc` to cancel). Archived workspaces cannot be renamed.
+- **Archive** / **Unarchive** — freezes a workspace and moves it to **Archived**, or restores it to **In progress**.
+- **Delete** — permanently removes the workspace after confirmation.
 
-- **Repo → Branch → tabs.** Tabs are grouped by their git repository, then by branch, then listed individually. The repo label comes from the git origin URL (for example `github.com/org/repo`), or the directory name for a repo with no origin.
-- Tabs with no git information appear as flat leaves in an ungrouped bucket.
-- A group whose worktree has no current branch (for example, a detached HEAD) is labeled **(no branch)** and offers no branch actions.
-- Branch rows carry an icon for the kind of checkout — a branch in the main repository, or a linked worktree — and expose a change and a delete action when the branch has a real name. See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+### Archiving a workspace
 
-Each tab leaf shows the tab's type icon and label. For closable tabs, a close **×** button appears (middle-click also closes them). Double-click an agent or terminal leaf to rename it inline; file and image tabs are not renamable.
+Archiving freezes a workspace as a read-only record without deleting its transcripts or layout:
 
-Clicking a tab leaf in a workspace that is not currently active switches to that workspace and activates the chosen tab. Repo and branch collapse state is remembered per workspace across reloads.
+- **Processes stop cleanly.** Archiving pauses agent input queues, cancels in-flight startups, stops every running agent and terminal process in that workspace, and closes any [Quake terminal](/docs/using/terminals/#quake-mode-terminal) whose working directory has no remaining active tabs in other workspaces.
+- **Read-only view.** While archived, you can inspect transcripts and layouts, but you cannot rename the workspace, open or close tabs, change branches, or edit the layout.
+- **Unarchiving.** Choose **Unarchive** (or **Unarchive all** from the **Archived** section menu) to return the workspace to **In progress**, re-enable editing, and let its agents resume.
 
-## Renaming a workspace
+### Deleting a workspace
 
-To rename a workspace, either:
-
-- Double-click the workspace row, or
-- Open the row's context menu (the **⋯** button) and choose **Rename**.
-
-The title becomes an inline input pre-filled with the current name. Press **Enter** or click away to commit; press **Escape** to cancel. An empty value cancels the rename. If the rename fails, the workspace keeps its previous name.
-
-## Moving and archiving
-
-The workspace context menu includes:
-
-- **Move to** — a submenu listing your other sections (excluding the current one and **Archived**), including any [custom sections](#custom-sections). Pick one to move the workspace there. The submenu appears only when at least one such target exists, so with just the default sections the submenu is always hidden.
-- **Archive** / **Unarchive** — moves the workspace into your **Archived** section, or back to **In progress**.
-
-Archiving asks for confirmation:
-
-> **Archive workspace**
-> Are you sure you want to archive this workspace? All active agents and terminals will be stopped.
-
-Archiving is a purely per-user organization of your sidebar: it moves the workspace into your **Archived** section. The workspace itself is not deleted, and you can unarchive it at any time. (While a workspace is archived its context menu shows **Unarchive** in place of **Move to**.)
-
-Despite the dialog's wording, archiving does not stop the workspace's agents or terminals; they keep running on their Workers. To stop an agent or terminal, close its tab — an archived workspace is read-only, so unarchive it first. To stop everything a workspace holds, delete the workspace.
-
-## Deleting a workspace
-
-To delete a workspace, open the workspace context menu and choose **Delete** (shown in red). You are asked to confirm:
-
-> **Delete workspace**
-> Are you sure you want to delete this workspace? This cannot be undone.
-
-On confirm, the workspace is deleted and everything it held is cleaned up. Its agents and terminals are stopped. A worktree that no other workspace points at is reclaimed shortly afterwards by the Worker's housekeeping pass. A worktree with uncommitted changes or unpushed commits is left on disk for you.
-
-A Worker that is unreachable at that moment catches up the next time it connects. If the deleted workspace was the active one, LeapMux switches you to your first non-archived workspace (or shows the empty "Create a new workspace…" state if none remain). If deletion fails, the workspace is left in place.
+Confirming **Delete** removes the workspace, stops its agents and terminals, and lets the Worker's housekeeping pass reclaim any linked git worktree that no other workspace uses. Worktrees containing uncommitted changes or unpushed commits are left untouched on disk. If a Worker is offline during deletion, it stops those processes and cleans up unused worktrees the next time it connects.
 
 {{< callout type="warning" >}}
-Deletion is final from your point of view — there is no undelete in the UI.
+Deletion is permanent and cannot be undone. Use **Archive** when you want to stop running processes while keeping transcripts and layout history intact.
 {{< /callout >}}
 
 ## Switching workspaces
 
-Click any workspace row in the sidebar to switch to it. On mobile, this also closes the open sidebar overlay.
+Click any workspace row in the sidebar to switch immediately. Because every non-archived workspace stays live in the background, tab titles, agent activity, and diff badges are already current when you switch in.
 
-Every workspace is live at all times, not just the one on screen — switching is instant because there is nothing to load. A change made on another device to a workspace you are not currently looking at lands right away, so its sidebar row, tab titles and diff badges are already correct when you switch in.
+Your browser remembers the last active workspace per account and restores it on reload. If that workspace was deleted from another device, LeapMux falls back to your first non-archived workspace.
 
-Dragging a tab to another workspace, or closing one, applies immediately and syncs to your other clients. The layout is stored on the Hub, so a tab whose Worker cannot be reached moves and closes just the same. That Worker catches up on its side — stopping processes and releasing unreferenced worktrees — the next time it connects.
+## Live sync across devices
 
-Your active workspace is remembered in the browser, per account, so a reload or a fresh visit reopens the one you were last on. If that workspace is gone — deleted from another device, say — LeapMux falls back to the first one in your list rather than showing an error.
+LeapMux keeps every open workspace in sync across all browsers and desktop apps signed in to your account. Open the same workspace on a laptop and a phone, or in two browser windows, and structural changes stay aligned automatically with no toggle or manual sync step.
 
-## Live updates across clients
+{{< callout type="info" >}}
+**Solo Desktop** binds only to a local socket by default. To sync across a second device, enable **Network access** in [Configuration Guide](/docs/admin/configuration/) or connect LeapMux Desktop to a remote Hub in Distributed mode.
+{{< /callout >}}
 
-Workspace lifecycle changes — create, rename, delete — are broadcast to all of your connected clients near-real-time over the user event stream, so the sidebar stays in sync without a manual refresh. The tiling layout *inside* a workspace also syncs live across your devices; see [Device Sync](/docs/using/device-sync/).
+### What syncs and what stays local
+
+| Syncs across your clients | Stays local to each client |
+| --- | --- |
+| Workspace creation, renaming, sections, archiving, and deletion | Which workspace, tile, or tab is currently focused |
+| Tiling splits, grids, divider ratios, and tab order | Draft text typed into a chat composer before sending |
+| Floating window position, size, opacity, and inner layout | Floating window stacking order (front-to-back) |
+| Tab titles, file paths, and image tab references (over E2EE Worker channels) | Whether a Quake terminal panel is currently slid open |
+
+If two clients edit the same layout property at the same moment, the latest change wins automatically with no merge prompt.
+
+### Active client and turn-end sound
+
+LeapMux tracks one presence signal per workspace: which client you most recently interacted with. When a coding agent finishes a turn, only that active client plays the turn-end sound so alerts do not ring on every open device simultaneously. All tabs and windows of one browser profile share a single login session and count as one client.
+
+To mute a specific device regardless of focus, set **Turn-end sound** to **None** under **Preferences → Notifications** (see [Settings & Preferences](/docs/using/settings/)). LeapMux has no other presence features (no remote cursors, typing indicators, or viewer avatars).
+
+### Sync troubleshooting
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| Layout changes do not appear on another device | Different workspaces selected, Solo Desktop has no network listener, or a lost connection | Confirm both clients point to the same Hub and workspace; reload the stale client. |
+| Multiple devices play the turn-end sound | Presence has not settled after reconnect | Click inside the client you want active, or set **Turn-end sound** to **None** on secondary devices. |
+
+For deeper diagnostics, see [Troubleshooting](/docs/reference/troubleshooting/).
 
 ## Related chapters
 
-- [Tabs & Layout](/docs/using/tabs-and-layout/) — working inside a workspace: tabs, splits, grids, floating windows.
-- [Coding Agents](/docs/using/coding-agents/) — opening and using agents in a workspace.
-- [Worktrees & Branches](/docs/using/worktrees-and-branches/) — the git side of workspace tabs.
-- [Device Sync](/docs/using/device-sync/) — live layout sync across your devices.
-- [Security & Threat Model](/docs/admin/security/) — what the Hub can and cannot see.
+- [Coding Agents](/docs/using/coding-agents/) — open, chat with, and steer agents inside your workspaces.
+- [Tabs & Layout](/docs/using/tabs-and-layout/) — splits, grids, floating windows, and tab management.
+- [Worktrees & Branches](/docs/using/worktrees-and-branches/) — isolate each agent in its own git checkout.
+- [CLI Guide](/docs/using/cli-guide/) — create, archive, and inspect workspaces from scripts.

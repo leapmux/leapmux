@@ -20,7 +20,7 @@ func TestJSONRPCControlPublicationFailurePreservesWireID(t *testing.T) {
 			output := &agenttest.Stdin{}
 			sink := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
 			base := JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
-			base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":`+wireID+`,"method":"request"}`), nil)
+			base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":` + wireID + `,"method":"request"}`)})
 			// PublishControlRequest runs on the goroutine that drains the provider's
 			// stdout, so it QUEUES this reply rather than waiting for the write.
 			var answer string
@@ -40,7 +40,7 @@ func TestJSONRPCControlPublicationDoesNotReplyOnSuccess(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	base := JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(output)}}
 	payload := []byte(` {"jsonrpc":"2.0", "id":"007","method":"request"} `)
-	base.PublishControlRequest(sink, payload, nil)
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: payload})
 	// A marker completes after every earlier frame in the same stdin queue.
 	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"marker","result":{}}`, output.String())
@@ -58,9 +58,9 @@ func TestJSONRPCControlPublicationStoresTheSessionOfTheRequest(t *testing.T) {
 	sink.UpdateSessionID("held-session")
 	base := JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(&agenttest.Stdin{})}}
 
-	base.PublishControlRequestInSession(sink, "stated-session", []byte(`{"jsonrpc":"2.0","id":1,"method":"request"}`), nil)
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":2,"method":"request"}`), nil)
-	base.PublishControlRequestInSession(sink, "", []byte(`{"jsonrpc":"2.0","id":3,"method":"request"}`), nil)
+	base.PublishControlRequest(sink, ControlRequestPublication{Owner: ControlRequestOwner{SessionID: "stated-session"}, Content: []byte(`{"jsonrpc":"2.0","id":1,"method":"request"}`)})
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":2,"method":"request"}`)})
+	base.PublishControlRequest(sink, ControlRequestPublication{Owner: ControlRequestOwner{SessionID: ""}, Content: []byte(`{"jsonrpc":"2.0","id":3,"method":"request"}`)})
 
 	sessions := map[string]string{}
 	for _, record := range sink.PublishedControls() {
@@ -79,10 +79,32 @@ func TestJSONRPCControlPublicationFailureWithoutWireIDDoesNotReply(t *testing.T)
 	output := &agenttest.Stdin{}
 	sink := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
 	base := JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(output)}}
-	base.PublishControlRequest(sink, []byte(`{"method":"notification"}`), nil)
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"method":"notification"}`)})
 	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"marker","result":{}}`, output.String())
 	assert.Empty(t, sink.PublishedControls())
+}
+
+// A request that states no id that a JSON-RPC answer can echo has no key
+// (agent.JSONRPCControlRequestIdentity), so the Worker would refuse every answer
+// to it. The publisher registers and publishes nothing for it.
+func TestJSONRPCControlPublicationRefusesARequestWithNoValidID(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{
+		`{"jsonrpc":"2.0","method":"request"}`,
+		`{"jsonrpc":"2.0","id":null,"method":"request"}`,
+		`{"jsonrpc":"2.0","id":{"key":1},"method":"request"}`,
+		`{"jsonrpc":"2.0","id":true,"method":"request"}`,
+		`{"jsonrpc":"2.0","id":[7],"method":"request"}`,
+	} {
+		sink := &agenttest.ControlSink{}
+		base := JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(&agenttest.Stdin{})}}
+		publication := base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(payload), ApproveAnswer: map[string]any{}})
+		assert.Empty(t, publication.RequestID, payload)
+		assert.False(t, base.ControlPublicationIsCurrent(publication), payload)
+		assert.Empty(t, sink.PublishedControls(), payload)
+		assert.Zero(t, base.OutstandingControlCountForTest(), payload)
+	}
 }
 
 func TestJSONRPCControlPublicationHandlesReplyFailure(t *testing.T) {
@@ -90,7 +112,7 @@ func TestJSONRPCControlPublicationHandlesReplyFailure(t *testing.T) {
 	sink := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
 	base := JSONRPCProcess{Process: Process{stdin: agenttest.FailingStdin{}}}
 	require.NotPanics(t, func() {
-		base.PublishControlRequest(sink, []byte(`{"id":7,"method":"request"}`), nil)
+		base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":7,"method":"request"}`)})
 	})
 	assert.Empty(t, sink.PublishedControls())
 }
@@ -122,7 +144,7 @@ func (*gatedStdin) Close() error { return nil }
 // publishOne publishes one control request with a cancel answer and returns its key.
 func publishOne(t *testing.T, base *JSONRPCProcess, sink *agenttest.ControlSink) string {
 	t.Helper()
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"request"}`), map[string]any{"outcome": "cancelled"})
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"request"}`), CancelAnswer: map[string]any{"outcome": "cancelled"}})
 	require.Equal(t, 1, sink.PublishedControlCount())
 	return sink.LastPublishedControl().RequestID
 }
@@ -139,9 +161,15 @@ func TestSendRawInputRetiresTheRecordBeforeTheWrite(t *testing.T) {
 	key := publishOne(t, base, sink)
 
 	done := make(chan error, 1)
-	go func() { done <- base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}) }()
-	<-stdin.entered
-	assert.False(t, base.WithdrawOutstandingControlRequest(sink, key), "the answer in flight decided the request")
+	go func() {
+		done <- base.SendRawInput(sink.Answer(key, []byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)))
+	}()
+	select {
+	case <-stdin.entered:
+	case err := <-done:
+		t.Fatalf("the answer returned before its write: %v", err)
+	}
+	assert.False(t, base.WithdrawOutstandingControlRequest(key), "the answer in flight decided the request")
 	close(stdin.release)
 
 	require.NoError(t, <-done)
@@ -170,7 +198,7 @@ func TestSendRawInputRestoresTheRecordOfAFailedWrite(t *testing.T) {
 			base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: stdin}}
 			key := publishOne(t, base, sink)
 
-			require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}))
+			require.ErrorContains(t, base.SendRawInput(sink.Answer(key, []byte(`{"jsonrpc":"2.0","id":7,"result":{}}`))), "the pipe closed")
 			assert.Equal(t, tc.open, base.OutstandingControlForTest(key))
 		})
 	}
@@ -186,13 +214,19 @@ func TestSendRawInputDoesNotRestoreARecordThatAWithdrawalOutran(t *testing.T) {
 	key := publishOne(t, base, sink)
 
 	done := make(chan error, 1)
-	go func() { done <- base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}) }()
-	<-stdin.entered
+	go func() {
+		done <- base.SendRawInput(sink.Answer(key, []byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)))
+	}()
+	select {
+	case <-stdin.entered:
+	case err := <-done:
+		t.Fatalf("the answer returned before its write: %v", err)
+	}
 	// On its own goroutine: a withdrawal that still found the record would queue
 	// its cancel answer behind the held write, and wait for it.
 	withdrawn := make(chan struct{})
 	go func() {
-		base.WithdrawAllControlRequests(sink)
+		base.WithdrawAllControlRequests()
 		close(withdrawn)
 	}()
 	select {
@@ -214,11 +248,11 @@ func TestSendRawInputFailureOfAnUnknownAnswerAddsNoRecord(t *testing.T) {
 	base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: failingStdin{errors.New("the pipe closed")}}}
 	key := publishOne(t, base, sink)
 
-	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":8,"result":{}}`), agent.StopContext{}))
+	require.Error(t, base.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":8,"result":{}}`)}))
 	assert.True(t, base.OutstandingControlForTest(key), "the open request keeps its record")
 	assert.Equal(t, 1, base.OutstandingControlCountForTest(), "the failed answer to an unknown id adds no record")
 
-	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","method":"notify"}`), agent.StopContext{}))
+	require.Error(t, base.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","method":"notify"}`)}))
 	assert.Equal(t, 1, base.OutstandingControlCountForTest(), "a frame with no id answers nothing")
 }
 
@@ -236,8 +270,8 @@ func approvalProcess(t *testing.T) (*JSONRPCProcess, *agenttest.ControlSink, *ag
 	output := &agenttest.Stdin{}
 	sink := &agenttest.ControlSink{}
 	base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
-	require.Equal(t, "jsonrpc:1", base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","id":1,"method":"approve-me"}`), nil, map[string]any{"decision": "accept"}).RequestID)
-	require.Equal(t, "jsonrpc:2", base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","id":2,"method":"ask-me"}`), map[string]any{"action": "cancel"}, nil).RequestID)
+	require.Equal(t, "jsonrpc:1", base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":1,"method":"approve-me"}`), ApproveAnswer: map[string]any{"decision": "accept"}}).RequestID)
+	require.Equal(t, "jsonrpc:2", base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":2,"method":"ask-me"}`), CancelAnswer: map[string]any{"action": "cancel"}}).RequestID)
 	return base, sink, output
 }
 
@@ -249,9 +283,9 @@ func TestPublishControlRequestWithApprovalRegistersAndPublishes(t *testing.T) {
 	assert.True(t, base.OutstandingControlForTest("jsonrpc:2"))
 
 	failing := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
-	assert.Empty(t, base.PublishControlRequestWithApproval(failing, []byte(`{"jsonrpc":"2.0","id":3,"method":"approve-me"}`), nil, map[string]any{}),
+	assert.Empty(t, base.PublishControlRequest(failing, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":3,"method":"approve-me"}`), ApproveAnswer: map[string]any{}}),
 		"a failed publication registers nothing")
-	assert.Empty(t, base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","method":"no-id"}`), nil, map[string]any{}))
+	assert.Empty(t, base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","method":"no-id"}`), ApproveAnswer: map[string]any{}}))
 }
 
 func TestControlPublicationReleasesTheStoredPayload(t *testing.T) {
@@ -259,7 +293,7 @@ func TestControlPublicationReleasesTheStoredPayload(t *testing.T) {
 	base := &JSONRPCProcess{}
 	sink := &agenttest.ControlSink{}
 	payload := []byte(`{"id":1,"method":"approve","params":{"command":"` + strings.Repeat("x", 100_000) + `"}}`)
-	publication := base.PublishControlRequestWithApproval(sink, payload, nil, map[string]any{"decision": "accept"})
+	publication := base.PublishControlRequest(sink, ControlRequestPublication{Content: payload, ApproveAnswer: map[string]any{"decision": "accept"}})
 	require.NotEmpty(t, publication.RequestID)
 	assert.Equal(t, payload, sink.LastPublishedControl().Payload, "the stored request keeps all bytes")
 	assert.True(t, publication.record.payload == nil, "the registry retained %d payload bytes after publication", len(publication.record.payload))
@@ -270,24 +304,24 @@ func TestApproveOutstandingControlRequestsAnswersOnlyTheApprovable(t *testing.T)
 	t.Parallel()
 	base, sink, output := approvalProcess(t)
 
-	assert.Equal(t, 1, base.ApproveOutstandingControlRequests(sink, nil))
+	assert.Equal(t, 1, base.ApproveOutstandingControlRequests(nil))
 
 	require.Eventually(t, func() bool { return output.String() != "" }, 2*time.Second, 5*time.Millisecond)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{"decision":"accept"}}`, output.String())
 	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, time.Second, time.Millisecond)
 	assert.False(t, base.OutstandingControlForTest("jsonrpc:1"))
 	assert.True(t, base.OutstandingControlForTest("jsonrpc:2"), "a request without an approval answer still waits")
-	assert.Zero(t, base.ApproveOutstandingControlRequests(sink, nil), "a second sweep finds nothing")
+	assert.Zero(t, base.ApproveOutstandingControlRequests(nil), "a second sweep finds nothing")
 }
 
 func TestApproveOutstandingControlRequestAnswersOneRequest(t *testing.T) {
 	t.Parallel()
 	base, sink, output := approvalProcess(t)
 
-	assert.False(t, base.ApproveOutstandingControlRequest(sink, approvalHandle(base, "jsonrpc:2")), "it carries no approval answer")
-	assert.False(t, base.ApproveOutstandingControlRequest(sink, approvalHandle(base, "jsonrpc:9")), "it is not open")
-	assert.True(t, base.ApproveOutstandingControlRequest(sink, approvalHandle(base, "jsonrpc:1")))
-	assert.False(t, base.ApproveOutstandingControlRequest(sink, approvalHandle(base, "jsonrpc:1")), "it is answered once")
+	assert.False(t, base.ApproveOutstandingControlRequest(approvalHandle(base, "jsonrpc:2")), "it carries no approval answer")
+	assert.False(t, base.ApproveOutstandingControlRequest(approvalHandle(base, "jsonrpc:9")), "it is not open")
+	assert.True(t, base.ApproveOutstandingControlRequest(approvalHandle(base, "jsonrpc:1")))
+	assert.False(t, base.ApproveOutstandingControlRequest(approvalHandle(base, "jsonrpc:1")), "it is answered once")
 
 	require.Eventually(t, func() bool { return output.String() != "" }, 2*time.Second, 5*time.Millisecond)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{"decision":"accept"}}`, output.String())
@@ -299,8 +333,8 @@ func TestStandingApprovalKeepsTheControlAfterDefiniteWriteFailure(t *testing.T) 
 	stdin := newGatedStdin(0, errors.New("write failed"))
 	base := &JSONRPCProcess{Process: Process{stdin: stdin}}
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"approve"}`), nil, map[string]any{"decision": "accept"})
-	require.True(t, base.ApproveOutstandingControlRequest(sink, approvalHandle(base, "jsonrpc:1")))
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":1,"method":"approve"}`), ApproveAnswer: map[string]any{"decision": "accept"}})
+	require.True(t, base.ApproveOutstandingControlRequest(approvalHandle(base, "jsonrpc:1")))
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-stdin.entered:
@@ -323,8 +357,8 @@ func TestControlPublicationFailureDoesNotAnswerATakenRequest(t *testing.T) {
 	output := &agenttest.Stdin{}
 	base := &JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(output)}}
 	sink := &approvingControlSink{ControlSink: &agenttest.ControlSink{PublicationError: errors.New("store failed")}}
-	sink.onPublish = func() { base.ApproveOutstandingControlRequests(sink, nil) }
-	base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"approve"}`), nil, map[string]any{"decision": "accept"})
+	sink.onPublish = func() { base.ApproveOutstandingControlRequests(nil) }
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":1,"method":"approve"}`), ApproveAnswer: map[string]any{"decision": "accept"}})
 	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
 	assert.Equal(t, 1, strings.Count(output.String(), `"id":1`))
 	assert.NotContains(t, output.String(), `"error"`)
@@ -337,13 +371,40 @@ func TestApproveOutstandingControlRequestCountsAsAWithdrawal(t *testing.T) {
 	output := &agenttest.Stdin{}
 	sink := &approvingControlSink{ControlSink: &agenttest.ControlSink{}}
 	base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
-	sink.onPublish = func() { base.ApproveOutstandingControlRequests(sink, nil) }
+	sink.onPublish = func() { base.ApproveOutstandingControlRequests(nil) }
 
-	base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","id":1,"method":"approve-me"}`), nil, map[string]any{"decision": "accept"})
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":1,"method":"approve-me"}`), ApproveAnswer: map[string]any{"decision": "accept"}})
 
 	require.Eventually(t, func() bool { return len(sink.CanceledControls()) > 0 }, time.Second, time.Millisecond,
 		"publication and delivery must retire the stored card in either order")
 	assert.False(t, base.OutstandingControlForTest("jsonrpc:1"))
+}
+
+func TestWithdrawAndAnswerOutstandingControlRequestsUseDeterministicOrder(t *testing.T) {
+	t.Parallel()
+	wantIDs := []string{
+		"jsonrpc:1", "jsonrpc:10", "jsonrpc:2", "jsonrpc:3", "jsonrpc:4",
+		"jsonrpc:5", "jsonrpc:6", "jsonrpc:7", "jsonrpc:8", "jsonrpc:9",
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(*JSONRPCProcess)
+	}{
+		{name: "WithdrawAllControlRequests", run: func(b *JSONRPCProcess) { b.WithdrawAllControlRequests() }},
+		{name: "AnswerOutstandingControlRequests", run: func(b *JSONRPCProcess) { b.AnswerOutstandingControlRequests() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			output := &agenttest.Stdin{}
+			sink := &agenttest.ControlSink{}
+			base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
+			for _, id := range []string{"10", "2", "9", "1", "8", "3", "7", "4", "6", "5"} {
+				base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":` + id + `,"method":"request"}`), CancelAnswer: map[string]any{"outcome": "cancelled"}})
+			}
+			tc.run(base)
+			assert.Equal(t, wantIDs, sink.CanceledControls())
+		})
+	}
 }
 
 type approvingControlSink struct {
@@ -360,23 +421,87 @@ func (s *approvingControlSink) PublishControlRequest(request agent.ControlReques
 
 func TestSendRawInputToOutstandingRequestRefusesAClosedRequest(t *testing.T) {
 	t.Parallel()
-	base, _, output := approvalProcess(t)
+	base, sink, output := approvalProcess(t)
 
-	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":2,"result":{"action":"accept"}}`), agent.StopContext{}))
+	require.NoError(t, base.SendRawInputToOutstandingRequest(sink.Answer("jsonrpc:2", []byte(`{"jsonrpc":"2.0","id":2,"result":{"action":"accept"}}`))))
 	assert.False(t, base.OutstandingControlForTest("jsonrpc:2"))
 
-	err := base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":2,"result":{"action":"accept"}}`), agent.StopContext{})
-	require.ErrorIs(t, err, ErrControlRequestNotPending)
-	err = base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":2,"error":{"code":1,"message":"x"}}`), agent.StopContext{})
-	require.ErrorIs(t, err, ErrControlRequestNotPending, "an error response is an answer too")
+	err := base.SendRawInputToOutstandingRequest(sink.Answer("jsonrpc:2", []byte(`{"jsonrpc":"2.0","id":2,"result":{"action":"accept"}}`)))
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+	err = base.SendRawInputToOutstandingRequest(sink.Answer("jsonrpc:2", []byte(`{"jsonrpc":"2.0","id":2,"error":{"code":1,"message":"x"}}`)))
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending, "an error response is an answer too")
 	assert.Equal(t, 1, strings.Count(output.String(), `"id":2`))
 
 	// A request, a notification and a frame that is not JSON pass to SendRawInput.
-	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":5,"method":"turn/interrupt"}`), agent.StopContext{}))
-	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","method":"initialized"}`), agent.StopContext{}))
-	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":null,"result":{}}`), agent.StopContext{}))
+	require.NoError(t, base.SendRawInputToOutstandingRequest(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":5,"method":"turn/interrupt"}`)}))
+	require.NoError(t, base.SendRawInputToOutstandingRequest(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","method":"initialized"}`)}))
+	require.NoError(t, base.SendRawInputToOutstandingRequest(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":null,"result":{}}`)}))
 	assert.Contains(t, output.String(), `"method":"turn/interrupt"`)
 	assert.Contains(t, output.String(), `"method":"initialized"`)
+}
+
+// A provider can raise a new request with the wire ID of a request that it
+// withdrew (registerControl), and a JSON-RPC answer carries no more than that
+// ID. So an answer goes only to the publication that it states
+// (agent.RawInput.ControlInstanceID). An answer to the withdrawn publication,
+// and an answer that states none, reach nothing and leave the new request
+// open, so its own withdrawal still reaches it.
+func TestJSONRPCControlAnswerReachesOnlyTheInstanceThatItStates(t *testing.T) {
+	t.Parallel()
+	for name, send := range map[string]func(*JSONRPCProcess, agent.RawInput) error{
+		"SendRawInput":                     (*JSONRPCProcess).SendRawInput,
+		"SendRawInputToOutstandingRequest": (*JSONRPCProcess).SendRawInputToOutstandingRequest,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			output := &agenttest.Stdin{}
+			sink := &agenttest.ControlSink{}
+			base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
+			request := []byte(`{"jsonrpc":"2.0","id":2,"method":"request"}`)
+			base.PublishControlRequest(sink, ControlRequestPublication{Content: request})
+			withdrawn := sink.LastPublishedControl()
+			base.WithdrawControlRequest(sink, withdrawn.RequestID)
+			base.PublishControlRequest(sink, ControlRequestPublication{Content: request})
+			current := sink.LastPublishedControl()
+			require.Equal(t, withdrawn.RequestID, current.RequestID)
+			require.NotEqual(t, withdrawn.InstanceID, current.InstanceID)
+
+			answer := []byte(`{"jsonrpc":"2.0","id":2,"result":{"action":"accept"}}`)
+			require.ErrorIs(t, send(base, agent.RawInput{Data: answer, ControlInstanceID: withdrawn.InstanceID}), agent.ErrControlInstanceReplaced)
+			require.ErrorIs(t, send(base, agent.RawInput{Data: answer}), agent.ErrControlInstanceUnstated)
+			assert.Empty(t, output.String(), "no answer reaches the request that reuses the wire ID")
+			assert.True(t, base.OutstandingControlForTest(current.RequestID), "the new request stays open")
+
+			require.NoError(t, send(base, agent.RawInput{Data: answer, ControlInstanceID: current.InstanceID}))
+			assert.Equal(t, 1, strings.Count(output.String(), `"id":2`))
+			assert.False(t, base.OutstandingControlForTest(current.RequestID), "the answer retires the request it answers")
+		})
+	}
+}
+
+// A request that LeapMux sends, such as the raw interrupt frame of
+// SendAgentRawMessage, carries LeapMux's own id, which can equal the id of a
+// request that the provider raised. It answers nothing: it reaches the
+// provider and leaves the provider's request open.
+func TestJSONRPCRequestFrameLeavesAProviderRequestOfItsIDOpen(t *testing.T) {
+	t.Parallel()
+	for name, send := range map[string]func(*JSONRPCProcess, agent.RawInput) error{
+		"SendRawInput":                     (*JSONRPCProcess).SendRawInput,
+		"SendRawInputToOutstandingRequest": (*JSONRPCProcess).SendRawInputToOutstandingRequest,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			output := &agenttest.Stdin{}
+			sink := &agenttest.ControlSink{}
+			base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
+			base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":5,"method":"request"}`)})
+			key := sink.LastPublishedControl().RequestID
+
+			require.NoError(t, send(base, agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":5,"method":"turn/interrupt","params":{}}`)}))
+			assert.Contains(t, output.String(), `"method":"turn/interrupt"`)
+			assert.True(t, base.OutstandingControlForTest(key), "the provider's request still waits for its answer")
+		})
+	}
 }
 
 func approvalHandle(base *JSONRPCProcess, requestID string) PublishedControlRequest {

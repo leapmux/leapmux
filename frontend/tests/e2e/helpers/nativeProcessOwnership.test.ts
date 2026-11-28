@@ -150,9 +150,8 @@ describe('sameExecutablePath', () => {
 describe('workerDataDirectory', () => {
   it.each([
     ['the long flag and a separate value', `${WORKER} worker --hub http://127.0.0.1:1 --data-dir /private/worker`],
-    ['the short flag and a separate value', `${WORKER} dev -listen 127.0.0.1:0 -data-dir /private/worker`],
+    ['the flag after another flag', `${WORKER} dev run --listen 127.0.0.1:0 --data-dir /private/worker`],
     ['the long flag with =', `${WORKER} worker --data-dir=/private/worker --hub http://127.0.0.1:1`],
-    ['the short flag with =', `${WORKER} worker -data-dir=/private/worker`],
     // The order of spawnRegisteredWorker: the registration key and the extra arguments follow the data directory.
     ['an argument after the value', `${WORKER} worker --hub http://127.0.0.1:1 --data-dir /private/worker --registration-key abc --encryption-mode post-quantum`],
     ['a value in double quotes', `"${WORKER}" worker --data-dir "/private/worker" --registration-key abc`],
@@ -165,7 +164,7 @@ describe('workerDataDirectory', () => {
     ['in double quotes', `${WORKER} worker --data-dir "/private/worker with spaces" --registration-key abc`],
     ['in double quotes after =', `${WORKER} worker --data-dir="/private/worker with spaces" --registration-key abc`],
     ['with no quoting, as ps reports it', `${WORKER} worker --data-dir /private/worker with spaces --registration-key abc`],
-    ['with no quoting at the end', `${WORKER} worker -data-dir /private/worker with spaces`],
+    ['with no quoting at the end', `${WORKER} worker --data-dir /private/worker with spaces`],
     ['with no quoting after =', `${WORKER} worker --data-dir=/private/worker with spaces --hub http://127.0.0.1:1`],
   ])('reads a path with spaces %s', (_form, command) => {
     expect(workerDataDirectory(command)).toBe('/private/worker with spaces')
@@ -183,7 +182,9 @@ describe('workerDataDirectory', () => {
     ['no flag', `${WORKER} worker --hub http://127.0.0.1:1`],
     ['an empty command line', ''],
     ['a flag with a longer name', `${WORKER} worker --data-dir-more /private/worker`],
-    ['two flags', `${WORKER} worker -data-dir /private/one --data-dir /private/two`],
+    ['two flags', `${WORKER} worker --data-dir /private/one --data-dir /private/two`],
+    // `leapmux` reads "-data-dir" as the letters d, a, t, ... and refuses it, so no running process holds it.
+    ['a flag with one hyphen', `${WORKER} worker -data-dir /private/worker`],
   ])('refuses %s', (_case, command) => {
     expect(() => workerDataDirectory(command)).toThrow('one data-directory argument')
   })

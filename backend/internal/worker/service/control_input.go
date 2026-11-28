@@ -60,6 +60,8 @@ type controlInput struct {
 
 // resolveControlInput validates every approval-linked input before dispatch.
 // Feedback receives a fixed prefix so its text cannot become a native slash command.
+// A message from another agent receives the header that identifies its sender
+// (see agentMessageText), and that prefix keeps its text from a slash command too.
 func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAgent db.Agent) (controlInput, error) {
 	resolved := controlInput{text: item.Text}
 	sources, err := svc.Queries.GetControlResponseSourcesForInput(bgCtx(), db.GetControlResponseSourcesForInputParams{
@@ -90,6 +92,11 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 	}
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
 		resolved.text = "The user rejected the request. Their feedback follows:\n\n" + item.Text
+	}
+	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE {
+		if resolved.text, err = agentMessageText(item); err != nil {
+			return controlInput{}, err
+		}
 	}
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 		if resolved.source == nil {
@@ -136,27 +143,28 @@ func (input controlInput) sessionID() string {
 	return input.source.AgentSessionID
 }
 
-func (svc *Service) sendResolvedInput(agentID string, input controlInput, attachments []*leapmuxv1.Attachment) error {
+func (svc *Service) sendResolvedInput(agentID string, input controlInput, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	if input.source == nil {
 		return svc.Agents.SendInput(agentID, input.text, attachments)
 	}
 	provider, err := svc.controlInputProvider(agentID, input)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	return agent.SendInputToSession(provider, input.sessionID(), input.text, attachments)
 }
 
 // steerResolvedInput retains the validated provider and the question's session.
-func (svc *Service) steerResolvedInput(agentID string, input controlInput, attachments []*leapmuxv1.Attachment) error {
+// input supplies the session, and request is the steer that the provider reads.
+func (svc *Service) steerResolvedInput(agentID string, input controlInput, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	if input.source == nil {
-		return svc.Agents.SteerInput(agentID, input.text, attachments)
+		return svc.Agents.SteerInput(agentID, request)
 	}
 	provider, err := svc.controlInputProvider(agentID, input)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return agent.SteerInputToSession(provider, input.sessionID(), input.text, attachments)
+	return agent.SteerInputToSession(provider, input.sessionID(), request)
 }
 
 // controlInputProvider validates the source while it retains the current provider.

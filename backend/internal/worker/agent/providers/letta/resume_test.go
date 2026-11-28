@@ -87,7 +87,7 @@ func TestLettaResumeAgentIDRejectsDefaultConversation(t *testing.T) {
 // resumeOptions returns options that resume the stated conversation.
 func resumeOptions(id string) agent.Options {
 	opts := newTestOptions()
-	opts.ResumeSessionID = id
+	opts.Session = agent.ResumeSession(id)
 	return opts
 }
 

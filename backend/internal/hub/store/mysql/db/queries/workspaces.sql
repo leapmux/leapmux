@@ -47,3 +47,17 @@ UPDATE workspaces SET deleted_at = NOW(3) WHERE owner_user_id = ? AND deleted_at
 
 -- name: HardDeleteWorkspacesBefore :execresult
 DELETE FROM workspaces WHERE id IN (SELECT w.id FROM (SELECT workspaces.id FROM workspaces WHERE workspaces.deleted_at IS NOT NULL AND workspaces.deleted_at < ? LIMIT 1000) w);
+
+-- name: ListAccessibleWorkspacesByExactID :many
+SELECT w.* FROM workspaces w
+WHERE w.deleted_at IS NULL
+  AND w.owner_user_id = sqlc.arg(user_id)
+  AND w.id = sqlc.arg(id);
+
+-- name: ListAccessibleWorkspacesByIDPrefix :many
+SELECT w.* FROM workspaces w
+WHERE w.deleted_at IS NULL
+  AND w.owner_user_id = sqlc.arg(user_id)
+  AND w.id >= sqlc.arg(id_lo)
+  AND w.id < sqlc.arg(id_hi)
+ORDER BY w.id ASC;

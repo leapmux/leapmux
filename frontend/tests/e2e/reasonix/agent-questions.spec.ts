@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test'
-import { acpExtractControl } from '../../../src/components/chat/providers/acp/extractControl'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { exerciseQuestionAnswer, exerciseQuestionCancellation } from '../helpers/nativeQuestion'
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
@@ -14,7 +13,6 @@ reasonixTest('offers an actual native permission without an agent question seque
   await waitForSettingsIdle(native.page)
   await exerciseUnsupportedControlThroughPermission(native, {
     purpose: 'question',
-    classify: acpExtractControl,
     // These aliases are absent. The native `ask` round trip below checks Reasonix's actual question route.
     nativeProof: (request) => {
       const tools = nativeModelToolNames(request)

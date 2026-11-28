@@ -43,14 +43,9 @@ func TestMySQLWorkerStateListingsReadOnlyTheRequestedPage(t *testing.T) {
 		{owner: other.ID, prefix: "other-", createdAt: now.Add(-time.Hour)},
 	} {
 		seedWorkerPlanRows(t, database, population.owner, population.prefix+"active-", 20000, population.createdAt, sqltime.MySQLNullTime{})
-		seedWorkerPlanRows(t, database, population.owner, population.prefix+"deregistering-", 2000, population.createdAt, sqltime.MySQLNullTime{})
 		seedWorkerPlanRows(t, database, population.owner, population.prefix+"deleted-", 2000, population.createdAt, sqltime.MySQLNullTimeOf(now))
-		_, err = database.ExecContext(context.Background(), `UPDATE workers SET deregistering_at = ?
-WHERE id LIKE ? OR (id LIKE ? AND RIGHT(id, 1) IN ('0', '2', '4', '6', '8'))`, sqltime.NewMySQLTime(now), population.prefix+"deregistering-%", population.prefix+"deleted-%")
-		require.NoError(t, err)
 	}
 	active := leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
-	deregistering := leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING
 	deleted := leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
 	for _, state := range []struct {
 		title  string
@@ -58,9 +53,8 @@ WHERE id LIKE ? OR (id LIKE ? AND RIGHT(id, 1) IN ('0', '2', '4', '6', '8'))`, s
 		prefix string
 		count  int
 	}{
-		{title: "all live", prefix: "deregistering-", count: 2000},
+		{title: "all live", prefix: "active-", count: 20000},
 		{title: "active", status: &active, prefix: "active-", count: 20000},
-		{title: "deregistering", status: &deregistering, prefix: "deregistering-", count: 2000},
 		{title: "deleted", status: &deleted, prefix: "deleted-", count: 2000},
 	} {
 		for _, byOwner := range []bool{false, true} {
@@ -153,21 +147,11 @@ func readWorkerPlanPage(ctx context.Context, queries *gendb.Queries, params stor
 		status = *params.Status
 	}
 	switch status {
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
 		if params.UserID != nil {
 			return workerPlanRowCount(queries.ListWorkersAdminLiveByUser(ctx, owner))
 		}
 		return workerPlanRowCount(queries.ListWorkersAdminLive(ctx, global))
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
-		if params.UserID != nil {
-			return workerPlanRowCount(queries.ListWorkersAdminActiveByUser(ctx, gendb.ListWorkersAdminActiveByUserParams(owner)))
-		}
-		return workerPlanRowCount(queries.ListWorkersAdminActive(ctx, gendb.ListWorkersAdminActiveParams(global)))
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
-		if params.UserID != nil {
-			return workerPlanRowCount(queries.ListWorkersAdminDeregisteringByUser(ctx, gendb.ListWorkersAdminDeregisteringByUserParams(owner)))
-		}
-		return workerPlanRowCount(queries.ListWorkersAdminDeregistering(ctx, gendb.ListWorkersAdminDeregisteringParams(global)))
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
 		if params.UserID != nil {
 			return workerPlanRowCount(queries.ListWorkersAdminDeletedByUser(ctx, gendb.ListWorkersAdminDeletedByUserParams(owner)))
@@ -246,7 +230,7 @@ ORDER BY ORDINAL_POSITION`)
 	assert.Equal(t, []string{
 		"id", "auth_token_hash", "registered_by",
 		"x25519_public_key", "mlkem_public_key", "slhdsa_public_key",
-		"created_at", "last_seen_at", "deregistering_at", "auto_registered",
+		"created_at", "last_seen_at", "auto_registered",
 		"registration_attempt_id", "registration_key_hash", "deleted_at",
 	}, columns, "state indexes must not add visible worker columns")
 }

@@ -31,6 +31,8 @@ type kimiConversationOutput struct {
 	activeTurnID  string
 	latestOrdinal int64
 	snapshotReady bool
+	// A child lifetime stays writable while a native reply needs history.
+	replyPublications int
 	// TODO(https://github.com/leapmux/leapmux/issues/699): Seed live span geometry in TranscriptScopeFor so Fast-Agent and Kimi keep cross-turn colors without shadow open-span slices.
 	openLiveSpans []kimiOpenLiveSpan
 }
@@ -59,17 +61,19 @@ func (output *kimiConversationOutput) removeOpenLiveSpan(spanID string) {
 }
 
 type kimiConversationTurnOutput struct {
-	writer     *kimiConversationRecordWriter
-	scope      agent.TranscriptScope
-	progress   agent.TranscriptPublication
-	requests   map[string]struct{}
-	results    map[string]struct{}
-	completed  bool
-	historical bool
-	steerable  bool
-	userTurn   bool
-	usageStep  int64
-	retries    map[int64]*kimiConversationRetryOutput
+	writer             *kimiConversationRecordWriter
+	scope              agent.TranscriptScope
+	progress           agent.TranscriptPublication
+	requests           map[string]struct{}
+	results            map[string]struct{}
+	completed          bool
+	historical         bool
+	steerable          bool
+	userTurn           bool
+	usageStep          int64
+	replyInputs        map[string]*kimiPromptSubmission
+	replyLookupStarted bool
+	retries            map[int64]*kimiConversationRetryOutput
 	// Native execution starts after model generation completes. Text from that
 	// step keeps its own completed outcome if a later tool is interrupted.
 	executionSteps map[int64]struct{}
@@ -203,10 +207,18 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 	if !changed && !conversationProjectionPending(output.document, frame) {
 		return nil
 	}
+	if frame.Type != contracts.KimiFrameItemDelta && frame.Type != contracts.KimiFrameTurnUpdated {
+		defer a.refreshExactControls(run)
+	}
 	a.closeWithdrawnConversationSpans(run, output, frame, previous)
 	switch frame.Type {
 	case "turns":
 		output.snapshotReady = true
+		for id, publication := range output.turns {
+			if output.document.turns[id] == nil {
+				a.retireExactReplyInputs(run, publication)
+			}
+		}
 		a.withdrawAbsentConversationInvocations(run, output.document)
 		turns := slices.Collect(maps.Values(output.document.turns))
 		slices.SortFunc(turns, func(left, right *kimiConversationTurnState) int {
@@ -285,6 +297,9 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 			if kimiConversationPromptRecordRole(run.agentID, *item) != "" {
 				itemState.projectionPending = !a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: []string{itemID}})
 			}
+			if !itemState.projectionPending && !turn.projectionPending {
+				a.scheduleExactReply(run, turn, publication)
+			}
 			return nil
 		}
 		if item.Type == contracts.KimiConversationItemKindToolCall || item.Status == contracts.KimiConversationStatusEnded {
@@ -302,6 +317,11 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 			itemState.projectionPending = !a.persistConversationItems(run, turn, publication, frame, selection)
 		}
 	case "turns.removed":
+		for _, turnID := range frame.TurnIDs {
+			if publication := output.turns[turnID]; publication != nil {
+				a.retireExactReplyInputs(run, publication)
+			}
+		}
 		a.withdrawAbsentConversationInvocations(run, output.document)
 		if output.activeTurnID != "" && slices.Contains(frame.TurnIDs, output.activeTurnID) {
 			a.finishWithdrawnConversationTurn(run, output.activeTurnID)
@@ -377,12 +397,16 @@ func (a *Agent) projectConversationTurn(run *kimiRun, turn *kimiConversationTurn
 	}
 	ended := turn.header.Status == contracts.KimiConversationStatusEnded
 	turn.projectionPending = !a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: turn.order, endTurn: ended, flushText: ended})
+	if !turn.projectionPending {
+		a.scheduleExactReply(run, turn, publication)
+	}
 }
 
 func (a *Agent) observeConversationPrompt(run *kimiRun, turn *kimiConversationTurnState, publication *kimiConversationTurnOutput, item kimiConversationItem) {
 	for _, promptID := range item.PromptIDs {
 		if submission := a.ownedPrompt(run, run.conversation.document.sessionID, promptID); submission != nil {
 			submission.observed = true
+			a.observeExactPrompt(run, turn, publication, submission, item)
 			a.releaseChildPromptSubmission(submission)
 		}
 	}
@@ -504,16 +528,56 @@ func (a *Agent) flushConversationControlText(run *kimiRun) bool {
 	return a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: items, flushText: true})
 }
 
+type kimiConversationBatchPlan struct {
+	projections []kimiConversationProjection
+	released    []*kimiConversationItemState
+	requested   []string
+	completed   []string
+	invocations []kimiConversationItem
+	textRecords map[int64][]string
+}
+
+type kimiScopeSpanChange struct {
+	spanID        string
+	spanType      string
+	prevSpanType  string
+	closing       bool
+	noSpan        bool
+	alreadyClosed bool
+}
+
 func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTurnState, publication *kimiConversationTurnOutput, frame kimiConversationFrame, selection kimiConversationSelection) bool {
-	var projections []kimiConversationProjection
-	var released []*kimiConversationItemState
-	var requested, completed []string
-	var invocations []kimiConversationItem
-	textRecords := make(map[int64][]string)
+	plan, ok := buildConversationProjections(run, turn, publication, frame, selection)
+	if !ok {
+		return false
+	}
+	if len(plan.projections) == 0 {
+		a.observeConversationInvocations(run, turn, publication, frame, plan.invocations)
+		return true
+	}
+	contents, turnEndPayload, ok := a.encodeConversationBatch(publication, frame, plan)
+	if !ok {
+		return false
+	}
+	if selection.endTurn && !publication.completed && !publication.historical && turn.header.Outcome == contracts.KimiConversationOutcomeInterrupted {
+		if !a.closeOpenConversationToolsAcrossTurnsExcluding(run, turn.header.TurnID, agent.MessageCompletionInterrupted, false) {
+			return false
+		}
+	}
+	spanChanges, ok := a.captureConversationBatch(run, publication, frame, selection, plan.projections, contents)
+	if !ok {
+		return false
+	}
+	a.commitConversationBatchState(run, turn, publication, frame, selection, plan, spanChanges, turnEndPayload)
+	return true
+}
+
+func buildConversationProjections(run *kimiRun, turn *kimiConversationTurnState, publication *kimiConversationTurnOutput, frame kimiConversationFrame, selection kimiConversationSelection) (kimiConversationBatchPlan, bool) {
+	plan := kimiConversationBatchPlan{textRecords: make(map[int64][]string)}
 	turnContext, err := json.Marshal(contracts.KimiConversationTurnContext{TurnID: turn.header.TurnID, Kind: turn.header.Kind, Status: turn.header.Status, Outcome: turn.header.Outcome, EndReason: turn.header.EndReason})
 	if err != nil {
 		slog.Warn("encode the Kimi item turn context", "error", err)
-		return false
+		return kimiConversationBatchPlan{}, false
 	}
 	// A full snapshot already contains the step and its native tool declarations.
 	// Find those declarations before calculating any text completion.
@@ -569,7 +633,7 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 					completion = kimiConversationCompletion(step.Outcome)
 				}
 			}
-			textRecords[index] = append(textRecords[index], itemID)
+			plan.textRecords[index] = append(plan.textRecords[index], itemID)
 		}
 		alreadyClosed := false
 		if item.Type == contracts.KimiConversationItemKindToolCall {
@@ -580,40 +644,40 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			if item.Name == nil || strings.TrimSpace(*item.Name) == "" || item.Stage == "input" && item.Status != contracts.KimiConversationStatusEnded {
 				continue
 			}
-			plan := item.planProposal()
-			if *item.Name == contracts.KimiToolExitPlanMode && plan == nil && item.Status == contracts.KimiConversationStatusRunning && !selection.endTurn && selection.localCompletion == "" {
+			proposal := item.planProposal()
+			if *item.Name == contracts.KimiToolExitPlanMode && proposal == nil && item.Status == contracts.KimiConversationStatusRunning && !selection.endTurn && selection.localCompletion == "" {
 				// The native plan display can arrive after the tool starts.
 				continue
 			}
 			// Approval stubs carry a name before native execution supplies input.
 			// A complete plan display also declares an exact review request.
-			hasDeclaration := len(item.Input) != 0 || plan != nil
+			hasDeclaration := len(item.Input) != 0 || proposal != nil
 			if item.Status == contracts.KimiConversationStatusRunning && !hasDeclaration {
 				continue
 			}
 			record.Role = contracts.KimiConversationRecordRoleRequest
 			request := kimiConversationRequestItem(*item)
-			if plan != nil {
-				request.Display, err = json.Marshal(plan)
+			if proposal != nil {
+				request.Display, err = json.Marshal(proposal)
 				if err != nil {
 					slog.Warn("encode the Kimi plan proposal", "error", err)
-					return false
+					return kimiConversationBatchPlan{}, false
 				}
 			}
 			requestRaw, err := json.Marshal(request)
 			if err != nil {
 				slog.Warn("encode the Kimi tool declaration", "error", err)
-				return false
+				return kimiConversationBatchPlan{}, false
 			}
 			record.Item = requestRaw
 			view := kimiConversationRecordView{record: record, item: &request}
 			span = agent.SpanInfo{SpanID: view.key(), SpanType: *item.Name, NoSpan: kimiToolSpawns(*item.Name)}
 			if selection.localCompletion == "" && len(item.Input) != 0 && (kimiToolSpawns(*item.Name) || *item.Name == contracts.KimiToolBash) {
-				invocations = append(invocations, *item)
+				plan.invocations = append(plan.invocations, *item)
 			}
 			if _, opened := publication.requests[itemID]; !opened && hasDeclaration {
-				projections = append(projections, kimiConversationProjection{record: record, span: span, completion: agent.MessageCompletionComplete, source: source})
-				requested = append(requested, itemID)
+				plan.projections = append(plan.projections, kimiConversationProjection{record: record, span: span, completion: agent.MessageCompletionComplete, source: source})
+				plan.requested = append(plan.requested, itemID)
 			}
 			interruptedTurnEnd := selection.endTurn && turn.header.Outcome == contracts.KimiConversationOutcomeInterrupted
 			if item.Status != contracts.KimiConversationStatusEnded && !interruptedTurnEnd && selection.localCompletion == "" {
@@ -622,7 +686,7 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			record.Role = contracts.KimiConversationRecordRoleResult
 			record.OutputTruncated = state.output.truncated()
 			span.Closing = true
-			completed = append(completed, itemID)
+			plan.completed = append(plan.completed, itemID)
 		} else if item.Status != contracts.KimiConversationStatusEnded && (!selection.flushText ||
 			item.Type != contracts.KimiConversationItemKindAssistantMessage && item.Type != contracts.KimiConversationItemKindReasoning) {
 			continue
@@ -630,13 +694,13 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		itemRaw, err := json.Marshal(item)
 		if err != nil {
 			slog.Warn("encode the Kimi conversation item", "error", err)
-			return false
+			return kimiConversationBatchPlan{}, false
 		}
 		record.Item = itemRaw
 		record.TurnContext = turnContext
-		projections = append(projections, kimiConversationProjection{record: record, span: span, completion: completion, source: source, alreadyClosed: alreadyClosed})
+		plan.projections = append(plan.projections, kimiConversationProjection{record: record, span: span, completion: completion, source: source, alreadyClosed: alreadyClosed})
 		if item.Status == contracts.KimiConversationStatusEnded || selection.localCompletion != "" {
-			released = append(released, state)
+			plan.released = append(plan.released, state)
 		}
 	}
 	if selection.endTurn {
@@ -644,35 +708,35 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		raw, err := json.Marshal(header)
 		if err != nil {
 			slog.Warn("encode the Kimi turn header", "error", err)
-			return false
+			return kimiConversationBatchPlan{}, false
 		}
-		projections = append(projections, kimiConversationProjection{record: contracts.KimiConversationRecord{
+		plan.projections = append(plan.projections, kimiConversationProjection{record: contracts.KimiConversationRecord{
 			Type: contracts.KimiConversationRecordKindTurn, SessionID: frame.SessionID, AgentID: run.agentID,
 			TurnID: header.TurnID, Turn: raw, EventCreatedAt: frame.EventCreatedAt}, completion: kimiConversationCompletion(header.Outcome)})
 	}
-	if len(projections) == 0 {
-		a.observeConversationInvocations(run, turn, publication, frame, invocations)
-		return true
-	}
+	return plan, true
+}
+
+func (a *Agent) encodeConversationBatch(publication *kimiConversationTurnOutput, frame kimiConversationFrame, plan kimiConversationBatchPlan) ([]agent.MessageContent, []byte, bool) {
 	// Validate the whole group before reserving or capturing any of its rows.
-	contents := make([]agent.MessageContent, len(projections))
+	contents := make([]agent.MessageContent, len(plan.projections))
 	var turnEndPayload []byte
-	for index, projection := range projections {
+	for index, projection := range plan.projections {
 		raw, err := encodeKimiConversationRecord(projection.record)
 		if err != nil {
 			slog.Warn("prepare the Kimi conversation record", "error", err)
-			return false
+			return nil, nil, false
 		}
 		view, err := decodeKimiConversationRecord(raw)
 		if err != nil {
 			slog.Warn("validate the Kimi conversation record", "error", err)
-			return false
+			return nil, nil, false
 		}
 		contents[index] = agent.MessageContent{Original: raw, AgentSessionID: frame.SessionID, IdempotencyKey: view.key(), Completion: projection.completion}
 		if projection.record.Type == contracts.KimiConversationRecordKindTurn {
 			turnEndPayload = raw
 			toolUses := maps.Clone(publication.results)
-			for _, id := range completed {
+			for _, id := range plan.completed {
 				toolUses[id] = struct{}{}
 			}
 			contents[index] = agent.WithToolUseCount(contents[index], len(toolUses))
@@ -682,26 +746,17 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			contents[index] = kimiWithContextUsage(contents[index], usage)
 		}
 	}
-	if selection.endTurn && !publication.completed && !publication.historical && turn.header.Outcome == contracts.KimiConversationOutcomeInterrupted {
-		if !a.closeOpenConversationToolsAcrossTurnsExcluding(run, turn.header.TurnID, agent.MessageCompletionInterrupted, false) {
-			return false
-		}
-	}
+	return contents, turnEndPayload, true
+}
+
+func (a *Agent) captureConversationBatch(run *kimiRun, publication *kimiConversationTurnOutput, frame kimiConversationFrame, selection kimiConversationSelection, projections []kimiConversationProjection, contents []agent.MessageContent) ([]kimiScopeSpanChange, bool) {
 	batch, err := agent.ReserveCapturedTranscriptBatch(publication.writer)
 	if err != nil {
 		slog.Warn("reserve the Kimi conversation records", "error", err)
-		return false
+		return nil, false
 	}
 	operations := make([]agent.CapturedTranscriptOperation, 0, len(projections))
 	var mediaReads []kimiMediaSupplementRead
-	type kimiScopeSpanChange struct {
-		spanID        string
-		spanType      string
-		prevSpanType  string
-		closing       bool
-		noSpan        bool
-		alreadyClosed bool
-	}
 	var spanChanges []kimiScopeSpanChange
 	rollbackScope := func() {
 		for i := len(spanChanges) - 1; i >= 0; i-- {
@@ -721,14 +776,16 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 	}
 	for index, projection := range projections {
 		if a.api != nil && selection.localCompletion == "" {
-			plan, mediaErr := prepareKimiConversationMedia(projection.record, len(contents[index].Original))
+			mediaPlan, mediaErr := prepareKimiConversationMedia(projection.record, len(contents[index].Original))
 			if mediaErr != nil {
 				slog.Warn("prepare the Kimi conversation image", "error", mediaErr)
 			}
-			if plan != nil {
+			if mediaPlan != nil {
 				api := a.api
-				mediaReads = append(mediaReads, kimiMediaSupplementRead{operationIndex: index, itemID: plan.receipt.ItemID,
-					read: func(ctx context.Context, permits chan struct{}) ([]byte, error) { return plan.read(ctx, api, permits) }})
+				mediaReads = append(mediaReads, kimiMediaSupplementRead{operationIndex: index, itemID: mediaPlan.receipt.ItemID,
+					read: func(ctx context.Context, permits chan struct{}) ([]byte, error) {
+						return mediaPlan.read(ctx, api, permits)
+					}})
 			}
 		}
 		span := projection.span
@@ -740,7 +797,7 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			rollbackScope()
 			batch.Discard()
 			slog.Warn("capture the Kimi conversation record", "error", captureErr)
-			return false
+			return nil, false
 		}
 		if projection.record.Type == contracts.KimiConversationRecordKindTurn {
 			operations = append(operations, capture.TurnEndOperation())
@@ -774,9 +831,13 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		if !agent.OutputRetained(err) {
 			rollbackScope()
 			slog.Warn("retain the Kimi conversation records", "error", err)
-			return false
+			return nil, false
 		}
 	}
+	return spanChanges, true
+}
+
+func (a *Agent) commitConversationBatchState(run *kimiRun, turn *kimiConversationTurnState, publication *kimiConversationTurnOutput, frame kimiConversationFrame, selection kimiConversationSelection, plan kimiConversationBatchPlan, spanChanges []kimiScopeSpanChange, turnEndPayload []byte) {
 	if !publication.historical {
 		for _, change := range spanChanges {
 			if change.closing {
@@ -802,14 +863,14 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			}
 		}
 	}
-	for _, id := range requested {
+	for _, id := range plan.requested {
 		publication.requests[id] = struct{}{}
 	}
-	for _, id := range completed {
+	for _, id := range plan.completed {
 		publication.results[id] = struct{}{}
 	}
-	a.observeConversationInvocations(run, turn, publication, frame, invocations)
-	for index, ids := range textRecords {
+	a.observeConversationInvocations(run, turn, publication, frame, plan.invocations)
+	for index, ids := range plan.textRecords {
 		if publication.textRecords[index] == nil {
 			publication.textRecords[index] = make(map[string]struct{})
 		}
@@ -829,7 +890,7 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			state.releaseBody()
 		}
 	} else {
-		for _, state := range released {
+		for _, state := range plan.released {
 			// Text without a native step can precede a hook's final turn outcome.
 			// A patched item also needs its base until a full item or turn end arrives.
 			if selection.localCompletion != "" || state.fullDigest != nil && (turn.header.Status == contracts.KimiConversationStatusEnded ||
@@ -862,7 +923,6 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			item.projectionPending = false
 		}
 	}
-	return true
 }
 
 func (a *Agent) finishConversationActivity(run *kimiRun, turnID string) {

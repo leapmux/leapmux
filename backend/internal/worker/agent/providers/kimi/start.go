@@ -82,8 +82,8 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	}
 	if err := a.openStartupSession(opts, timeout); err != nil {
 		cleanup()
-		if opts.ResumeSessionID != "" {
-			return nil, providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+		if resumeID := opts.Session.ResumeID(); resumeID != "" {
+			return nil, providerkit.ResumeFailedError(resumeID, err)
 		}
 		return nil, a.FormatStartupError("session open", err)
 	}
@@ -165,18 +165,18 @@ func (a *Agent) openStartupSession(opts agent.Options, timeout time.Duration) er
 	a.attachedAt = a.clock.Now()
 	a.Mu.Unlock()
 
-	if opts.ResumeSessionID != "" {
+	if resumeID := opts.Session.ResumeID(); resumeID != "" {
 		// A resumed session keeps the model it ran on unless the launch asks for
 		// another one the catalog lists.
 		if !catalog.has(wanted.model) {
 			wanted.model = ""
 		}
 		a.Mu.Lock()
-		a.sessionID = opts.ResumeSessionID
+		a.sessionID = resumeID
 		a.settings.effort = wanted.effort
 		a.Mu.Unlock()
-		a.sink.UpdateSessionID(opts.ResumeSessionID)
-		status, err := a.resumeSession(ctx, opts.ResumeSessionID, wanted)
+		a.sink.UpdateSessionID(resumeID)
+		status, err := a.resumeSession(ctx, resumeID, wanted)
 		if err != nil {
 			a.Mu.Lock()
 			a.sessionID = ""
@@ -184,7 +184,7 @@ func (a *Agent) openStartupSession(opts agent.Options, timeout time.Duration) er
 			return err
 		}
 		a.applyStatus(status)
-		a.holdStartupConversationSnapshot(opts.ResumeSessionID)
+		a.holdStartupConversationSnapshot(resumeID)
 		return nil
 	}
 

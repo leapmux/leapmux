@@ -31,7 +31,7 @@ func TestBareRepositoryLifecycleKeepsCommonContext(t *testing.T) {
 	branches, err := listGitBranches(t.Context(), checkout)
 	require.NoError(t, err)
 	require.NotEmpty(t, branches)
-	plan, err := svc.validateCreateWorktree(t.Context(), checkout, "created", "")
+	plan, err := svc.validateCreateWorktree(t.Context(), createWorktreeValidation{workingDir: checkout, branch: "created"})
 	require.NoError(t, err)
 	assert.Equal(t, bare, plan.RepoRoot)
 	assert.Equal(t, bare, plan.RepoGitDir)
@@ -74,7 +74,7 @@ func TestBareRepositoryLifecycleKeepsCommonContext(t *testing.T) {
 	_, err = (gitutil.Repository{GitDir: bare}).Output(t.Context(), "show-ref", "--verify", "refs/heads/created")
 	assert.Error(t, err)
 	// The stored context remains usable after a manually deleted checkout.
-	plan, err = svc.validateCreateWorktree(t.Context(), checkout, "missing", "")
+	plan, err = svc.validateCreateWorktree(t.Context(), createWorktreeValidation{workingDir: checkout, branch: "missing"})
 	require.NoError(t, err)
 	result, err = svc.executeGitMode(t.Context(), plan)
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestGitInfoSeparatesAttachedAndDisplay(t *testing.T) {
 		if base.value != "" {
 			name = "worktree-explicit"
 		}
-		plan, err := svc.validateCreateWorktree(t.Context(), repo, name, base.value)
+		plan, err := svc.validateCreateWorktree(t.Context(), createWorktreeValidation{workingDir: repo, branch: name, baseBranch: base.value})
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(plan.WorktreePath)) })
 		result, err := svc.executeGitMode(t.Context(), plan)
@@ -258,7 +258,7 @@ func TestSeparateAdminPlacementUsesCommonAnchor(t *testing.T) {
 	assert.Empty(t, response.MainWorktreeRoot)
 	for index, selected := range []string{primary, linked} {
 		name := fmt.Sprintf("created-%d", index)
-		plan, err := svc.validateCreateWorktree(t.Context(), selected, name, "")
+		plan, err := svc.validateCreateWorktree(t.Context(), createWorktreeValidation{workingDir: selected, branch: name})
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(pathutil.Canonicalize(base), "admin-storage-worktrees", name), plan.WorktreePath)
 		result, err := svc.executeGitMode(t.Context(), plan)
@@ -272,10 +272,12 @@ func TestSeparateAdminPlacementUsesCommonAnchor(t *testing.T) {
 		wrong := changed
 		wrong.RepoGitDir = filepath.Join(base, "different-common-directory")
 		require.Error(t, operation.validateSavedCheckpoint(t.Context(), &intent, wrong), "a result cannot replace the saved plan's repository authority")
-		used, err := svc.executeUseWorktreePath(t.Context(), gitModePlan{WorktreePath: result.WorkingDir})
+		usePlan, err := svc.validateGitMode(t.Context(), selected, useWorktreePathSetup(result.WorkingDir))
+		require.NoError(t, err)
+		used, err := svc.executeUseWorktree(t.Context(), usePlan)
 		require.NoError(t, err)
 		assert.Equal(t, admin, used.RepoGitDir)
-		require.NoError(t, operation.validateSavedCheckpoint(t.Context(), &creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseWorktreePath}}, used))
+		require.NoError(t, operation.validateSavedCheckpoint(t.Context(), &creationStartupIntent{Plan: usePlan}, used))
 	}
 }
 

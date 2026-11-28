@@ -86,8 +86,9 @@ function copilotCommandLanguage(toolName: string): CommandLanguage | undefined {
 /**
  * The questions one `ask_user` call asked, from its own arguments.
  *
- * The same pair `copilotQuestions` reads off the control request, because the tool
- * call and the request state the question the same way. A row that asked nothing
+ * The same pair that the Worker reads off the control request (`copilotQuestion` in
+ * the Go `copilot` package), because the tool call and the request state the question
+ * the same way. A row that asked nothing
  * this build can read answers an empty list, which the renderer draws as no request
  * body rather than an empty one.
  */

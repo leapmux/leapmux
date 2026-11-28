@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sync"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -37,11 +36,7 @@ type Agent struct {
 	usageRefresh chan struct{}
 	usageDone    chan struct{}
 	usageStarted bool
-	// steers reports each steer's delivery from Kiro's own steering markers,
-	// in send order. earlySteerEchoes holds an injection that arrived before
-	// the steer reply stated its id; the reply completes it.
-	steers           providerkit.SteerLedger
-	earlySteerEchoes map[string]providerkit.SteerTicket
+	steers       acp.SteerEchoTracker
 
 	// goalRestoreMu orders the restore of a recovered goal run against the
 	// retirement of the session that the run belongs to. restoreGoalRun holds
@@ -76,75 +71,6 @@ func (a *Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // Agent compacts through Kiro's own request.
 var _ agent.ContextCompactor = (*Agent)(nil)
-
-// kiroSteerReply is Kiro's answer to a steer.
-type kiroSteerReply struct {
-	Queued    bool   `json:"queued"`
-	MessageID string `json:"messageId"`
-	Dropped   string `json:"dropped"`
-}
-
-// SteerInput sends text into the running turn. Kiro queues it and injects it
-// before its next model call. A steer that the turn cannot read any more --
-// the turn ended as it arrived -- Kiro drops, and the worker then sends the
-// text as the next message.
-//
-// Kiro's steer carries text alone, so a steer with an attachment is refused as
-// unsupported, and the worker keeps it for the next turn, attachment and all.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	if err := providerkit.TextOnlySteer("Kiro", attachments); err != nil {
-		return err
-	}
-	if !a.PromptActive() {
-		return agent.ErrNoActiveTurn
-	}
-	ticket := a.steers.Add("")
-	err := a.WithSessionID(func(sessionID string) error {
-		params, err := json.Marshal(map[string]string{"sessionId": sessionID, "message": content})
-		if err != nil {
-			return fmt.Errorf("marshal the Kiro steer: %w", err)
-		}
-		raw, err := a.SendRequest(kiroSteerMethod, params, a.APITimeout())
-		if err != nil {
-			return providerkit.ClassifyJSONRPCDeliveryError(kiroSteerMethod, err)
-		}
-		var reply kiroSteerReply
-		if err := json.Unmarshal(raw, &reply); err != nil {
-			return fmt.Errorf("read the Kiro steer reply: %w", err)
-		}
-		if !reply.Queued {
-			// Kiro drops a steer only when the turn it was for is over.
-			return fmt.Errorf("%w: Kiro dropped the steer (%s)", agent.ErrNoActiveTurn, reply.Dropped)
-		}
-		a.steers.SetID(ticket, reply.MessageID)
-		// An injection that beat the reply already waits in the early set.
-		a.settleEarlySteerEcho(ticket, reply.MessageID)
-		return nil
-	})
-	if err != nil {
-		// The queue already knows the failure, so the entry leaves no report.
-		a.steers.Forget(ticket)
-		return err
-	}
-	return nil
-}
-
-// settleEarlySteerEcho completes an injection that arrived before its steer
-// reply stated the id. The echo reports at once, in send order.
-func (a *Agent) settleEarlySteerEcho(ticket providerkit.SteerTicket, id string) {
-	if id == "" {
-		return
-	}
-	a.stateMu.Lock()
-	_, early := a.earlySteerEchoes[id]
-	delete(a.earlySteerEchoes, id)
-	a.stateMu.Unlock()
-	if !early {
-		return
-	}
-	a.steers.Echo(ticket)
-	a.steers.Settle(a.Sink())
-}
 
 // kiroCompactMethod compacts the context of a session. Kiro summarizes the
 // conversation in a model call of its own, outside any turn, and answers when
@@ -199,7 +125,7 @@ func (a *Agent) CompactContext() error {
 		if err != nil {
 			return fmt.Errorf("marshal the Kiro compaction: %w", err)
 		}
-		return a.SendDetachedRequest(kiroCompactMethod, params, func(response json.RawMessage, err error) {
+		return a.SendDetachedRequest(kiroCompactMethod, params, providerkit.DetachedRequestOptions{}, func(response json.RawMessage, err error) {
 			a.finishCompaction(id, response, err)
 		})
 	})
@@ -243,7 +169,7 @@ func (a *Agent) refreshContextUsage(sessionID string) {
 	if err != nil {
 		return
 	}
-	if err := a.SendDetachedRequest(kiroContextShowMethod, params, func(json.RawMessage, error) {}); err != nil {
+	if err := a.SendDetachedRequest(kiroContextShowMethod, params, providerkit.DetachedRequestOptions{}, func(json.RawMessage, error) {}); err != nil {
 		slog.Debug("kiro context show request failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -279,8 +205,8 @@ func (a *Agent) finishCompaction(id uint64, response json.RawMessage, err error)
 	}
 	summarized := a.compaction.summarized
 	a.compaction = compactionState{lastID: a.compaction.lastID}
-	sessionID := a.CurrentSessionID()
 	a.stateMu.Unlock()
+	sessionID := a.CurrentSessionID()
 	defer a.EndAgentTurnWithoutRow()
 	// Every end of the manual compaction ends its live state first: Kiro
 	// answers with a bare result and sends no end frame of its own, so this

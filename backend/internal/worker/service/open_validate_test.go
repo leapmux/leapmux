@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -15,12 +16,12 @@ import (
 )
 
 // These tests cover the sync validation of OpenAgent / OpenTerminal.
-// validateGitMode runs read-only checks and must fail the RPC with
-// InvalidArgument (code 3) before the handler mutates any git state or
-// creates a DB row. That guarantees bad user input surfaces as an
+// validateGitMode runs read-only checks and reports a validation error
+// before the handler mutates any git state or creates a DB row. This
+// makes bad user input surface as an
 // immediate dialog error rather than a failed tab in STARTUP_FAILED.
 //
-// Every case here asserts: one InvalidArgument error, no agent/terminal
+// Every case here asserts one validation error, no agent/terminal
 // DB row created, and no git mutation visible in the repo.
 
 // ---------- helpers ----------
@@ -189,8 +190,10 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 		GitSetup:   useWorktreePathSetup(bogusPath),
 	}, w)
 
-	msg := requireInvalidArgument(t, w)
-	assert.Contains(t, msg, "not a known worktree")
+	require.Empty(t, w.responses)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.NotFound), w.errors[0].code)
+	assert.Contains(t, w.errors[0].message, errGitWorktreeNotFound.Error())
 	assert.Zero(t, countAgentRows(t, svc))
 }
 
@@ -210,8 +213,8 @@ func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		AgentSessionId: "session\x00bad",
+		WorkingDir:    repoDir,
+		SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: "session\x00bad"},
 	}, w)
 
 	requireInvalidArgument(t, w)

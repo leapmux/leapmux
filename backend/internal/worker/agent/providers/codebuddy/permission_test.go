@@ -73,7 +73,7 @@ func TestCodebuddyFailedAutomaticWritePublishesOutsideTheWriteLock(t *testing.T)
 	writer := &agenttest.Stdin{}
 	a.SetStdinForTest(writer)
 	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"approval","response":{"allowed":true}}}`)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Contains(t, writer.String(), `"allowed":true`)
 }
 
@@ -104,9 +104,20 @@ func TestCodebuddyBypassPreservesTheExactNativeInput(t *testing.T) {
 	request := bytes.ReplaceAll(canUseTool("approval"), []byte(`{"command":"printf x > out.txt"}`), []byte(`{"count":9007199254740993,"zero":0,"empty":"","flag":false}`))
 	a.HandleOutput(request)
 	require.Eventually(t, a.approvalWork.Idle, 30*time.Second, time.Millisecond)
+	written := writer.String()
 	for _, part := range []string{`"count":9007199254740993`, `"zero":0`, `"empty":""`, `"flag":false`} {
-		assert.Contains(t, writer.String(), part)
+		assert.Contains(t, written, part)
 	}
+	frames := stdinFrames(t, bytes.NewBufferString(written))
+	require.Len(t, frames, 1)
+	assert.Equal(t, frameTypeControlResponse, frames[0]["type"])
+	response, ok := frames[0]["response"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "success", response["subtype"])
+	assert.Equal(t, "approval", response["request_id"])
+	answer, ok := response["response"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, answer["allowed"])
 }
 
 func TestCodebuddyChildPermissionKeepsAManualAnswerUnderBypass(t *testing.T) {
@@ -120,7 +131,7 @@ func TestCodebuddyChildPermissionKeepsAManualAnswerUnderBypass(t *testing.T) {
 	frames := stdinFrames(t, stdin)
 	require.Len(t, frames, 1)
 	assert.Equal(t, frameTypeControlRequest, frames[0]["type"])
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"child","response":{"allowed":true}}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"child","response":{"allowed":true}}}`)}))
 }
 
 func TestCodebuddyRetiredTurnCannotApproveDuringPublication(t *testing.T) {

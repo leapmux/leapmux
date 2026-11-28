@@ -152,7 +152,7 @@ func TestKimiConversationStartupWaitsForItsFirstSnapshot(t *testing.T) {
 			<-released
 		}
 	}
-	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored"})
+	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{Session: agent.ResumeSession("session_stored")})
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-entered:

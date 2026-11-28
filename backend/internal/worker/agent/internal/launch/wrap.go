@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -176,6 +176,7 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	if shell == "cmd" {
 		return nil, errors.New("cmd.exe cannot launch agents. Configure a PowerShell or Bash shell for the Worker")
 	}
+	dialect := resolveDialect(shell)
 	// Native lookup errors remain on cmd.Err. A launch can use the last known
 	// Windows PATH when the refresh fails.
 	cmd, _ := newShellCommand(ctx, spec.Shell, spec.LoginShell, "", spec.WorkingDir, spec.Environment)
@@ -187,44 +188,16 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	shellSpec := shellLaunchSpec{WrapSpec: spec}
 	if len(spec.SetEnv) != 0 {
 		environment := cmd.Environ()
-		shellSpec = prepareShellLaunch(spec, token, environment)
+		shellSpec = prepareShellLaunch(dialect, spec, token, environment)
 		cmd.Env = shellSpec.pinEnvironment(environment)
 		for _, pin := range shellSpec.pins {
 			prepared.pinSources = append(prepared.pinSources, pin.source)
 		}
 	}
 
-	var script string
-	switch {
-	case terminal.IsPwsh(shell):
-		script = buildPwshCommand(shellSpec, prepared)
-	case shell == "nu" && len(prepared.candidates) != 0:
-		scripts, err := prepared.writeNuInvocations(spec)
-		if err != nil {
-			return nil, err
-		}
-		script = buildNuSelection(shellSpec, prepared, scripts)
-	case shell == "nu":
-		script = buildNuCommand(shellSpec, prepared)
-	case shell == "fish":
-		script = buildFishCommand(shellSpec, prepared)
-	case shell == "xonsh":
-		script = buildXonshCommand(shellSpec, prepared)
-	case isCsh(shell):
-		var err error
-		script, err = prepared.writeCshInvocation(buildCshCommand(shellSpec, prepared))
-		if err != nil {
-			return nil, err
-		}
-	default:
-		script = buildPosixCommand(shell, shellSpec, prepared)
-	}
-	if runtime.GOOS == "windows" && shell == "bash" {
-		var err error
-		script, err = prepared.writeBashInvocation(script)
-		if err != nil {
-			return nil, err
-		}
+	script, err := dialect.buildCommand(shellSpec, prepared)
+	if err != nil {
+		return nil, err
 	}
 	// CommandArgs places the command text after all shell flags.
 	cmd.Args[len(cmd.Args)-1] = script
@@ -261,6 +234,15 @@ func (p *PreparedLaunch) writeCshInvocation(script string) (string, error) {
 	}
 	// A single-line if calls the builtin without expanding a source alias.
 	return cshInvocationPrefix + cshQuote(path), nil
+}
+
+func (cshDialect) prepareProbeScript(script string) (string, func(), error) {
+	scriptFiles := &PreparedLaunch{}
+	wrapped, err := scriptFiles.writeCshInvocation(script)
+	if err != nil {
+		return "", nil, err
+	}
+	return wrapped, func() { _ = scriptFiles.Close() }, nil
 }
 
 func (p *PreparedLaunch) writeNuInvocations(spec WrapSpec) (map[string]nuInvocationFiles, error) {
@@ -304,16 +286,6 @@ func writeNuInvocation(path, name string, count int) error {
 	}
 	script.WriteString(" }\n")
 	return os.WriteFile(path, []byte(script.String()), 0o600)
-}
-
-// buildNuCommand builds the inner command string for Nushell.
-func buildNuCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
-	// `^"<program>"` is Nushell's documented form for running an external
-	// command whose path contains a space.
-	return nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n" +
-		nuLaunchArguments(spec.WrapSpec, prepared.MetaPrefix) +
-		prepared.nuReadiness(spec.EnvGated == nil, "") +
-		"^" + nuQuote(spec.Launch.Program) + " ...$__lm_args\n"
 }
 
 // legacyNativeArgument quotes one token for the Windows native command-line
@@ -395,24 +367,30 @@ func cshClearEnv(keys []string) string {
 	return strings.Join(parts, "; ") + "; "
 }
 
+// nuClearEnv removes environment variables the Nushell way. The `%` sigil calls
+// the builtin even when the profile defines a command of the same name.
 func nuClearEnv(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
 	parts := make([]string, len(keys))
 	for i, key := range keys {
-		parts[i] = "hide-env -i " + key
+		parts[i] = "%hide-env -i " + key
 	}
 	return strings.Join(parts, "; ") + "; "
 }
 
+// pwshClearEnv removes environment variables the PowerShell way. PowerShell
+// runs a function or an alias before a cmdlet of the same name, and a profile
+// can define either, so the step calls the cmdlet by its module-qualified
+// name, as pwshSetEnv does.
 func pwshClearEnv(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
 	parts := make([]string, len(keys))
 	for i, key := range keys {
-		parts[i] = "Remove-Item Env:" + key + " -ErrorAction SilentlyContinue"
+		parts[i] = "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath " + shellquote.PowerShell.Quote("Env:"+key) + " -ErrorAction SilentlyContinue"
 	}
 	return strings.Join(parts, "; ") + "; "
 }
@@ -464,12 +442,14 @@ func cshEnvSeed(vars []string) string {
 }
 
 // nuEnvCondition builds a Nushell conditional expression that checks
-// whether any of vars is set and non-empty.
-// e.g. `($env | get -o VAR1 | default "") != "" or ...`
+// whether any of vars is set and non-empty. The `%` sigil calls each builtin
+// even when the profile defines a command of the same name. For example:
+//
+//	($env | %get -o VAR1 | %default '') != '' or ...
 func nuEnvCondition(vars []string) string {
 	parts := make([]string, len(vars))
 	for i, v := range vars {
-		parts[i] = fmt.Sprintf("($env | get -o %s | default '') != ''", v)
+		parts[i] = fmt.Sprintf("($env | %%get -o %s | %%default '') != ''", v)
 	}
 	return strings.Join(parts, " or ")
 }

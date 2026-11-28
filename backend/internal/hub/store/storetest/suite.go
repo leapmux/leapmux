@@ -37,6 +37,7 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("workspace_tab_index", s.testWorkspaceTabIndex)
 	t.Run("worker_tab_publications", s.testWorkerTabPublications)
 	t.Run("user_op_batches", s.testUserOpBatches)
+	t.Run("layout_events", s.testLayoutEvents)
 	// Note: workspace_tabs / workspace_layouts substores were removed
 	// during the CRDT migration. Their replacements (WorkspaceTabIndex
 	// — bulk read paths covered above; UserOpBatches has a regression
@@ -60,6 +61,7 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("token_revocation", s.testTokenRevocation)
 	t.Run("token_listing", s.testTokenListing)
 	t.Run("encryption at rest", s.testEncryptionAtRest)
+	t.Run("id_prefix", s.testIDPrefix)
 	// `migrator` runs last because its `migrate to zero` subtest leaves
 	// the schema partially dropped, and the suite's per-test re-migrate
 	// trampoline can't always recover the dropped state cleanly. Any

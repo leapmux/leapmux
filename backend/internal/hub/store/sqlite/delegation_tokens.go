@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -77,6 +78,46 @@ func (c *sqliteConn) delegationTokenWithOwner(t gendb.DelegationToken, ownerUser
 }
 
 func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDelegationTokensParams) (store.Page[store.DelegationTokenWithOwner], error) {
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.DelegationTokenWithOwner]{}, err
+	}
+	if active {
+		userID, emptyUser := optionalUserIDFilter(p.UserID)
+		if empty || emptyUser {
+			return store.Page[store.DelegationTokenWithOwner]{}, nil
+		}
+		includeRevoked := ptrconv.BoolToInt64(p.IncludeRevoked)
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListAllDelegationTokensByIDExactParams, error) {
+					return gendb.ListAllDelegationTokensByIDExactParams{
+						ID:             filter.Lower,
+						UserID:         userID,
+						IncludeRevoked: includeRevoked,
+					}, nil
+				},
+				s.conn.q.ListAllDelegationTokensByIDExact,
+				func(r gendb.ListAllDelegationTokensByIDExactRow) (store.DelegationTokenWithOwner, error) {
+					return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+				}, s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllDelegationTokensByIDPrefixParams, error) {
+				return gendb.ListAllDelegationTokensByIDPrefixParams{
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					UserID:         userID,
+					IncludeRevoked: includeRevoked,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListAllDelegationTokensByIDPrefix,
+			func(r gendb.ListAllDelegationTokensByIDPrefixRow) (store.DelegationTokenWithOwner, error) {
+				return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			}, s.conn.queryError)
+	}
 	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
 	// (include_revoked false/true), dispatched to four generated queries
 	// (mirroring workers.go ListAdmin). The revoked dimension is split rather

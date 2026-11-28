@@ -4,20 +4,24 @@
 package control
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // CredentialFile is the per-hub credential payload stored under
-// ~/.config/leapmux/control/<hub-host>.json (mode 0600).
+// ~/.config/leapmux/control/credentials/<hub-host>.json (mode 0600).
 //
 // TokenID, ClientID and Scope are ADVISORY: they let the CLI say which row it
 // holds, which app owns it and what it was granted, without a round trip. The
@@ -60,10 +64,97 @@ func (c *CredentialFile) ClientIDOrBuiltIn() string {
 	return c.ClientID
 }
 
-// HubHost extracts the hostname (or socket path) used for the on-disk
-// credential filename.
+// CredentialExpiryState summarizes access-token and refresh-token expiry for a
+// CredentialFile at a given instant.
+type CredentialExpiryState struct {
+	// HasAccessExpiry reports whether ExpiresAt is non-zero.
+	HasAccessExpiry bool
+	// AccessExpired reports whether ExpiresAt is non-zero and at or before now.
+	AccessExpired bool
+	// AccessRemaining is ExpiresAt - now when HasAccessExpiry is true.
+	AccessRemaining time.Duration
+	// HasRefreshExpiry reports whether RefreshExpiresAt is non-zero.
+	HasRefreshExpiry bool
+	// RefreshExpired reports whether RefreshExpiresAt is non-zero and at or
+	// before now.
+	RefreshExpired bool
+	// RefreshRemaining is RefreshExpiresAt - now when HasRefreshExpiry is true.
+	RefreshRemaining time.Duration
+	// CanRefresh reports whether a non-empty RefreshToken is present and the
+	// refresh token has not expired.
+	CanRefresh bool
+}
+
+// ExpiryState evaluates access-token and refresh-token expiry at now.
+// A nil receiver returns the zero CredentialExpiryState.
+func (c *CredentialFile) ExpiryState(now time.Time) CredentialExpiryState {
+	if c == nil {
+		return CredentialExpiryState{}
+	}
+	var st CredentialExpiryState
+	if !c.ExpiresAt.IsZero() {
+		st.HasAccessExpiry = true
+		st.AccessRemaining = c.ExpiresAt.Sub(now)
+		st.AccessExpired = !now.Before(c.ExpiresAt)
+	}
+	if !c.RefreshExpiresAt.IsZero() {
+		st.HasRefreshExpiry = true
+		st.RefreshRemaining = c.RefreshExpiresAt.Sub(now)
+		st.RefreshExpired = !now.Before(c.RefreshExpiresAt)
+	}
+	st.CanRefresh = strings.TrimSpace(c.RefreshToken) != "" && !st.RefreshExpired
+	return st
+}
+
+// CanonicalHubURL returns the normalized form of raw for storage and display.
+// Surrounding whitespace is trimmed. Local IPC URLs (unix:/npipe:) are returned
+// verbatim after trimming because socket paths are case- and slash-sensitive.
+// Parseable URLs with a host have their scheme and host lowercased and trailing
+// slashes stripped from the path; other inputs fall back to stripping trailing
+// slashes.
+func CanonicalHubURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || locallisten.IsLocal(trimmed) {
+		return trimmed
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(trimmed, "/")
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Path = strings.TrimRight(u.Path, "/")
+	if u.RawPath != "" {
+		u.RawPath = strings.TrimRight(u.RawPath, "/")
+	}
+	return u.String()
+}
+
+// SameHubURL reports whether a and b identify the same hub. Remote HTTP(S) URLs
+// compare case-insensitively on scheme and host, ignore trailing path slashes,
+// and match by HubHost key; local IPC socket URLs compare verbatim after
+// trimming whitespace.
+func SameHubURL(a, b string) bool {
+	ca := CanonicalHubURL(a)
+	cb := CanonicalHubURL(b)
+	if ca == "" || cb == "" {
+		return false
+	}
+	if ca == cb {
+		return true
+	}
+	if locallisten.IsLocal(ca) || locallisten.IsLocal(cb) {
+		return false
+	}
+	ha, errA := HubHost(ca)
+	hb, errB := HubHost(cb)
+	return errA == nil && errB == nil && ha == hb
+}
+
+// HubHost extracts a collision-free filesystem key for hubURL, preserving
+// scheme, hostname, port, and any non-root base path.
 func HubHost(hubURL string) (string, error) {
-	if strings.HasPrefix(hubURL, "unix:") || strings.HasPrefix(hubURL, "npipe:") {
+	if locallisten.IsLocal(hubURL) {
 		// Local sockets use the URL verbatim, with non-filename chars
 		// flattened.
 		flat := strings.NewReplacer("/", "_", ":", "_", "\\", "_").Replace(hubURL)
@@ -73,18 +164,31 @@ func HubHost(hubURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse hub url: %w", err)
 	}
-	host := u.Hostname()
+	host := strings.ToLower(u.Hostname())
 	if host == "" {
 		return "", fmt.Errorf("hub url missing hostname")
 	}
-	if u.Port() != "" {
-		host = host + "_" + u.Port()
+	// IPv6 literals contain colons, which are illegal in Windows filenames.
+	host = strings.ReplaceAll(host, ":", "-")
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "" {
+		scheme = "https"
 	}
-	return host, nil
+	key := scheme + "_" + host
+	if u.Port() != "" {
+		key = key + "_" + u.Port()
+	}
+	cleanPath := strings.TrimRight(u.Path, "/")
+	if cleanPath != "" {
+		sum := sha256.Sum256([]byte(cleanPath))
+		key = key + "_" + hex.EncodeToString(sum[:6])
+	}
+	return key, nil
 }
 
-// ConfigDir returns ~/.config/leapmux/control (XDG-style on POSIX,
-// %APPDATA%\leapmux\control on Windows).
+// ConfigDir returns the control CLI configuration directory:
+// $LEAPMUX_CONTROL_CONFIG_DIR, else $XDG_CONFIG_HOME/leapmux/control, else
+// %APPDATA%\leapmux\control on Windows or ~/.config/leapmux/control on POSIX.
 func ConfigDir() (string, error) {
 	if env := os.Getenv("LEAPMUX_CONTROL_CONFIG_DIR"); env != "" {
 		return env, nil
@@ -92,12 +196,19 @@ func ConfigDir() (string, error) {
 	if env := os.Getenv("XDG_CONFIG_HOME"); env != "" {
 		return filepath.Join(env, "leapmux", "control"), nil
 	}
+	if runtime.GOOS == "windows" {
+		if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+			return filepath.Join(dir, "leapmux", "control"), nil
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, ".config", "leapmux", "control"), nil
 }
+
+const credentialsDirName = "credentials"
 
 // CredentialsPath returns the full path of the credential file for hubURL.
 func CredentialsPath(hubURL string) (string, error) {
@@ -109,7 +220,7 @@ func CredentialsPath(hubURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, host+".json"), nil
+	return filepath.Join(dir, credentialsDirName, host+".json"), nil
 }
 
 // SaveCredentials writes the credentials for hubURL to disk with 0600
@@ -174,19 +285,18 @@ func DeleteCredentials(hubURL string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return atomicfile.RemoveTempFiles(path)
+	return removeAtomicFile(path)
 }
 
-// ListCredentialFiles returns every credential file in ConfigDir.
+// ListCredentialFiles returns every credential file under
+// <ConfigDir>/credentials.
 func ListCredentialFiles() ([]CredentialFile, error) {
 	dir, err := ConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
+	credsDir := filepath.Join(dir, credentialsDirName)
+	entries, err := os.ReadDir(credsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -198,7 +308,7 @@ func ListCredentialFiles() ([]CredentialFile, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		data, err := os.ReadFile(filepath.Join(credsDir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -211,5 +321,137 @@ func ListCredentialFiles() ([]CredentialFile, error) {
 }
 
 // LoadCredentials returns ErrNotLoggedIn when no credential file exists for
-// the requested hub.
-var ErrNotLoggedIn = errors.New("not logged in to this hub; run `leapmux control auth login`")
+// the requested hub. It wraps cli.ErrNotLoggedIn, so the error envelope
+// reports not_logged_in, with the login command as its hint, wherever the
+// error surfaces.
+var ErrNotLoggedIn = fmt.Errorf("%w to this hub", cli.ErrNotLoggedIn)
+
+// NoHubError reports that nothing selects a hub: no --hub flag, no tab
+// socket, no LEAPMUX_HUB, and no single or chosen default among the stored
+// credentials.
+type NoHubError struct {
+	// Stored is the number of stored credentials. With none, the user is
+	// signed in nowhere; with several, the user must choose one.
+	Stored int
+}
+
+func (e *NoHubError) Error() string {
+	if e.Stored > 1 {
+		return fmt.Sprintf("no hub selected; this machine stores credentials for %d hubs and none is the default", e.Stored)
+	}
+	return "no hub selected"
+}
+
+// CLIError classifies the error for the envelope.
+func (e *NoHubError) CLIError() *cli.Error {
+	if e.Stored > 1 {
+		return cli.Wrap(cli.CodeUsage, e, "").
+			WithHint("pass --hub <url>").
+			WithHint(`run "leapmux auth use <hub>" to choose the default hub`)
+	}
+	return cli.Wrap(cli.CodeNotLoggedIn, e, "").
+		WithHint("pass --hub <url> or set LEAPMUX_HUB").
+		WithHint(`run "leapmux auth login --hub <url>" to store a credential`)
+}
+
+// HubSource identifies how the CLI chose a Hub address.
+type HubSource int
+
+const (
+	// HubSourceUnspecified means the client was constructed directly without
+	// hub-address resolution.
+	HubSourceUnspecified HubSource = iota
+	// HubSourceFlag means an explicit --hub flag selected the Hub.
+	HubSourceFlag
+	// HubSourceEnv means LEAPMUX_HUB selected the Hub.
+	HubSourceEnv
+	// HubSourceContext means context.json selected the Hub.
+	HubSourceContext
+	// HubSourceSingleCredential means the sole stored credential file selected the Hub.
+	HubSourceSingleCredential
+	// HubSourceDiscovered means local solo/dev socket discovery found the Hub.
+	HubSourceDiscovered
+)
+
+// DefaultHub returns the hub that a command addresses when neither --hub
+// nor a tab's socket selects one: LEAPMUX_HUB, else context.json's hub, else
+// the hub of the only stored credential, else a live local solo/dev Hub IPC
+// socket. It returns a *NoHubError when none of them selects a hub.
+func DefaultHub() (string, error) {
+	hub, _, _, err := resolveDefaultHub(true)
+	return hub, err
+}
+
+// DefaultHubWithSource is DefaultHub plus the HubSource that selected the hub.
+func DefaultHubWithSource() (string, HubSource, error) {
+	hub, source, _, err := resolveDefaultHub(true)
+	return hub, source, err
+}
+
+// ConfiguredDefaultHub is DefaultHub without local solo/dev socket discovery.
+// Commands that require a configured hub target (such as `auth login`) use it
+// so an auto-discovered local IPC socket does not masquerade as a browser login
+// target.
+func ConfiguredDefaultHub() (string, error) {
+	hub, _, _, err := resolveDefaultHub(false)
+	return hub, err
+}
+
+// resolveDefaultHub resolves the default hub, its HubSource provenance, and
+// the already-loaded CredentialFile when the hub came from the sole stored
+// credential file, so callers avoid reading and unmarshaling that file a second
+// time.
+func resolveDefaultHub(allowDiscover bool) (string, HubSource, *CredentialFile, error) {
+	if hub := strings.TrimSpace(os.Getenv("LEAPMUX_HUB")); hub != "" {
+		return hub, HubSourceEnv, nil, nil
+	}
+	ctxCfg, err := LoadContext()
+	if err != nil {
+		return "", HubSourceUnspecified, nil, err
+	}
+	if ctxCfg.Hub != "" {
+		return ctxCfg.Hub, HubSourceContext, nil, nil
+	}
+	files, err := ListCredentialFiles()
+	if err != nil {
+		return "", HubSourceUnspecified, nil, err
+	}
+	if len(files) == 1 {
+		return files[0].HubURL, HubSourceSingleCredential, &files[0], nil
+	}
+	if allowDiscover && len(files) == 0 {
+		if local := DiscoverLocalHub(); local != "" {
+			return local, HubSourceDiscovered, nil, nil
+		}
+	}
+	return "", HubSourceUnspecified, nil, &NoHubError{Stored: len(files)}
+}
+
+// SetDefaultHub records hub in context.json as the default hub, keeping any
+// other saved context defaults. An empty hub clears the saved hub.
+func SetDefaultHub(hub string) error {
+	cfg, err := LoadContext()
+	if err != nil {
+		return err
+	}
+	cfg.Hub = CanonicalHubURL(hub)
+	return SaveContext(cfg)
+}
+
+// ClearDefaultHubIf clears the saved default hub when it matches hub, keeping
+// any other saved context fields intact.
+func ClearDefaultHubIf(hub string) error {
+	hub = strings.TrimSpace(hub)
+	if hub == "" {
+		return nil
+	}
+	cfg, err := LoadContext()
+	if err != nil {
+		return err
+	}
+	if SameHubURL(cfg.Hub, hub) {
+		cfg.Hub = ""
+		return SaveContext(cfg)
+	}
+	return nil
+}

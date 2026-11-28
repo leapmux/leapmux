@@ -1,13 +1,13 @@
 package config
 
 import (
-	"flag"
 	"math"
 	"testing"
 	"time"
 
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -179,7 +179,7 @@ func TestFormatDurationRoundTrips(t *testing.T) {
 
 func TestDurationFlag(t *testing.T) {
 	t.Run("reports the default before Parse", func(t *testing.T) {
-		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 		var d time.Duration
 		fs.Var(NewDurationFlag(&d, 7*24*time.Hour), "session-duration", "usage")
 		assert.Equal(t, 7*24*time.Hour, d)
@@ -196,29 +196,29 @@ func TestDurationFlag(t *testing.T) {
 			{"2d", 48 * time.Hour},
 			{"1w", 7 * 24 * time.Hour},
 		} {
-			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 			var d time.Duration
 			fs.Var(NewDurationFlag(&d, time.Minute), "session-duration", "usage")
-			require.NoError(t, fs.Parse([]string{"-session-duration", c.arg}))
+			require.NoError(t, fs.Parse([]string{"--session-duration", c.arg}))
 			assert.Equal(t, c.want, d, "arg %q", c.arg)
 		}
 	})
 
 	t.Run("rejects a value the parser refuses", func(t *testing.T) {
-		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 		fs.SetOutput(nopWriter{})
 		var d time.Duration
 		fs.Var(NewDurationFlag(&d, time.Minute), "session-duration", "usage")
-		require.Error(t, fs.Parse([]string{"-session-duration", "30x"}))
+		require.Error(t, fs.Parse([]string{"--session-duration", "30x"}))
 	})
 
 	// FlagProvider hands the loader fl.Value.String(), so a flag that a user set
 	// has to survive the format-then-parse trip unchanged.
 	t.Run("round trips through the flag provider", func(t *testing.T) {
-		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 		var d time.Duration
 		fs.Var(NewDurationFlag(&d, time.Minute), "session-duration", "usage")
-		require.NoError(t, fs.Parse([]string{"-session-duration", "90"}))
+		require.NoError(t, fs.Parse([]string{"--session-duration", "90"}))
 
 		out, err := NewFlagProvider(fs, map[string]string{"session-duration": "session_duration"}).Read()
 		require.NoError(t, err)
@@ -227,12 +227,27 @@ func TestDurationFlag(t *testing.T) {
 		assert.Equal(t, 90*time.Second, got)
 	})
 
-	// The flag package builds a zero value by reflection to decide whether a
-	// default belongs in the help text, so String must answer without a target.
+	// A help renderer may format a zero value to decide whether a default
+	// belongs in the help text, so String must answer without a target.
 	t.Run("String answers on a zero value", func(t *testing.T) {
 		assert.Equal(t, "0", (&DurationFlag{}).String())
 		assert.Equal(t, "0", (*DurationFlag)(nil).String())
-		assert.Equal(t, time.Duration(0), (&DurationFlag{}).Get())
+	})
+
+	// The help prints the type beside the flag's name, and the completion
+	// reads it.
+	t.Run("Type identifies a duration", func(t *testing.T) {
+		assert.Equal(t, "duration", (&DurationFlag{}).Type())
+	})
+
+	t.Run("Get returns the parsed duration directly", func(t *testing.T) {
+		var d time.Duration
+		f := NewDurationFlag(&d, 7*24*time.Hour)
+		assert.Equal(t, 7*24*time.Hour, f.Get())
+		require.NoError(t, f.Set("2d"))
+		assert.Equal(t, 48*time.Hour, f.Get())
+		assert.Zero(t, (&DurationFlag{}).Get())
+		assert.Zero(t, (*DurationFlag)(nil).Get())
 	})
 }
 

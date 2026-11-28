@@ -1,4 +1,5 @@
 import type { Locator, Page } from '@playwright/test'
+import type { ControlPrompt } from '../../../src/components/chat/model/controlPrompt'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativePermissionOperationPlan } from './nativePermission'
@@ -11,7 +12,7 @@ import { defaultControlPermissionWrite, exerciseUnsupportedControlThroughPermiss
 /** The steps of the proof, in order, and the doubles of its collaborators. */
 const harness = vi.hoisted(() => ({
   events: [] as string[],
-  frames: [] as { payload: Record<string, unknown> }[],
+  frames: [] as { payload: Record<string, unknown>, prompt?: ControlPrompt }[],
   decisions: [] as Record<string, unknown>[],
   defaultPlan: undefined as NativePermissionOperationPlan | undefined,
 }))
@@ -31,7 +32,8 @@ vi.mock('./nativeScenario', () => ({
   currentNativeAgent: async () => ({ id: 'native-agent' }),
 }))
 
-vi.mock('./nativeControlWatch', () => ({
+vi.mock('./nativeControlWatch', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeControlWatch')>(),
   watchNativeControls: async () => ({
     controls: () => harness.frames,
     cancel: () => {
@@ -126,12 +128,10 @@ function plan(name: string, outputGate?: GatedOutput): NativePermissionOperation
   }
 }
 
-/** Classify every frame as one permission. */
-function permissionClassifier() {
-  return () => ({
-    kind: 'permission' as const,
-    permission: { title: 'Run the command', options: [] },
-  })
+/** A permission prompt, as the Worker reads one from a native control. */
+const PERMISSION_PROMPT: ControlPrompt = {
+  kind: 'permission',
+  permission: { title: 'Run the command', options: [] },
 }
 
 beforeEach(() => {
@@ -140,6 +140,7 @@ beforeEach(() => {
   harness.frames = [
     {
       payload: { method: 'permission' },
+      prompt: PERMISSION_PROMPT,
     },
   ]
   harness.defaultPlan = undefined
@@ -150,7 +151,6 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
     harness.defaultPlan = plan('default')
     await exerciseUnsupportedControlThroughPermission(context(), {
       purpose: 'editor',
-      classify: permissionClassifier(),
     })
     expect(harness.events).toEqual([
       `default write:${JSON.stringify(defaultControlPermissionWrite('editor'))}`,
@@ -177,7 +177,6 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
     }
     await exerciseUnsupportedControlThroughPermission(context(), {
       purpose: 'workspace-trust',
-      classify: permissionClassifier(),
       operation,
       nativeProof,
     })
@@ -189,12 +188,17 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
   })
 
   it('accepts a native permission without an optional title', async () => {
+    harness.frames = [
+      {
+        payload: { method: 'permission' },
+        prompt: {
+          kind: 'permission',
+          permission: { command: 'printf proof', options: [] },
+        },
+      },
+    ]
     await exerciseUnsupportedControlThroughPermission(context(), {
       purpose: 'workspace-trust',
-      classify: () => ({
-        kind: 'permission',
-        permission: { command: 'printf proof', options: [] },
-      }),
       operation: plan('untitled'),
     })
     expect(harness.events).toContain('decision allow')
@@ -202,25 +206,55 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
   })
 
   it.each(['Trust the workspace', 'Do not trust'])('rejects an actual workspace-trust title: %s', async (title) => {
+    harness.frames = [
+      {
+        payload: { method: 'permission' },
+        prompt: {
+          kind: 'permission',
+          permission: { title, options: [] },
+        },
+      },
+    ]
     await expect(exerciseUnsupportedControlThroughPermission(context(), {
       purpose: 'workspace-trust',
-      classify: () => ({
-        kind: 'permission',
-        permission: { title, options: [] },
-      }),
       operation: plan('trust'),
     })).rejects.toThrow(/not to match.*Trust the workspace/)
     expect(harness.events.at(-1)).toBe('watch cancelled')
   })
 
-  it('observes both question surfaces and refuses a frame that the provider marks as a question', async () => {
+  it('observes both question surfaces and refuses a frame that the Worker reads as a question', async () => {
+    harness.defaultPlan = plan('default')
+    harness.frames.push({
+      payload: { method: 'question' },
+      prompt: {
+        kind: 'question',
+        questions: [
+          { question: 'Which?', options: [] },
+        ],
+      },
+    })
+    await expect(exerciseUnsupportedControlThroughPermission(context(), {
+      purpose: 'question',
+    })).rejects.toThrow('the provider sends no native question request')
+    expect(harness.events.slice(1, 3)).toEqual(['observe:elicitation-form', 'observe:control-question-group'])
+    expect(harness.events.at(-1)).toBe('watch cancelled')
+  })
+
+  it('refuses a frame that the spec\'s own test marks as a question', async () => {
     harness.defaultPlan = plan('default')
     await expect(exerciseUnsupportedControlThroughPermission(context(), {
       purpose: 'question',
-      classify: permissionClassifier(),
       isQuestionRequest: payload => payload.method === 'permission',
     })).rejects.toThrow('the provider sends no native question request')
-    expect(harness.events.slice(1, 3)).toEqual(['observe:elicitation-form', 'observe:control-question-group'])
+    expect(harness.events.at(-1)).toBe('watch cancelled')
+  })
+
+  it('accepts permission frames for the question purpose', async () => {
+    harness.defaultPlan = plan('default')
+    await exerciseUnsupportedControlThroughPermission(context(), {
+      purpose: 'question',
+      isQuestionRequest: payload => payload.method === 'ask_user',
+    })
     expect(harness.events.at(-1)).toBe('watch cancelled')
   })
 
@@ -229,7 +263,6 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
     const failure = new Error('The native result is absent.')
     await expect(exerciseUnsupportedControlThroughPermission(context(), {
       purpose: 'editor',
-      classify: permissionClassifier(),
       nativeProof: () => {
         throw failure
       },

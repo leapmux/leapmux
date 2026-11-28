@@ -17,8 +17,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err != nil {
 		return nil, err
 	}
-	if opts.ResumeSessionID != "" {
-		storedBypass, err := readCursorBypassPolicy(ctx, agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}, opts.ResumeSessionID)
+	if resumeID := opts.Session.ResumeID(); resumeID != "" {
+		storedBypass, err := readCursorBypassPolicy(ctx, agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}, resumeID)
 		if err != nil {
 			return nil, err
 		}

@@ -135,8 +135,21 @@ func TestAdminIdPService_AddListRemoveGithub(t *testing.T) {
 	require.NotNil(t, prov)
 	assert.Equal(t, "github", prov.GetProviderType())
 	assert.Equal(t, "gh-client", prov.GetClientId())
+	assert.Equal(t, "query", prov.GetResponseMode())
 	assert.True(t, prov.GetEnabled())
 	assert.NotContains(t, added.String(), "gh-secret")
+
+	_, err = env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
+		ProviderType: "github", ClientId: "gh-fp", ClientSecret: "s", ResponseMode: "form_post",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	_, err = env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
+		ProviderType: "github", ClientId: "gh-bad", ClientSecret: "s", ResponseMode: "fragment",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	listed, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
@@ -270,6 +283,26 @@ func TestAdminIdPService_SetEnabledAndRemove(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 	assert.True(t, enabledNow())
+
+	_, err = env.client.UpdateOAuthProviderSecret(authedReq(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+		Id: id, ClientSecret: "rotated-apple-jwt-secret",
+	}, env.token))
+	require.NoError(t, err)
+	stored, err := env.st.OAuthProviders().GetByID(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("rotated-apple-jwt-secret"), stored.ClientSecret)
+
+	_, err = env.client.UpdateOAuthProviderSecret(authedReq(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+		Id: id, ClientSecret: "",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	_, err = env.client.UpdateOAuthProviderSecret(authedReq(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+		Id: "no-such-provider", ClientSecret: "rotated",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
 	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{Id: id}, env.token))
 	require.NoError(t, err)
@@ -409,12 +442,19 @@ func TestAdminIdPService_RemoveAllowedWhenNobodyIsOrphaned(t *testing.T) {
 type recordingProviderCache struct {
 	mu          sync.Mutex
 	invalidated []string
+	evicted     []string
 }
 
 func (c *recordingProviderCache) InvalidateProvider(providerID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.invalidated = append(c.invalidated, providerID)
+}
+
+func (c *recordingProviderCache) EvictProviderCache(providerID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evicted = append(c.evicted, providerID)
 }
 
 func (c *recordingProviderCache) taken() []string {
@@ -425,12 +465,21 @@ func (c *recordingProviderCache) taken() []string {
 	return out
 }
 
+func (c *recordingProviderCache) takenEvicted() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := append([]string(nil), c.evicted...)
+	c.evicted = nil
+	return out
+}
+
 // TestAdminIdPService_EvictsTheProviderCache pins the call the admin verbs
 // owe the login handler.
 //
 // A removed or disabled provider can never be rebuilt -- loadEnabledProvider
 // refuses its row first -- so the login handler's own eviction cannot reach
-// the entry, and it holds the client secret the keystore decrypted.
+// the entry, and it holds the client secret the keystore decrypted. Secret
+// rotation must evict cached providers without dropping in-flight login states.
 func TestAdminIdPService_EvictsTheProviderCache(t *testing.T) {
 	env := setupAdminOAuthTest(t)
 	ctx := context.Background()
@@ -441,8 +490,16 @@ func TestAdminIdPService_EvictsTheProviderCache(t *testing.T) {
 	require.NoError(t, err)
 	id := added.GetProvider().GetId()
 	require.NotEmpty(t, id)
-	// An add rebuilds on demand, so only remove and disable are pinned here.
+	// An add rebuilds on demand, so only rotate, remove, and disable are pinned here.
 	env.cache.taken()
+	env.cache.takenEvicted()
+
+	_, err = env.client.UpdateOAuthProviderSecret(authedReq(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+		Id: id, ClientSecret: "gh-secret-rotated",
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, []string{id}, env.cache.takenEvicted(), "rotating a client secret must evict cached provider instances")
+	assert.Empty(t, env.cache.taken(), "rotating a client secret must not drop in-flight login states")
 
 	_, err = env.client.SetOAuthProviderEnabled(authedReq(ctx, &leapmuxv1.SetOAuthProviderEnabledRequest{
 		Id: id, Enabled: false,
@@ -504,6 +561,12 @@ func TestAdminIdPService_WritesNeedAProvenFactor(t *testing.T) {
 		"RemoveOAuthProvider": func(ctx context.Context, env *adminOAuthEnv, providerID string, authorize requestAuth) error {
 			_, err := env.client.RemoveOAuthProvider(authorized(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 				Id: providerID,
+			}, authorize))
+			return err
+		},
+		"UpdateOAuthProviderSecret": func(ctx context.Context, env *adminOAuthEnv, providerID string, authorize requestAuth) error {
+			_, err := env.client.UpdateOAuthProviderSecret(authorized(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+				Id: providerID, ClientSecret: "rotated-secret",
 			}, authorize))
 			return err
 		},

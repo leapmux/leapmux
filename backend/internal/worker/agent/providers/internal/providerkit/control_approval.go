@@ -19,7 +19,6 @@ type controlApprovalWrite struct {
 
 type controlApprovalBatch struct {
 	writes   []controlApprovalWrite
-	sink     agent.ControlServices
 	complete func(int)
 	ready    chan struct{}
 }
@@ -27,7 +26,7 @@ type controlApprovalBatch struct {
 // ApproveOutstandingControlRequests claims open requests without waiting for delivery.
 // The completion receives the number of successful writes. It runs outside all process locks.
 // Callers can hold their settings mutex across this call to make authorization and claims atomic.
-func (b *JSONRPCProcess) ApproveOutstandingControlRequests(sink agent.ControlServices, complete func(int)) int {
+func (b *JSONRPCProcess) ApproveOutstandingControlRequests(complete func(int)) int {
 	b.outstandingMu.Lock()
 	var writes []controlApprovalWrite
 	for id, record := range b.outstandingControls {
@@ -40,14 +39,14 @@ func (b *JSONRPCProcess) ApproveOutstandingControlRequests(sink agent.ControlSer
 	slices.SortFunc(writes, func(a, c controlApprovalWrite) int {
 		return cmp.Compare(a.requestID, c.requestID)
 	})
-	if !b.dispatchControlApprovals(sink, writes, complete) {
+	if !b.dispatchControlApprovals(writes, complete) {
 		return 0
 	}
 	return len(writes)
 }
 
 // ApproveOutstandingControlRequest claims one request and queues its answer.
-func (b *JSONRPCProcess) ApproveOutstandingControlRequest(sink agent.ControlServices, publication PublishedControlRequest) bool {
+func (b *JSONRPCProcess) ApproveOutstandingControlRequest(publication PublishedControlRequest) bool {
 	requestID := publication.RequestID
 	b.outstandingMu.Lock()
 	record := b.outstandingControls[requestID]
@@ -57,27 +56,25 @@ func (b *JSONRPCProcess) ApproveOutstandingControlRequest(sink agent.ControlServ
 	}
 	record.pending = true
 	b.outstandingMu.Unlock()
-	return b.dispatchControlApprovals(sink, []controlApprovalWrite{{requestID: requestID, record: record}}, nil)
+	return b.dispatchControlApprovals([]controlApprovalWrite{{requestID: requestID, record: record}}, nil)
 }
 
 // ApproveUnpublishedControlRequest normally answers without a browser card.
-// A definite delivery failure publishes the original request so the user can still answer it.
-func (b *JSONRPCProcess) ApproveUnpublishedControlRequest(sink agent.ControlServices, content []byte, cancelAnswer, answer any) bool {
-	return b.ApproveUnpublishedSessionControlRequest(sink, "", content, cancelAnswer, answer)
-}
-
-// ApproveUnpublishedSessionControlRequest keeps the session identity if failed delivery requires publication.
-func (b *JSONRPCProcess) ApproveUnpublishedSessionControlRequest(sink agent.ControlServices, sessionID string, content []byte, cancelAnswer, answer any) bool {
-	wireID, _, found := agent.ExtractJSONRPCID(content)
-	identity, valid := agent.NewControlRequestIdentity(wireID)
-	if !found || !valid {
+// A definite delivery failure publishes the original request with its owner so
+// the user can still answer it.
+func (b *JSONRPCProcess) ApproveUnpublishedControlRequest(sink agent.ControlServices, request ControlRequestPublication) bool {
+	identity, valid := agent.JSONRPCControlRequestIdentity(request.Content)
+	if !valid {
 		return false
 	}
-	record := b.registerControl(identity, &outstandingControlRequest{payload: content, sessionID: sessionID, cancelAnswer: cancelAnswer, approveAnswer: answer, pending: true, publishOnFailure: true})
+	record := b.registerControl(identity, &outstandingControlRequest{
+		sink: sink, payload: request.Content, sessionID: request.Owner.SessionID, nativeTurnID: request.Owner.TurnID, nativeInputIDs: request.Owner.InputIDs,
+		cancelAnswer: request.CancelAnswer, approveAnswer: request.ApproveAnswer, pending: true, publishOnFailure: true,
+	})
 	if record == nil {
 		return false
 	}
-	if b.dispatchControlApprovals(sink, []controlApprovalWrite{{requestID: identity.Key, record: record}}, nil) {
+	if b.dispatchControlApprovals([]controlApprovalWrite{{requestID: identity.Key, record: record}}, nil) {
 		return true
 	}
 	return false
@@ -85,7 +82,7 @@ func (b *JSONRPCProcess) ApproveUnpublishedSessionControlRequest(sink agent.Cont
 
 // dispatchControlApprovals reserves completion capacity before it queues any frame.
 // Frames enter the existing stdin queue before this call returns, so later frames cannot pass them.
-func (b *JSONRPCProcess) dispatchControlApprovals(sink agent.ControlServices, writes []controlApprovalWrite, complete func(int)) bool {
+func (b *JSONRPCProcess) dispatchControlApprovals(writes []controlApprovalWrite, complete func(int)) bool {
 	if len(writes) == 0 {
 		return false
 	}
@@ -98,7 +95,7 @@ func (b *JSONRPCProcess) dispatchControlApprovals(sink agent.ControlServices, wr
 		b.approvalQueue = make(chan *controlApprovalBatch, stdinQueueDepth)
 		go b.runControlApprovals(b.approvalQueue, closed)
 	}
-	batch := &controlApprovalBatch{writes: writes, sink: sink, complete: complete, ready: make(chan struct{})}
+	batch := &controlApprovalBatch{writes: writes, complete: complete, ready: make(chan struct{})}
 	select {
 	case <-closed:
 		b.releaseControlApprovals(writes)
@@ -185,7 +182,7 @@ func (b *JSONRPCProcess) completeControlApprovals(batch *controlApprovalBatch) {
 			// Admission and shutdown share stdinMu. Every accepted frame receives a writer receipt.
 			err = <-write.result
 		}
-		b.completeControlApproval(batch.sink, write, err)
+		b.completeControlApproval(write, err)
 		if err == nil {
 			delivered++
 		}
@@ -195,7 +192,7 @@ func (b *JSONRPCProcess) completeControlApprovals(batch *controlApprovalBatch) {
 	}
 }
 
-func (b *JSONRPCProcess) completeControlApproval(sink agent.ControlServices, write controlApprovalWrite, err error) {
+func (b *JSONRPCProcess) completeControlApproval(write controlApprovalWrite, err error) {
 	b.outstandingMu.Lock()
 	record := write.record
 	if b.outstandingControls[write.requestID] != record {
@@ -209,7 +206,7 @@ func (b *JSONRPCProcess) completeControlApproval(sink agent.ControlServices, wri
 		published := record.published
 		b.outstandingMu.Unlock()
 		if published {
-			sink.CancelControlRequestInstance(write.requestID, record.instanceID)
+			record.cancelPublication(write.requestID)
 		}
 		return
 	}
@@ -225,6 +222,6 @@ func (b *JSONRPCProcess) completeControlApproval(sink agent.ControlServices, wri
 	if failedPublication {
 		b.SendErrorResponseDetached(record.wireID, -32603, ControlPublicationFailure, "control publication failure")
 	} else if publish {
-		b.publishRegisteredControl(sink, write.requestID, record)
+		b.publishRegisteredControl(write.requestID, record)
 	}
 }

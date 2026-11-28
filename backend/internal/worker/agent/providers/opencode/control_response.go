@@ -12,15 +12,11 @@ import (
 )
 
 // ResolveControlResponse translates a browser response for the native control registry.
-func (p opencodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+func (opencodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.ControlResponseResolution{}
-	control, err := readOpenCodeStoredControl(ctx.RequestPayload, ctx.RequestID)
+	control, err := readOpenCodeStoredControl(ctx.RequestPayload)
 	if err != nil {
 		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	}
-	if p.ControlResponseRequestID(ctx.ResponseContent) != ctx.RequestID {
-		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	answer := map[string]any{"request_id": ctx.RequestID}
@@ -31,13 +27,13 @@ func (p opencodeProvider) ResolveControlResponse(ctx agent.ControlResponseContex
 	}
 	if behavior != "" {
 		switch behavior {
-		case agent.ControlBehaviorAllow:
+		case contracts.ControlAnswerBehaviorAllow:
 			if control.kind != "permission" {
 				result.Refuse("the form requires its field values")
 				return result
 			}
 			answer[contracts.OpenCodeNativeAnswerFieldDecision] = contracts.OpenCodeNativePermissionDecisionOnce
-		case agent.ControlBehaviorDeny:
+		case contracts.ControlAnswerBehaviorDeny:
 			if control.kind == "permission" {
 				answer[contracts.OpenCodeNativeAnswerFieldDecision] = contracts.OpenCodeNativePermissionDecisionReject
 				if message != "" {
@@ -107,12 +103,9 @@ type openCodeStoredControl struct {
 	externalFields []string
 }
 
-func readOpenCodeStoredControl(raw json.RawMessage, requestID string) (openCodeStoredControl, error) {
-	var request struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &request); err != nil {
+func readOpenCodeStoredControl(raw json.RawMessage) (openCodeStoredControl, error) {
+	request, err := decodeOpenCodeControlEnvelope(raw)
+	if err != nil {
 		return openCodeStoredControl{}, err
 	}
 	switch request.Type {
@@ -120,9 +113,6 @@ func readOpenCodeStoredControl(raw json.RawMessage, requestID string) (openCodeS
 		permission, err := readOpenCodePermission(request.Data)
 		if err != nil {
 			return openCodeStoredControl{}, err
-		}
-		if requestID != openCodeControlKey("permission", permission.SessionID, permission.ID) {
-			return openCodeStoredControl{}, errors.New("the stored OpenCode permission has another request ID")
 		}
 		return openCodeStoredControl{kind: "permission", allowsAlways: len(permission.Save) > 0}, nil
 	case contracts.OpenCodeNativeEventFormCreated:
@@ -135,9 +125,6 @@ func readOpenCodeStoredControl(raw json.RawMessage, requestID string) (openCodeS
 		form, err := readOpenCodeForm(data.Form)
 		if err != nil {
 			return openCodeStoredControl{}, err
-		}
-		if requestID != openCodeControlKey("form", form.SessionID, form.ID) {
-			return openCodeStoredControl{}, errors.New("the stored OpenCode form has another request ID")
 		}
 		control := openCodeStoredControl{kind: "form"}
 		for _, field := range form.Fields {

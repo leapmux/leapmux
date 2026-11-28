@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -126,6 +127,19 @@ func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken
 	return &out, nil
 }
 
+func (c *sqliteConn) fromDBAPITokenByUserRow(r gendb.ListAPITokensByUserRow, clientCache *sqlutil.JoinedClientCache) (store.APIToken, error) {
+	out, err := c.fromDBAPIToken(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache)
+	if err != nil {
+		return store.APIToken{}, err
+	}
+	// Only this listing joins the vouch columns; every other reader of an
+	// api_tokens row asks validation questions, and the connected-app list is
+	// the one surface that labels rows with whether somebody vouched for the app.
+	out.ClientVerifiedAt = r.ClientVerifiedAt.Ptr()
+	out.ClientRegistrationSource = r.ClientRegistrationSource
+	return out, nil
+}
+
 // ListByUser pages one user's OWN live tokens (the account settings device
 // list). Keyset on created_at, like every other listing in the hub.
 func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByUserParams) (store.Page[store.APIToken], error) {
@@ -135,24 +149,52 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.APIToken]{}, nil
 	}
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.APIToken]{}, err
+	}
 	clientCache := sqlutil.NewJoinedClientCache(s.conn.ks)
+	if active {
+		if empty {
+			return store.Page[store.APIToken]{}, nil
+		}
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListAPITokensByUserIDExactParams, error) {
+					return gendb.ListAPITokensByUserIDExactParams{
+						ID:       filter.Lower,
+						UserID:   owner,
+						ClientID: p.ClientID,
+					}, nil
+				},
+				s.conn.q.ListAPITokensByUserIDExact,
+				func(r gendb.ListAPITokensByUserIDExactRow) (store.APIToken, error) {
+					return s.conn.fromDBAPITokenByUserRow(gendb.ListAPITokensByUserRow(r), clientCache)
+				}, s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAPITokensByUserIDPrefixParams, error) {
+				return gendb.ListAPITokensByUserIDPrefixParams{
+					IDLo:     filter.Lower,
+					IDHi:     filter.Upper,
+					IDGt:     idGt,
+					UserID:   owner,
+					ClientID: p.ClientID,
+					Limit:    fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListAPITokensByUserIDPrefix,
+			func(r gendb.ListAPITokensByUserIDPrefixRow) (store.APIToken, error) {
+				return s.conn.fromDBAPITokenByUserRow(gendb.ListAPITokensByUserRow(r), clientCache)
+			}, s.conn.queryError)
+	}
 	return store.QueryPageErr(ctx, p.Limit,
 		func() (gendb.ListAPITokensByUserParams, error) {
 			return listAPITokensByUserParams(owner, p.ClientID, p.Cursor, p.Limit)
 		},
 		s.conn.q.ListAPITokensByUser,
 		func(r gendb.ListAPITokensByUserRow) (store.APIToken, error) {
-			out, err := s.conn.fromDBAPIToken(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache)
-			if err != nil {
-				return store.APIToken{}, err
-			}
-			// Only this listing joins the vouch columns; every other
-			// reader of an api_tokens row asks validation questions, and
-			// the connected-app list is the one surface that labels rows
-			// with whether somebody vouched for the app.
-			out.ClientVerifiedAt = r.ClientVerifiedAt.Ptr()
-			out.ClientRegistrationSource = r.ClientRegistrationSource
-			return out, nil
+			return s.conn.fromDBAPITokenByUserRow(r, clientCache)
 		}, s.conn.queryError)
 }
 
@@ -168,7 +210,49 @@ func (c *sqliteConn) apiTokenWithOwner(t gendb.ApiToken, jc joinedClient, client
 }
 
 func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensParams) (store.Page[store.APITokenWithOwner], error) {
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.APITokenWithOwner]{}, err
+	}
 	clientCache := sqlutil.NewJoinedClientCache(s.conn.ks)
+	if active {
+		userID, emptyUser := optionalUserIDFilter(p.UserID)
+		if empty || emptyUser {
+			return store.Page[store.APITokenWithOwner]{}, nil
+		}
+		includeRevoked := ptrconv.BoolToInt64(p.IncludeRevoked)
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListAllAPITokensByIDExactParams, error) {
+					return gendb.ListAllAPITokensByIDExactParams{
+						ID:             filter.Lower,
+						UserID:         userID,
+						ClientID:       p.ClientID,
+						IncludeRevoked: includeRevoked,
+					}, nil
+				},
+				s.conn.q.ListAllAPITokensByIDExact,
+				func(r gendb.ListAllAPITokensByIDExactRow) (store.APITokenWithOwner, error) {
+					return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
+				}, s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllAPITokensByIDPrefixParams, error) {
+				return gendb.ListAllAPITokensByIDPrefixParams{
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					UserID:         userID,
+					ClientID:       p.ClientID,
+					IncludeRevoked: includeRevoked,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListAllAPITokensByIDPrefix,
+			func(r gendb.ListAllAPITokensByIDPrefixRow) (store.APITokenWithOwner, error) {
+				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
+			}, s.conn.queryError)
+	}
 	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
 	// (include_revoked false/true), dispatched to four generated queries
 	// (mirroring workers.go ListAdmin). The revoked dimension is split rather

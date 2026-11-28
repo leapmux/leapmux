@@ -142,8 +142,15 @@ type CommitBatch struct {
 	// broadcast applies. Nil is treated as empty (the journal marshals an empty
 	// BatchTransitions), so a caller with no transitions still commits a
 	// NOT NULL row.
-	Transitions *leapmuxv1.BatchTransitions
-	Publication *PublicationReceipt
+	Transitions     *leapmuxv1.BatchTransitions
+	Publication     *PublicationReceipt
+	LayoutFacts     []*leapmuxv1.LayoutEventFact
+	LayoutLifecycle *LayoutLifecycleCommit
+}
+
+type LayoutLifecycleCommit struct {
+	OutboxID int64
+	Fact     *leapmuxv1.LayoutEventFact
 }
 
 // ResumeBatch pairs a journal op batch with its persisted per-entity workspace
@@ -214,16 +221,23 @@ type RecentBatchRecord struct {
 // LifecycleOutboxRow is the wire shape of a single outbox payload the
 // manager consumes.
 type LifecycleOutboxRow struct {
-	ID      int64
-	UserID  string
-	OpType  LifecycleOpType
-	Payload []byte
+	ID                int64
+	UserID            string
+	OpType            LifecycleOpType
+	Payload           []byte
+	LayoutFactWritten bool
 }
 
 // LifecycleOutboxReader is the manager's view onto the outbox table.
 type LifecycleOutboxReader interface {
 	ListPendingLifecycleOutbox(ctx context.Context, userID string) ([]LifecycleOutboxRow, error)
-	MarkLifecycleOutboxConsumed(ctx context.Context, id int64, consumedAt time.Time) error
+	// MarkLifecycleOutboxConsumed acknowledges a row whose layout event fact
+	// was already written (for example, inside CommitBatch).
+	MarkLifecycleOutboxConsumed(ctx context.Context, rowID int64, consumedAt time.Time) error
+	// ConsumeLifecycleOutboxWithLayoutFact claims the row's layout fact, appends
+	// fact to the owner's layout log, and marks the row consumed atomically.
+	// fact must be non-nil.
+	ConsumeLifecycleOutboxWithLayoutFact(ctx context.Context, row LifecycleOutboxRow, consumedAt time.Time, fact *leapmuxv1.LayoutEventFact) error
 }
 
 // PublicationReceipt retains the result for one immutable Worker creation.

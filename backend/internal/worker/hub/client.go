@@ -375,9 +375,7 @@ func (c *Client) ListOwnedTabsForWorker(ctx context.Context) (*leapmuxv1.ListOwn
 		return nil, errors.New("hub client: no auth token (call Connect first)")
 	}
 	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
-	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+token)
-	resp, err := c.connector.ListOwnedTabsForWorker(ctx, req)
+	resp, err := c.connector.ListOwnedTabsForWorker(withBearerHeader(ctx, token), req)
 	if err != nil {
 		return nil, err
 	}
@@ -803,34 +801,54 @@ func receiveEndError(readErr error, ctx, connCtx context.Context) error {
 	return readErr
 }
 
-// PublishTab publishes an already-persisted resource using this Worker's token.
-// It is independent of delegation minting, so it also works for the first tab.
-func (c *Client) PublishTab(ctx context.Context, token string, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+func withBearerHeader(ctx context.Context, token string) context.Context {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return ctx
+}
+
+func withWorkerCredential(ctx context.Context, token string) (context.Context, error) {
 	if token == "" {
 		return nil, errors.New("the Worker has no Hub credential")
 	}
-	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return withBearerHeader(ctx, token), nil
+}
+
+// PublishTab publishes an already-persisted resource using this Worker's token.
+// It is independent of delegation minting, so it also works for the first tab.
+func (c *Client) PublishTab(ctx context.Context, token string, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+	ctx, err := withWorkerCredential(ctx, token)
+	if err != nil {
+		return nil, err
+	}
 	return c.connector.PublishTab(ctx, &leapmuxv1.PublishTabRequest{Publication: request})
 }
 
 // CancelTabPublication prevents late publication with this Worker's credential.
 func (c *Client) CancelTabPublication(ctx context.Context, token string, request *leapmuxv1.TabPublication) error {
-	if token == "" {
-		return errors.New("the Worker has no Hub credential")
+	ctx, err := withWorkerCredential(ctx, token)
+	if err != nil {
+		return err
 	}
-	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+token)
-	_, err := c.connector.CancelTabPublication(ctx, &leapmuxv1.CancelTabPublicationRequest{Publication: request})
+	_, err = c.connector.CancelTabPublication(ctx, &leapmuxv1.CancelTabPublicationRequest{Publication: request})
 	return err
 }
 
 // ResolveTabPublication reads current hosting state with the Worker's credential.
 func (c *Client) ResolveTabPublication(ctx context.Context, token string, request *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
-	if token == "" {
-		return nil, errors.New("the Worker has no Hub credential")
+	ctx, err := withWorkerCredential(ctx, token)
+	if err != nil {
+		return nil, err
 	}
-	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	return c.connector.ResolveTabPublication(ctx, &leapmuxv1.ResolveTabPublicationRequest{Publication: request})
+}
+
+// CheckNotificationWorkspace verifies a destination under this Worker's owner.
+func (c *Client) CheckNotificationWorkspace(ctx context.Context, token, workspaceID string) error {
+	ctx, err := withWorkerCredential(ctx, token)
+	if err != nil {
+		return err
+	}
+	_, err = c.connector.CheckNotificationWorkspace(ctx, &leapmuxv1.CheckNotificationWorkspaceRequest{WorkspaceId: workspaceID})
+	return err
 }

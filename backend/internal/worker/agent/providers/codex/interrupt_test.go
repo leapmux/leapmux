@@ -382,7 +382,7 @@ func TestCodexAgent_SendInput_DuringTurnUsesMainTurnAfterChildTurnStarted(t *tes
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
 
-	require.NoError(t, agent.SteerInput("steer this", nil))
+	require.NoError(t, agenttest.SteerInput(agent, agentapi.SteerRequest{Content: "steer this"}))
 
 	mu.Lock()
 	frames := append([]map[string]any(nil), captured...)

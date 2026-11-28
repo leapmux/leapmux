@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -118,6 +119,46 @@ func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (
 }
 
 func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.WorkerRegistrationKeyWithCreator]{}, err
+	}
+	if active {
+		if empty {
+			return store.Page[store.WorkerRegistrationKeyWithCreator]{}, nil
+		}
+		includeExpired := ptrconv.BoolToInt64(p.IncludeExpired)
+		now := sqltime.NewSQLiteTime(time.Now().UTC())
+		if filter.Exact {
+			return store.QueryPage(ctx, p.Limit,
+				func() (gendb.ListRegistrationKeysAdminByIDExactParams, error) {
+					return gendb.ListRegistrationKeysAdminByIDExactParams{
+						ID:             filter.Lower,
+						IncludeExpired: includeExpired,
+						Now:            now,
+					}, nil
+				},
+				s.conn.q.ListRegistrationKeysAdminByIDExact,
+				func(r gendb.ListRegistrationKeysAdminByIDExactRow) store.WorkerRegistrationKeyWithCreator {
+					return fromDBListRegistrationKeysAdminRow(gendb.ListRegistrationKeysAdminRow(r))
+				}, s.conn.queryError)
+		}
+		return store.QueryPage(ctx, p.Limit,
+			func() (gendb.ListRegistrationKeysAdminByIDPrefixParams, error) {
+				return gendb.ListRegistrationKeysAdminByIDPrefixParams{
+					IDLo:           filter.Lower,
+					IDHi:           filter.Upper,
+					IDGt:           idGt,
+					IncludeExpired: includeExpired,
+					Now:            now,
+					Limit:          fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListRegistrationKeysAdminByIDPrefix,
+			func(r gendb.ListRegistrationKeysAdminByIDPrefixRow) store.WorkerRegistrationKeyWithCreator {
+				return fromDBListRegistrationKeysAdminRow(gendb.ListRegistrationKeysAdminRow(r))
+			}, s.conn.queryError)
+	}
 	// `now` is compared against expires_at through sqlc.narg(now) in the SQL (see
 	// worker_registration_keys.sql ListRegistrationKeysAdmin). The GENERATED Now
 	// field stays interface{} because the sqlite engine does not resolve the

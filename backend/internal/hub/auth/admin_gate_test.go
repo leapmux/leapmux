@@ -362,10 +362,9 @@ func TestAdminGate_AppWithoutElevationAllowedRefused(t *testing.T) {
 		"re-enabling the app restores the ordinary verification remedy")
 }
 
-// TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused pins the marker on
-// a NON-session-only admin procedure: an app credential without a window is
-// refused WITH the prompt signal, unlike the session-only refusals that can
-// offer no ceremony that would help.
+// TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused pins the step-up
+// marker on UpdateUser: an app credential without an active elevation window
+// is refused with the prompt header so the CLI can run verification.
 func TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused(t *testing.T) {
 	f := setupAdminGateServer(t)
 	owner, ownerOK := userid.New(f.adminUserID)
@@ -402,8 +401,8 @@ func TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.Empty(t, emailInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
-		"a browser session is required, so a bearer step-up cannot clear this refusal")
+	assert.Equal(t, "1", emailInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"an un-elevated admin:users bearer can clear UpdateUser via browser step-up")
 }
 
 // TestAdminGate_NonAdminAdminScopedBearerStillDenied pins the COMPOSITION

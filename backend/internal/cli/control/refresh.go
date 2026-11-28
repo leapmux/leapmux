@@ -53,7 +53,7 @@ const (
 // ErrCredentialRejected reports a credential the hub refused permanently:
 // revoked, reused, or past its absolute lifetime. doRefresh deletes the
 // stored file before this reaches a caller, so the next command reports
-// ErrNotLoggedIn, whose message already specifies the remedy.
+// ErrNotLoggedIn, whose envelope states the remedy.
 var ErrCredentialRejected = errors.New("this hub credential is no longer valid")
 
 // ErrCredentialsNotSaved reports a rotation that the hub COMMITTED and this
@@ -91,7 +91,7 @@ var credsMu sync.Mutex
 //   - A permanent rejection (ErrCredentialRejected) is fatal. The stored
 //     file is already deleted and the stale access token specifies the same
 //     revoked row, so the call that follows can only answer Unauthenticated
-//     -- and the message that specifies `leapmux control auth login` would be
+//     -- and the message that specifies `leapmux auth login` would be
 //     replaced by the hub's bare refusal.
 //   - EnsureFreshBearer swallows a transient failure with a token still
 //     INSIDE its lifetime. That token may well work, and turning a brief
@@ -106,7 +106,7 @@ var credsMu sync.Mutex
 //     next process to present it loses the credential; the swallow above
 //     would hide that, because a proactive renewal fires refreshSkew before
 //     the expiry and so is always inside the token's lifetime.
-func (c *Client) EnsureFreshBearer(ctx context.Context) error {
+func (c *HubClient) EnsureFreshBearer(ctx context.Context) error {
 	// From memory first. This runs before EVERY unary call and every
 	// stream open, and the file read below is an os.ReadFile plus a JSON
 	// decode under a process-wide mutex -- so a command that makes N calls
@@ -143,7 +143,7 @@ func (c *Client) EnsureFreshBearer(ctx context.Context) error {
 //
 // The bar is refreshSkew, the same one that decides to renew: a token this
 // client would renew at once is not one worth adopting.
-func (c *Client) adoptStoredBearer(creds *CredentialFile) bool {
+func (c *HubClient) adoptStoredBearer(creds *CredentialFile) bool {
 	if time.Until(creds.ExpiresAt) <= refreshSkew {
 		return false
 	}
@@ -180,18 +180,17 @@ func bearerErrorCode(err error) connect.Code {
 // call rather than remembering to renew and then read. ApplyAuth stays a
 // pure header stamp, because openAttempt stamps the header once per attempt
 // and runs the freshness check itself, in one place, before each of them.
-func (c *Client) freshBearer(ctx context.Context) (string, error) {
+func (c *HubClient) freshBearer(ctx context.Context) (string, error) {
 	if err := c.EnsureFreshBearer(ctx); err != nil {
 		return "", err
 	}
 	return c.currentBearer(), nil
 }
 
-// refreshableCredentials loads the stored credential when this client is one
-// that can refresh: hub-bound, carrying a bearer, with a refresh token on
-// disk for the same hub.
-func (c *Client) refreshableCredentials() (*CredentialFile, bool) {
-	if c.IsWorkerIPC() || c.currentBearer() == "" {
+// refreshableCredentials loads the stored credential when this client carries
+// a bearer and has a refresh token on disk for the same hub.
+func (c *HubClient) refreshableCredentials() (*CredentialFile, bool) {
+	if c.currentBearer() == "" {
 		return nil, false
 	}
 	credsMu.Lock()
@@ -208,7 +207,7 @@ func (c *Client) refreshableCredentials() (*CredentialFile, bool) {
 // in the meantime reads as "somebody else moved it" and this path simply
 // adopts it -- and it does not read the file again to learn what it
 // was just handed.
-func (c *Client) refreshBearer(ctx context.Context, presented *CredentialFile) error {
+func (c *HubClient) refreshBearer(ctx context.Context, presented *CredentialFile) error {
 	path, err := CredentialsPath(c.HubURL)
 	if err != nil {
 		return err
@@ -233,7 +232,7 @@ func (c *Client) refreshBearer(ctx context.Context, presented *CredentialFile) e
 // the point rather than a duplicate: the flight can queue this call
 // behind another goroutine's rotation, so the value on disk NOW is what
 // decides whether the caller's token is still the current one.
-func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*CredentialFile, error) {
+func (c *HubClient) doRefresh(ctx context.Context, presented *CredentialFile) (*CredentialFile, error) {
 	credsMu.Lock()
 	current, err := LoadCredentials(c.HubURL)
 	credsMu.Unlock()
@@ -354,8 +353,8 @@ type TokenResponseBody = refreshBody
 // or the credential reached its absolute lifetime. It reports
 // ErrCredentialRejected and touches NO local state; doRefresh deletes the
 // stored file, under the same lock that owns every other write to it, so the
-// next command answers ErrNotLoggedIn -- whose message specifies
-// `leapmux control auth login` -- instead of retrying a credential that can
+// next command answers ErrNotLoggedIn -- whose envelope states
+// `leapmux auth login` -- instead of retrying a credential that can
 // never work again.
 //
 // It reuses the client's OWN transport rather than building one. For a
@@ -367,7 +366,7 @@ type TokenResponseBody = refreshBody
 // clientID is the app the credential was issued to: the hub binds the refresh
 // stage to that app, so a credential minted to another registration must present
 // its own id and not the CLI's built-in one.
-func (c *Client) postRefresh(ctx context.Context, refreshToken, clientID string) (refreshBody, error) {
+func (c *HubClient) postRefresh(ctx context.Context, refreshToken, clientID string) (refreshBody, error) {
 	// One token endpoint, and grant_type is REQUIRED: the hub no longer infers
 	// which grant a request means from which field happens to be present.
 	form := url.Values{
@@ -422,7 +421,7 @@ var errNothingToRefresh = errors.New("this client holds no credential that can b
 // doRefresh can tell "my token is still the current one" from "somebody else
 // already rotated it"; doRefresh re-reads the file for that comparison,
 // which is the point rather than a duplicate. See its own comment.
-func (c *Client) repairAfterUnauthenticated(ctx context.Context) error {
+func (c *HubClient) repairAfterUnauthenticated(ctx context.Context) error {
 	creds, ok := c.refreshableCredentials()
 	if !ok {
 		return errNothingToRefresh

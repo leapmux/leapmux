@@ -312,9 +312,6 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 			retry.resolution.Resolve(a.sinkFor(a.childForEvent(event)))
 		}
 	}
-	if a.handleNativeControlEvent(raw, event) {
-		return
-	}
 	if event.Type == contracts.CopilotEventSystemNotification {
 		var notice struct {
 			Kind struct {
@@ -351,14 +348,6 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 	switch event.Type {
 	case contracts.CopilotEventUserMessage:
 		if event.AgentID == "" {
-			var message struct {
-				Content json.RawMessage `json:"content"`
-			}
-			if json.Unmarshal(event.Data, &message) == nil {
-				if text, ok := providerkit.RawString(message.Content); ok && a.steers.EchoKey(text) {
-					a.steers.Settle(a.sink)
-				}
-			}
 			a.reportUnreadDocuments(event.Data)
 		}
 		return
@@ -1050,17 +1039,23 @@ func (a *Agent) persistNativeFrameTo(sink agent.ProviderServices, raw []byte, sp
 		Method string `json:"method"`
 		Params struct {
 			Event struct {
-				Type string `json:"type"`
+				Type    string `json:"type"`
+				ID      string `json:"id"`
+				AgentID string `json:"agentId"`
 			} `json:"event"`
 		} `json:"params"`
 	}
+	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
 	if json.Unmarshal(raw, &header) == nil && header.Method == copilotMethodSessionEvent {
 		if _, dropped := copilotDroppedEvents[header.Params.Event.Type]; dropped || copilotEventIsRuntimeTrace(header.Params.Event.Type) {
 			return
 		}
+		event := header.Params.Event
+		if event.Type == contracts.CopilotEventAssistantMessage && event.ID != "" {
+			content.IdempotencyKey = copilotReplyMessageKey(event.ID)
+		}
 	}
-	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}, span); err != nil {
+	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span); err != nil {
 		slog.Error("Persist Copilot event", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -1091,7 +1086,19 @@ func (a *Agent) handleNativeOutput(line *providerkit.ParsedLine) {
 		slog.Debug("Skip Copilot event with an invalid session", "error", err)
 		return
 	}
-	a.handleNativeEvent(line.Raw, event)
+	if a.deferSteerEvent(line.Raw, event) {
+		return
+	}
+	a.applyNativeOutput(line.Raw, event)
+}
+
+func (a *Agent) applyNativeOutput(raw []byte, event copilotEvent) {
+	if handled, controlKey := a.handleNativeControlEvent(raw, event); handled {
+		a.observeNativeReply(raw, event, controlKey)
+		return
+	}
+	a.handleNativeEvent(raw, event)
+	a.observeNativeReply(raw, event, "")
 }
 
 func (a *Agent) persistNativeFrame(raw []byte, span agent.SpanInfo) {

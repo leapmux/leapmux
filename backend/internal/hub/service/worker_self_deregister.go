@@ -97,9 +97,7 @@ func (s *WorkerConnectorService) DeregisterSelf(
 // completeSelfDeregistration runs effects after the commit, including retries
 // whose deletion committed before a previous Hub stopped.
 func (s *WorkerConnectorService) completeSelfDeregistration(ctx context.Context, worker *store.Worker) (*leapmuxv1.DeregisterSelfResponse, error) {
-	if err := s.deregisterEffects.Apply(ctx, worker.ID, worker.RegisteredBy); err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
+	s.deregisterEffects.Apply(ctx, worker.ID, worker.RegisteredBy)
 	return &leapmuxv1.DeregisterSelfResponse{}, nil
 }
 

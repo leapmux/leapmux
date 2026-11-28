@@ -10,6 +10,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -85,8 +86,8 @@ func TestAntigravityFinalizationRefusesInputAndSteering(t *testing.T) {
 		close(done)
 	}()
 	receiveTestValue(t, entered)
-	assert.ErrorIs(t, a.SendInput("next turn", nil), agent.ErrAgentBusy)
-	assert.ErrorIs(t, a.SteerInput("too late to steer", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "next turn", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "too late to steer"}), agent.ErrAgentBusy)
 	assert.Zero(t, delivered.Load())
 	unblock()
 	receiveTestValue(t, done)

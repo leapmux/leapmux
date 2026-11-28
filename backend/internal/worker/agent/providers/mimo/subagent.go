@@ -1,8 +1,8 @@
 package mimo
 
 import (
+	"cmp"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -32,10 +32,7 @@ import (
 // Running opens or reopens the registry row. Idle closes that row with its outcome.
 // A message to a running actor joins its turn.
 //
-// A message to an idle actor starts a turn without actor.status events.
-// The parent's actor send command can start that turn. LeapMux child input refuses that case.
-// Output still reaches the actor's transcript because native messages identify the actor.
-// The actor's registry row stays closed without native turn events.
+// The inbox receipt supplies activity for a direct prompt that emits no actor.status events.
 
 // actorModeMain is the mode of the session's own actor.
 const actorModeMain = "main"
@@ -55,8 +52,9 @@ type mimoActor struct {
 	childAgentID string
 	// pendingSpawnPrompt holds only the original native spawn instruction.
 	pendingSpawnPrompt string
-	// running is true while the actor runs a turn.
-	running bool
+	// running follows actor-tool turns and confirmed inbox receipts.
+	running     bool
+	toolRunning bool
 	// closed is true while the registry row holds a final status.
 	closed    bool
 	turnCount int
@@ -462,16 +460,21 @@ func (a *Agent) handleActorStatus(event mimoEvent) {
 	actor := a.actorLocked(payload.ActorID)
 	actor.turnCount = payload.TurnCount
 	wasRunning, wasClosed := actor.running, actor.closed
+	switch payload.Status {
+	case contracts.MiMoActorStatusRunning:
+		actor.toolRunning = true
+	case contracts.MiMoActorStatusIdle:
+		actor.toolRunning = false
+	}
+	inboxActive := a.hasOpenChildReceiptLocked(actor, a.sessionID)
 	a.Mu.Unlock()
 
 	switch payload.Status {
 	case contracts.MiMoActorStatusRunning:
 		a.startActorTurn(payload.ActorID, wasRunning, wasClosed)
 	case contracts.MiMoActorStatusIdle:
-		a.retryForActor(payload.ActorID).Reset()
-		if wasRunning || !wasClosed {
-			a.endActorTurn(payload)
-		}
+		status, completion := actorOutcomeStatus(payload.LastOutcome)
+		a.finishActorToolIdle(actor, payload, status, completion, true, inboxActive, wasRunning || !wasClosed)
 	default:
 		// pending: the actor waits for its first turn, and its row opens when the
 		// turn starts.
@@ -522,12 +525,12 @@ func (a *Agent) publishChildTurn(actor *mimoActor, sessionID string) {
 
 // endActorTurn persists unfinished output and updates the actor's registry outcome.
 // A background actor also reports its last text to the parent.
-func (a *Agent) endActorTurn(payload mimoActorStatus) {
+func (a *Agent) endActorTurn(payload mimoActorStatus, fromTool bool) {
 	status, completion := actorOutcomeStatus(payload.LastOutcome)
-	a.endActorTurnWithOutcome(payload, status, completion)
+	a.endActorTurnWithOutcome(payload, status, completion, fromTool)
 }
 
-func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.Status, completion agent.MessageCompletion) {
+func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.Status, completion agent.MessageCompletion, fromTool bool) {
 	a.endLiveCompactions(payload.ActorID)
 	a.flushActorText(payload.ActorID, completion)
 	a.closeUnfinishedTools(payload.ActorID, completion)
@@ -537,8 +540,7 @@ func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.S
 	actor := a.actorLocked(payload.ActorID)
 	actor.running = false
 	actor.closed = true
-	rowKey, title, background, report, sessionID := actor.rowKey, actor.title(), actor.background, actor.lastText, a.sessionID
-	actor.lastText = ""
+	rowKey, sessionID := actor.rowKey, a.sessionID
 	a.Mu.Unlock()
 	a.retireActorControls(payload.ActorID)
 
@@ -548,15 +550,12 @@ func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.S
 	// The turn ends on the subagent's tab after its last row, and before the
 	// caches of the tab go.
 	a.publishChildTurn(actor, sessionID)
-	if background && strings.TrimSpace(report) != "" && rowKey != "" {
-		providerkit.PersistSubagentReport(a.sink, agent.SubagentReportWrite{
-			ReportID: "mimo-report:" + rowKey + ":" + strconv.Itoa(payload.TurnCount),
-			Report: agent.SubagentReport{
-				Label:  title,
-				Text:   report,
-				Status: bgtask.StatusWire(status),
-			},
-		})
+	if fromTool {
+		a.retainActorToolReport(actor, payload.TurnCount, status)
+	} else {
+		a.Mu.Lock()
+		actor.lastText = ""
+		a.Mu.Unlock()
 	}
 	if rowKey != "" {
 		providerkit.LogRegistryRefusal("mimo", "close", a.sink.CloseBackgroundTask(rowKey, status))
@@ -568,6 +567,94 @@ func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.S
 		a.sink.CleanupChildAgent(childID)
 	}
 	a.flushHeldFailure()
+}
+
+func (a *Agent) actorNeedsToolReconcileLocked(actor *mimoActor, sessionID string) bool {
+	return actor.running && (actor.toolRunning || !a.hasOpenChildReceiptLocked(actor, sessionID))
+}
+
+func (a *Agent) reconcileActorToolIdle(sessionID, actorID string, snap mimoActorSnapshot, present bool) {
+	a.Mu.Lock()
+	actor := a.actors[actorID]
+	stillRunning := a.sessionID == sessionID && actor != nil && actor.running
+	fromTool := stillRunning && actor.toolRunning
+	inboxActive := stillRunning && a.hasOpenChildReceiptLocked(actor, sessionID)
+	var turnCount int
+	if stillRunning {
+		turnCount = actor.turnCount
+	}
+	if fromTool {
+		actor.toolRunning = false
+	}
+	a.Mu.Unlock()
+	if !stillRunning || (!fromTool && inboxActive) {
+		return
+	}
+	payload := mimoActorStatus{
+		SessionID: sessionID,
+		ActorID:   actorID,
+		Status:    contracts.MiMoActorStatusIdle,
+		TurnCount: turnCount,
+	}
+	status, completion := bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished
+	if present {
+		payload.LastOutcome = snap.LastOutcome
+		payload.TurnCount = snap.TurnCount
+		payload.Error = cmp.Or(snap.Error, snap.LastError)
+		status, completion = actorOutcomeStatus(payload.LastOutcome)
+	}
+	a.finishActorToolIdle(actor, payload, status, completion, fromTool, inboxActive, true)
+}
+
+func (a *Agent) finishActorToolIdle(actor *mimoActor, payload mimoActorStatus, status bgtask.Status, completion agent.MessageCompletion, fromTool, inboxActive, closeWhenOpen bool) {
+	a.retryForActor(payload.ActorID).Reset()
+	if inboxActive {
+		if payload.Error != "" {
+			a.retainActorFailure(payload, actor)
+		}
+		a.retainActorToolReport(actor, payload.TurnCount, status)
+		return
+	}
+	if closeWhenOpen {
+		a.endActorTurnWithOutcome(payload, status, completion, fromTool)
+	}
+}
+
+func (a *Agent) syncActorReceiptTurn(sessionID, actorID, childID, idleOutcome string) {
+	a.Mu.Lock()
+	actor := a.actors[actorID]
+	if actor == nil || actor.childAgentID != childID || a.sessionID != sessionID {
+		a.Mu.Unlock()
+		return
+	}
+	wasRunning, wasClosed := actor.running, actor.closed
+	running := actor.toolRunning || a.hasOpenChildReceiptLocked(actor, sessionID)
+	a.Mu.Unlock()
+	if running == wasRunning {
+		return
+	}
+	if running {
+		a.startActorTurn(actorID, false, wasClosed)
+		return
+	}
+	a.endActorTurn(mimoActorStatus{ActorID: actorID, LastOutcome: idleOutcome}, false)
+}
+
+func (a *Agent) retainActorToolReport(actor *mimoActor, turnCount int, status bgtask.Status) {
+	a.Mu.Lock()
+	rowKey, title, background, report := actor.rowKey, actor.title(), actor.background, actor.lastText
+	actor.lastText = ""
+	a.Mu.Unlock()
+	if background && strings.TrimSpace(report) != "" && rowKey != "" {
+		providerkit.PersistSubagentReport(a.sink, agent.SubagentReportWrite{
+			ReportID: "mimo-report:" + rowKey + ":" + strconv.Itoa(turnCount),
+			Report: agent.SubagentReport{
+				Label:  title,
+				Text:   report,
+				Status: bgtask.StatusWire(status),
+			},
+		})
+	}
 }
 
 // actorOutcomeStatus maps an actor's outcome onto the registry status and the
@@ -695,11 +782,6 @@ func (a *Agent) restoreActorLinks(messages []mimoMessageWithParts) {
 
 // --- child input ---
 
-// errSubagentIdle refuses a message to a subagent that runs no turn. See
-// sendChildInput for why.
-var errSubagentIdle = errors.New("MiMo reports no turn that a message starts on an idle subagent, " +
-	"so LeapMux sends a message to a subagent only while the subagent runs")
-
 // actorForRowKey resolves a registry row key to its actor.
 func (a *Agent) actorForRowKey(rowKey string) (mimoActor, string, bool) {
 	a.Mu.Lock()
@@ -725,19 +807,20 @@ func (a *Agent) actorForRowKeyLocked(rowKey string) *mimoActor {
 	return nil
 }
 
-// SendChildInput takes the message that the queue dispatches to a subagent, and
-// always refuses it. A subagent that runs refuses with ErrAgentBusy, so the queue
-// holds the message and offers it as a steer. A subagent that runs no turn
-// refuses with errSubagentIdle (see sendChildInput).
+// SendChildInput begins a receipt-backed turn for an idle child. A busy child
+// leaves the input in the Worker queue so the user can steer or wait.
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
-	return agent.ChildInputResult{StartsTurn: true}, a.sendChildInput(childKey, input.Content, input.Attachments, false)
+	receipt, err := a.sendChildInput(childKey, input.Content, input.Attachments, false)
+	return agent.ChildInputResult{StartsTurn: a.ActiveChildTurnState(childKey).Active, NativeReceipt: receipt}, err
 }
 
-// SteerChildInput adds a message to a subagent's running turn. The actor reads
-// it at its next step, as the main agent does.
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChildInput(childKey, content, attachments, true)
+// SteerChildInput adds a message to a subagent's running turn and returns the
+// inbox admission for the captured child.
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.sendChildInput(childKey, request.Content, request.Attachments, true)
 }
+
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 // ActiveChildTurnState classifies a subagent's turn after a refusal.
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
@@ -746,91 +829,80 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 	return agent.TurnState{Active: running, Steerable: running}
 }
 
-// sendChildInput sends input to a running actor as a steer.
-//
-// It refuses input to an idle actor because MiMo supplies no lifecycle for that input:
-//
-//   - MiMo runs a message to an idle actor through the session loop directly
-//     (prompt_async, then SessionPrompt.loop, then ensureRunning).
-//     Only turns from the actor tool emit actor.status.
-//     Child runners emit no session.status. GET /session/:id/actors still reports idle.
-//     No native event identifies the new turn's start or end.
-//   - To follow that turn, the worker would have to copy the rules by which
-//     MiMo ends a loop (session/classify.ts and the steps of session/prompt.ts
-//     that continue by themselves).
-//     MiMo can continue its loop without a new request.
-//     That classifier would end those turns early and diverge across native releases.
-//   - The synchronous route POST /session/:id/message does return at the end
-//     of the turn. It returns 409 while the parent runs.
-//     A closed connection also cancels the parent's turn.
-//
-// MiMo joins input to a running actor's loop. The native idle status ends that turn.
-// The loop can finish before its idle event arrives.
-// Input in that interval can start another unreported turn.
-// No native event can eliminate that interval.
-func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+// sendChildInput sends a prompt to an idle actor or steers a running actor.
+// Both use the inbox route, whose receipt survives the turn that preceded it.
+func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) (agent.NativeInputReceipt, error) {
 	return a.sendChildInputBuilt(childKey, steer, func() ([]mimoPromptPart, error) {
 		return buildPromptParts(content, attachments)
 	})
 }
 
 // sendChildInputBuilt separates prompt construction from the captured delivery target.
-func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([]mimoPromptPart, error)) error {
+func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([]mimoPromptPart, error)) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	actor, sessionID := a.actorForRowKeyLocked(childKey), a.sessionID
 	running := actor != nil && actor.running
 	a.Mu.Unlock()
 	if actor == nil {
-		return fmt.Errorf("MiMo holds no subagent for %q in this session", childKey)
+		return agent.NativeInputReceipt{}, fmt.Errorf("MiMo holds no subagent for %q in this session", childKey)
 	}
 	if sessionID == "" {
-		return fmt.Errorf("agent has no MiMo session")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent has no MiMo session")
 	}
-	if !running {
-		if steer {
-			return agent.ErrNoActiveTurn
-		}
-		return errSubagentIdle
+	if steer && !running {
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
-	if !steer {
-		return agent.ErrAgentBusy
+	if !steer && running {
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	parts, err := build()
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	if a.sessionID != sessionID || a.actorForRowKeyLocked(childKey) != actor || sessionID == "" {
 		a.Mu.Unlock()
-		return agent.ErrChildRouteNotReady
+		return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 	}
 	if a.sessionSwitching {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
-	if !actor.running {
+	if steer && !actor.running {
 		a.Mu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
+	}
+	if !steer && actor.running {
+		a.Mu.Unlock()
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
+	}
+	if !steer && actor.childAgentID == "" {
+		a.Mu.Unlock()
+		return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 	}
 	request, err := a.promptRequestLocked(parts, actor.id)
 	if err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	send := a.admitInputLocked(sessionID)
+	if actor.childAgentID != "" {
+		send.replyLane = mimoReplyLane{actorID: actor.id, childID: actor.childAgentID}
+	}
 	a.Mu.Unlock()
 	// The queue writes the message into the child transcript when it accepts the
 	// delivery, so this call writes no row of its own.
-	err = a.rpc.promptAsync(a.Context(), sessionID, request)
+	receiptID, err := a.rpc.promptAsync(a.Context(), sessionID, request)
+	receipt := a.confirmPromptReceipt(sessionID, send, receiptID)
 	a.finishInput(sessionID, send, err)
 	if err != nil {
-		return classifyDeliveryError("subagent message", err)
+		return agent.NativeInputReceipt{}, classifyDeliveryError("subagent message", err)
 	}
-	return nil
+	return receipt, nil
 }
 
 // mimoSendInput is the part of an `actor send` call's input the worker reads.

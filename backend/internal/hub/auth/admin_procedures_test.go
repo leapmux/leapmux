@@ -61,10 +61,11 @@ var adminProcedureRationale = map[string]string{
 
 	// Authentication infrastructure: a rogue provider row is a credential
 	// harvesting endpoint.
-	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:        "installs an OAuth trust anchor (client secret custody)",
-	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      "reads the provider inventory including client ids",
-	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:     "removes a login method for every user",
-	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: "toggles a login method for every user",
+	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:          "installs an OAuth trust anchor (client secret custody)",
+	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:        "reads the provider inventory including client ids",
+	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:       "removes a login method for every user",
+	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure:   "toggles a login method for every user",
+	leapmuxv1connect.AdminIdPServiceUpdateOAuthProviderSecretProcedure: "rotates a sign-in provider's client secret in place",
 }
 
 // adminOnlyProcedures returns every declared procedure that enforceAdmin
@@ -253,7 +254,6 @@ func TestEnforceAdminDeniesByPrefix(t *testing.T) {
 	// the refusal, so a per-procedure bypass of the elevation check and a
 	// refusal that keeps only the Connect code both fail here.
 	checked := adminOnlyProcedures(t)
-	delete(checked, leapmuxv1connect.AdminUserServiceUpdateUserProcedure)
 	checked[unlisted] = true
 	for procedure := range checked {
 		err := enforceAdmin(procedure, unelevatedAdmin, now)

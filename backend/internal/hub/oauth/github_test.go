@@ -86,7 +86,7 @@ func TestGitHub_Exchange_Success(t *testing.T) {
 	}
 
 	p.baseURL = apiSrv.URL
-	claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "verifier", ExchangeOptions{})
 	require.NoError(t, err)
 
 	assert.Equal(t, "42", claims.Subject)
@@ -122,7 +122,7 @@ func TestGitHub_Exchange_UnverifiedEmail(t *testing.T) {
 	}
 
 	p.baseURL = apiSrv.URL
-	claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "verifier", ExchangeOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, claims.Email, "unverified email must not be returned")
 }
@@ -152,7 +152,7 @@ func TestGitHub_Exchange_NoEmails(t *testing.T) {
 	}
 
 	p.baseURL = apiSrv.URL
-	claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "verifier", ExchangeOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, claims.Email)
 }
@@ -172,7 +172,7 @@ func TestGitHub_Exchange_InvalidCode(t *testing.T) {
 		},
 	}
 
-	_, err := p.Exchange(context.Background(), "invalid-code", "")
+	_, err := p.Exchange(context.Background(), "invalid-code", "", ExchangeOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github exchange")
 }
@@ -228,7 +228,7 @@ func TestGitHub_Exchange_PKCE(t *testing.T) {
 			}))
 			defer apiSrv.Close()
 			p := &GitHubProvider{baseURL: apiSrv.URL, oauth2Config: &oauth2.Config{ClientID: "cid", ClientSecret: "secret", Endpoint: oauth2.Endpoint{TokenURL: tokenSrv.URL}}}
-			claims, err := p.Exchange(t.Context(), "code", verifier)
+			claims, err := p.Exchange(t.Context(), "code", verifier, ExchangeOptions{})
 			if verifier != originalVerifier {
 				require.Error(t, err)
 				assert.Nil(t, claims)

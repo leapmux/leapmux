@@ -21,7 +21,7 @@ func TestControlResponseReservationRequiresTheCurrentRequestInstance(t *testing.
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim", Payload: []byte(`{"id":"request"}`),
 	})
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
-		AgentID: "agent-1", RequestID: "request", ClaimToken: "old-claim",
+		AgentID: "agent-1", RequestID: "request", ClaimToken: "old-claim", RequestPayload: []byte(`{"id":"request"}`),
 	})
 	require.NoError(t, err)
 	require.Empty(t, deliveryID, "an earlier metadata read must not reserve a replaced request")
@@ -37,7 +37,7 @@ func createClaimTestAgent(t *testing.T, svc *Service, id string) {
 	}))
 }
 
-// TestClaimControlResponseAnswer pins the per-INSTANCE idempotency claim SendControlResponse uses to
+// TestClaimControlResponseAnswer pins the per-INSTANCE idempotency claim processControlAnswer uses to
 // dedup a duplicate answer (an RPC retry or a second window echoing the SAME claim_token): the first
 // claim for a (agent, request, token) triple wins and a repeat loses, claims are isolated per request,
 // per agent, and per token, a DIFFERENT token for the same request id claims fresh (the reused-instance
@@ -58,13 +58,13 @@ func TestClaimControlResponseAnswer(t *testing.T) {
 		createTestControlRequest(t, t.Context(), svc.Output, request)
 	}
 
-	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA"), "the first claim wins")
-	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA"),
+	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA", `{}`), "the first claim wins")
+	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA", `{}`),
 		"a repeat claim with the SAME token loses -- the duplicate answer draws no second row")
 
-	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-2", "tokA"),
+	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-2", "tokA", `{}`),
 		"a different request on the same agent is independent")
-	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-2", "req-1", "tokA"),
+	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-2", "req-1", "tokA", `{}`),
 		"the same request id on a different agent is independent")
 
 	// A REUSED request id whose NEW instance carries a DIFFERENT token claims fresh, while the prior
@@ -72,19 +72,19 @@ func TestClaimControlResponseAnswer(t *testing.T) {
 	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokB", Payload: []byte(`{"reissued":true}`),
 	})
-	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokB"),
+	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokB", `{"reissued":true}`),
 		"the reissued instance's fresh token claims a distinct key")
-	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA"),
+	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA", `{"reissued":true}`),
 		"a stale duplicate of the PRIOR instance (old token) still loses")
 
 	// An empty token (a pre-token answer, or a frontend lookup miss) degrades to request_id-only dedup.
-	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-3", ""), "empty-token first claim wins")
-	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-3", ""),
+	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-3", "", `{}`), "empty-token first claim wins")
+	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-3", "", `{}`),
 		"a repeat empty-token claim for the same request loses (id-only dedup fallback)")
 
 	// CleanupAgent runs on a transient context reset and does NOT touch the durable claim rows.
 	svc.Output.CleanupAgent("agent-1")
-	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-2", "tokA"),
+	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-2", "tokA", `{}`),
 		"the durable claim survives CleanupAgent (a transient restart), so the duplicate still loses")
 }
 
@@ -111,7 +111,7 @@ func TestClaimControlResponseAnswer_ConcurrentClaimsExactlyOneWins(t *testing.T)
 		go func() {
 			defer wg.Done()
 			<-start // release all goroutines at once to maximize contention
-			if claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA") {
+			if claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA", `{}`) {
 				atomic.AddInt32(&wins, 1)
 			}
 		}()
@@ -132,7 +132,7 @@ func TestClaimControlResponseAnswerRejectsDatabaseFailure(t *testing.T) {
 	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_control_reservation BEFORE INSERT ON control_response_payloads BEGIN SELECT RAISE(ABORT, 'reservation unavailable'); END`)
 	require.NoError(t, err)
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
-		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA",
+		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA", RequestPayload: []byte(`{}`),
 	})
 	require.ErrorContains(t, err, "reservation unavailable")
 	require.Empty(t, deliveryID, "a failed reservation must not permit delivery")
@@ -149,23 +149,23 @@ func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *t
 	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "2", ClaimToken: "instA", Payload: []byte(`{}`),
 	})
-	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"), "instance A's answer wins")
-	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"),
+	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA", `{}`), "instance A's answer wins")
+	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA", `{}`),
 		"a same-instance duplicate (same token) still loses")
 
 	// The subprocess exits/relaunches: ClearPendingControlRequests drops live blocking controls
 	// without touching durable claims.
 	svc.Output.ClearPendingControlRequests("agent-1")
-	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"),
+	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA", `{}`),
 		"a duplicate of instance A straddling the relaunch (old token) is still deduped")
 
 	// The NEW subprocess re-issues request id "2" -- a fresh INSTANCE minting a distinct token.
 	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "2", ClaimToken: "instB", Payload: []byte(`{}`),
 	})
-	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instB"),
+	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instB", `{}`),
 		"the reissued instance's fresh token claims fresh -- the genuine post-relaunch answer is not withheld")
-	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"),
+	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA", `{}`),
 		"instance A's stale duplicate STILL loses even after instance B claimed -- the reuse window stays closed")
 }
 
@@ -206,10 +206,10 @@ func TestClaimControlResponseAnswerAndCancelSerializeUnderRace(t *testing.T) {
 	}
 }
 
-func claimControlResponseForTest(t *testing.T, output *OutputHandler, agentID, requestID, claimToken string) bool {
+func claimControlResponseForTest(t *testing.T, output *OutputHandler, agentID, requestID, claimToken, requestPayload string) bool {
 	t.Helper()
 	deliveryID, err := output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
-		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
+		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken, RequestPayload: []byte(requestPayload),
 	})
 	require.NoError(t, err)
 	return deliveryID != ""

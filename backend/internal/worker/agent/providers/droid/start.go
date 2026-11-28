@@ -1,13 +1,17 @@
 package droid
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/coder/quartz"
 
@@ -58,8 +62,8 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	if opts.Effort() != "" {
 		args = append(args, "--reasoning-effort", opts.Effort())
 	}
-	if opts.WorkingDir != "" {
-		args = append(args, "--cwd", opts.WorkingDir)
+	if initialCwd := droidInitialCwd(opts); initialCwd != "" {
+		args = append(args, "--cwd", initialCwd)
 	}
 
 	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
@@ -94,6 +98,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		clock:           quartz.NewReal(),
 		launchOpts:      opts,
 		launch:          launchConfig,
+		onTurnEnd:       launchConfig.onTurnEnd,
 		cleanupSettings: cleanupSettings,
 	}
 	if err := a.StartCmd(); err != nil {
@@ -112,18 +117,62 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 
 	if err := a.handshake(opts); err != nil {
 		cleanup()
-		return nil, a.FormatStartupError("initialize_session", err)
+		phase := "initialize_session"
+		if strings.TrimSpace(opts.Session.ForkID()) != "" {
+			phase = "fork_session"
+		}
+		return nil, a.FormatStartupError(phase, err)
 	}
 	return a, nil
 }
 
-// handshake initializes a new session or loads a saved session, then waits for
-// the native reply before a caller can send input.
+// droidInitialCwd returns the --cwd passed when starting Droid. A cross-directory
+// fork starts in ForkSourceWorkingDir so load_session finds the cwd-keyed source
+// session before switching to WorkingDir via droid.change_working_directory.
+func droidInitialCwd(opts agent.Options) string {
+	if strings.TrimSpace(opts.Session.ForkID()) != "" && strings.TrimSpace(opts.Session.ForkSourceWorkingDir()) != "" {
+		return opts.Session.ForkSourceWorkingDir()
+	}
+	return opts.WorkingDir
+}
+
+// handshake initializes a new session, loads a saved session, or forks an
+// existing session, then waits for the native reply before a caller can send
+// input.
 func (a *Agent) handshake(opts agent.Options) error {
-	resumeID := strings.TrimSpace(opts.ResumeSessionID)
-	method := droidMethodLoadSession
-	var params any = loadSessionParams{SessionID: resumeID}
-	if resumeID == "" {
+	if err := opts.ValidateSessionSource(); err != nil {
+		return err
+	}
+	resumeID := strings.TrimSpace(opts.Session.ResumeID())
+	forkID := strings.TrimSpace(opts.Session.ForkID())
+	var (
+		method string
+		params any
+	)
+	switch {
+	case forkID != "":
+		// Suppress replayed notifications across all three fork-handshake steps
+		// (source load, fork, and forked-session load); dispatchFrame clears the
+		// flag on the final leapmux-init reply before live notifications arrive.
+		a.Mu.Lock()
+		a.suppressForkReplay = true
+		a.Mu.Unlock()
+		defer func() {
+			a.Mu.Lock()
+			a.suppressForkReplay = false
+			a.Mu.Unlock()
+		}()
+		forkedID, err := a.forkSessionDuringHandshake(opts, forkID)
+		if err != nil {
+			return err
+		}
+		resumeID = forkedID
+		method = droidMethodLoadSession
+		params = loadSessionParams{SessionID: forkedID}
+	case resumeID != "":
+		method = droidMethodLoadSession
+		params = loadSessionParams{SessionID: resumeID}
+	default:
 		machineID, err := droidMachineID()
 		if err != nil {
 			return err
@@ -166,19 +215,90 @@ func (a *Agent) handshake(opts agent.Options) error {
 	}
 	ctx, cancel := context.WithTimeout(a.Context(), opts.EffectiveStartupTimeout())
 	defer cancel()
+	var initErr error
 	select {
-	case err := <-reply:
-		return err
+	case initErr = <-reply:
 	case <-a.ProcessDone():
 		select {
-		case err := <-reply:
-			return err
+		case initErr = <-reply:
 		default:
+			initErr = errAgentStopped
 		}
-		return errAgentStopped
 	case <-ctx.Done():
-		return ctx.Err()
+		initErr = ctx.Err()
 	}
+	if initErr != nil {
+		return initErr
+	}
+	forkSourceDir := opts.Session.ForkSourceWorkingDir()
+	if forkID != "" &&
+		strings.TrimSpace(forkSourceDir) != "" &&
+		opts.WorkingDir != "" &&
+		forkSourceDir != opts.WorkingDir {
+		if _, err := a.callStartupRPC(
+			droidMethodChangeWorkingDirectory,
+			changeWorkingDirectoryParams{WorkingDirectory: opts.WorkingDir},
+			opts.EffectiveStartupTimeout(),
+		); err != nil {
+			return fmt.Errorf("change working directory to %q after fork: %w", opts.WorkingDir, err)
+		}
+	}
+	return nil
+}
+
+// forkSessionDuringHandshake loads the source session into Droid (required
+// because droid.fork_session operates on the active session) and invokes
+// droid.fork_session, returning the newly created session ID without emitting
+// the source session ID to the Worker.
+func (a *Agent) forkSessionDuringHandshake(opts agent.Options, sourceSessionID string) (string, error) {
+	timeout := opts.EffectiveStartupTimeout()
+	if _, err := a.callStartupRPC(droidMethodLoadSession, loadSessionParams{SessionID: sourceSessionID}, timeout); err != nil {
+		return "", fmt.Errorf("load source session %q before fork: %w", sourceSessionID, err)
+	}
+	forkResp, err := a.callStartupRPC(droidMethodForkSession, struct{}{}, timeout)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		NewSessionID string `json:"newSessionId"`
+		SessionID    string `json:"sessionId"`
+		Session      struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(forkResp.Result, &result); err != nil {
+		return "", fmt.Errorf("read droid fork_session result: %w", err)
+	}
+	newID := cmp.Or(
+		strings.TrimSpace(result.NewSessionID),
+		strings.TrimSpace(result.SessionID),
+		strings.TrimSpace(result.Session.ID),
+	)
+	if newID == "" {
+		return "", errors.New("droid fork_session returned no new session id")
+	}
+	if newID == sourceSessionID {
+		return "", fmt.Errorf("droid fork_session returned the source session ID %q", sourceSessionID)
+	}
+	return newID, nil
+}
+
+// callStartupRPC sends one JSON-RPC request during startup and awaits its reply.
+func (a *Agent) callStartupRPC(method string, params any, timeout time.Duration) (droidEnvelope, error) {
+	id := a.nextRequestID()
+	reply := a.registerReply(id)
+	defer a.unregisterReply(id)
+	if err := a.writeRequest(id, method, params); err != nil {
+		return droidEnvelope{}, err
+	}
+	resp, err := providerkit.AwaitReply(&a.Process, a.Context(), reply, method, timeout)
+	if err != nil {
+		return droidEnvelope{}, err
+	}
+	if resp.Error != nil {
+		return droidEnvelope{}, resp.Error
+	}
+	return resp, nil
 }
 
 // droidMachineID returns a stable machine identifier. The CLI requires it on

@@ -2,256 +2,555 @@ package cmd
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync/atomic"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
-func RunWhoami(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	fs := flagSet(cmd, &hub)
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+func newWorkspaceCommand() *cobra.Command {
+	return cli.SetAliases(cli.Group("workspace", "List, create, organize, export, apply, and delete workspaces",
+		cli.NewLeaf(cli.Leaf{
+			Use:     "list",
+			Aliases: []string{"ls"},
+			Short:   "List your workspaces",
+			Examples: []cli.Example{
+				{Command: "leapmux workspace list"},
+				{Comment: "Include archived workspaces.", Command: "leapmux workspace list --archived"},
+				{Comment: "Print only the ids.", Command: "leapmux workspace list -q"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.Bool("archived", false, "include archived workspaces")
+			},
+			Run: runWorkspaceList,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "get [workspace]",
+			Short: "Show one workspace (default: the workspace of this tab)",
+			Examples: []cli.Example{
+				{Command: "leapmux workspace get"},
+				{Command: `leapmux workspace get "title:Release 1.4"`},
+			},
+			Complete: completeTargets,
+			Run:      runWorkspaceGet,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "create <title>",
+			Mutates: true,
+			Short:   "Create a workspace",
+			Next: []string{
+				`leapmux agent open --workspace <id>`,
+				`leapmux terminal open --workspace <id>`,
+				`leapmux tree --workspace <id>`,
+			},
+			Examples: []cli.Example{
+				{Comment: "Create a workspace and keep its id.", Command: `W=$(leapmux workspace create "Release 1.4" -q)`},
+			},
+			Run: runWorkspaceCreate,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "rename <workspace> <title>",
+			Short:   "Rename a workspace",
+			Mutates: true,
+			Examples: []cli.Example{
+				{Command: `leapmux workspace rename self "Release 1.5"`},
+			},
+			Complete: completeTargets,
+			Run:      runWorkspaceRename,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "archive <workspace>",
+			Short:   "Archive a workspace (moves it to the Archived section and pauses its tabs)",
+			Mutates: true,
+			Examples: []cli.Example{
+				{Command: "leapmux workspace archive 9f3kQ2aB"},
+			},
+			Complete: completeTargets,
+			Run:      runWorkspaceArchive,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "unarchive <workspace>",
+			Short:   "Restore an archived workspace back to an active section",
+			Mutates: true,
+			Examples: []cli.Example{
+				{Command: "leapmux workspace unarchive 9f3kQ2aB"},
+				{Command: `leapmux workspace unarchive 9f3kQ2aB --section "Client Work"`},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("section", "", `destination active section (default: "In progress")`)
+			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"section": completeSectionFlag,
+			},
+			Complete: completeTargets,
+			Run:      runWorkspaceUnarchive,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "move <workspace>",
+			Aliases: []string{"mv"},
+			Short:   "Move a workspace to another sidebar section or reorder it within a section",
+			Mutates: true,
+			Examples: []cli.Example{
+				{Command: `leapmux workspace move 9f3kQ2aB --section "Client Work" --last`},
+				{Command: `leapmux workspace move 9f3kQ2aB --first`},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("section", "", "destination sidebar section (id, prefix, or name; default: current section)")
+				fs.Bool("first", false, "put the workspace first in the section")
+				fs.Bool("last", false, "put the workspace last in the section")
+				fs.String("before", "", "put the workspace before this workspace in the section")
+				fs.String("after", "", "put the workspace after this workspace in the section")
+			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"section": completeSectionFlag,
+				"before":  completeWorkspacePositionFlag,
+				"after":   completeWorkspacePositionFlag,
+			},
+			Complete: completeTargets,
+			Run:      runWorkspaceMove,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:         "delete <workspace>",
+			Aliases:     []string{"rm"},
+			Short:       "Delete a workspace and close every tab in it",
+			Mutates:     true,
+			Destructive: true,
+			Examples: []cli.Example{
+				{Command: "leapmux workspace delete 9f3kQ2aB"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.Bool("allow-busy", false, allowBusyFlagHelp)
+				fs.Bool(allowSelfFlag, false, "delete the workspace even when this tab lives in it, which ends this tab's process too")
+			},
+			Complete: completeTargets,
+			Run:      runWorkspaceDelete,
+		}),
+		newWorkspaceExportCommand(),
+		newWorkspaceApplyCommand(),
+	), "ws")
+}
+
+// workspaceRow is one workspace in a result.
+type workspaceRow struct {
+	ID        string `json:"id" table:"ID,short"`
+	Title     string `json:"title" table:"TITLE"`
+	Archived  bool   `json:"archived,omitempty"`
+	CreatedBy string `json:"created_by,omitempty"`
+	CreatedAt string `json:"created_at,omitempty" table:"CREATED,dim"`
+}
+
+func workspaceRowOf(ws *leapmuxv1.Workspace) workspaceRow {
+	return workspaceRow{
+		ID:        ws.GetId(),
+		Title:     ws.GetTitle(),
+		CreatedBy: ws.GetCreatedBy(),
+		CreatedAt: formatTime(ws.GetCreatedAt()),
 	}
-	c, err := requireClient(hub)
+}
+
+// runWorkspaceList enumerates the caller's own workspaces. The hub takes the
+// tenant from the session, so the command needs no target at all. Archived
+// workspaces are hidden unless --archived is passed.
+func runWorkspaceList(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if c.IsWorkerIPC() {
-		ipc, ipcErr := c.ControlIPCService()
-		if ipcErr != nil {
-			return control.EmitErrorWith("invalid_request", ipcErr)
+	defer s.Close()
+	var (
+		resp     leapmuxv1.ListWorkspacesResponse
+		sections *sectionIndex
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		return hubCallUnary(gctx, s.c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, &leapmuxv1.ListWorkspacesRequest{}, &resp)
+	})
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var serr error
+		sections, serr = gs.loadArchivedSectionIndex()
+		return serr
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	includeArchived := boolFlag(inv, "archived")
+	rows := make([]workspaceRow, 0, len(resp.GetWorkspaces()))
+	for _, ws := range resp.GetWorkspaces() {
+		isArchived := sections.isArchived(ws.GetId())
+		if isArchived && !includeArchived {
+			continue
 		}
-		resp, err := ipc.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
+		row := workspaceRowOf(ws)
+		row.Archived = isArchived
+		rows = append(rows, row)
+	}
+	return struct {
+		Workspaces []workspaceRow `json:"workspaces"`
+	}{rows}, nil
+}
+
+func runWorkspaceGet(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	wsInput := inv.Arg("workspace")
+	wsID := resolve.ExplicitID(resolve.KindWorkspace, wsInput)
+	if wsID == "" {
+		target, err := s.resolveWorkspaceOrDefault(wsInput)
 		if err != nil {
-			return control.EmitErrorWith("rpc_failed", err)
+			return nil, err
 		}
-		// Hand-projected so the tab_type enum lands as a string per the
-		// CLI's enum-projection convention; encoding/json on the raw
-		// proto message would emit ordinals.
-		// No workspace_id and no scope: the bearer is scoped to the user and
-		// to the minting worker, not to a workspace, and the spawn context
-		// carries the stable tab id instead -- `tab get --tab-id <id>` derives
-		// the workspace from it and stays correct across a tab move.
-		return control.EmitData(map[string]any{
-			"user_id":   resp.GetUserId(),
-			"username":  resp.GetUsername(),
-			"worker_id": resp.GetWorkerId(),
-			"tab_id":    resp.GetTabId(),
-			"tab_type":  tabTypeName(resp.GetTabType()),
+		wsID = target.ID
+	}
+	var resp leapmuxv1.GetWorkspaceResponse
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: wsID}, &resp); err != nil {
+		return nil, err
+	}
+	return workspaceRowOf(resp.GetWorkspace()), nil
+}
+
+// runWorkspaceCreate provisions a new workspace for the authenticated user.
+// The hub takes the owner from the session.
+func runWorkspaceCreate(inv *cli.Invocation) (any, error) {
+	title := strings.TrimSpace(inv.Arg("title"))
+	if title == "" {
+		return nil, cli.Usagef("the title is empty")
+	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	var resp leapmuxv1.CreateWorkspaceResponse
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure, &leapmuxv1.CreateWorkspaceRequest{Title: title}, &resp); err != nil {
+		return nil, err
+	}
+	return workspaceRow{ID: resp.GetWorkspaceId(), Title: title}, nil
+}
+
+func runWorkspaceRename(inv *cli.Invocation) (any, error) {
+	title := strings.TrimSpace(inv.Arg("title"))
+	if title == "" {
+		return nil, cli.Usagef("the title is empty")
+	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	target, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+	if err != nil {
+		return nil, err
+	}
+	var resp leapmuxv1.RenameWorkspaceResponse
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure, &leapmuxv1.RenameWorkspaceRequest{WorkspaceId: target.ID, Title: title}, &resp); err != nil {
+		return nil, err
+	}
+	return workspaceRow{ID: target.ID, Title: title}, nil
+}
+
+type workspaceMoveResult struct {
+	ID          string `json:"id"`
+	SectionID   string `json:"section_id"`
+	SectionName string `json:"section_name,omitempty"`
+	Position    string `json:"position,omitempty"`
+	Archived    bool   `json:"archived"`
+}
+
+func findSectionByType(sections []*leapmuxv1.Section, want leapmuxv1.SectionType) *leapmuxv1.Section {
+	for _, sec := range sections {
+		if sec.GetSectionType() == want {
+			return sec
+		}
+	}
+	return nil
+}
+
+func (s *session) resolveWorkspaceAndSections(input string, verifyExists bool) (resolve.Target, *leapmuxv1.ListSectionsResponse, error) {
+	var (
+		target resolve.Target
+		list   *leapmuxv1.ListSectionsResponse
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var err error
+		if verifyExists {
+			target, err = gs.resolveExistingWorkspace(input)
+		} else {
+			target, err = gs.resolveOne(resolve.KindWorkspace, input)
+		}
+		return err
+	})
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var err error
+		list, err = gs.listSections()
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		return resolve.Target{}, nil, err
+	}
+	return target, list, nil
+}
+
+func (s *session) moveWorkspace(wsID string, destSec *leapmuxv1.Section, pos string, curState leapmuxv1.WorkspaceArchiveState) (workspaceMoveResult, error) {
+	var resp leapmuxv1.MoveWorkspaceResponse
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure, &leapmuxv1.MoveWorkspaceRequest{
+		WorkspaceId:          wsID,
+		SectionId:            destSec.GetId(),
+		Position:             pos,
+		ExpectedArchiveState: curState,
+	}, &resp); err != nil {
+		return workspaceMoveResult{}, err
+	}
+	return workspaceMoveResult{
+		ID:          wsID,
+		SectionID:   destSec.GetId(),
+		SectionName: destSec.GetName(),
+		Position:    pos,
+		Archived:    destSec.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+	}, nil
+}
+
+func runWorkspaceArchive(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	target, list, err := s.resolveWorkspaceAndSections(inv.Arg("workspace"), false)
+	if err != nil {
+		return nil, err
+	}
+	archivedSec := findSectionByType(list.GetSections(), leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED)
+	if archivedSec == nil {
+		return nil, cli.Newf(cli.CodeNotFound, "no Archived sidebar section exists for this account")
+	}
+	secIdx := indexSections(list)
+	curState := secIdx.archiveState(target.ID)
+	if curState == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+		return workspaceMoveResult{ID: target.ID, SectionID: archivedSec.GetId(), SectionName: archivedSec.GetName(), Archived: true}, nil
+	}
+	return s.moveWorkspace(target.ID, archivedSec, "", curState)
+}
+
+func runWorkspaceUnarchive(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	target, list, err := s.resolveWorkspaceAndSections(inv.Arg("workspace"), true)
+	if err != nil {
+		return nil, err
+	}
+	var destSec *leapmuxv1.Section
+	if inv.Changed("section") {
+		destSec, err = resolveSection(list.GetSections(), stringFlag(inv, "section"))
+		if err != nil {
+			return nil, err
+		}
+		if destSec.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED {
+			return nil, cli.Usagef("destination section %q is the Archived section", destSec.GetName())
+		}
+	} else {
+		destSec = findSectionByType(list.GetSections(), leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+		if destSec == nil {
+			return nil, cli.Newf(cli.CodeNotFound, "no In progress sidebar section exists for this account")
+		}
+	}
+	secIdx := indexSections(list)
+	curState := secIdx.archiveState(target.ID)
+	if curState == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE && !inv.Changed("section") {
+		if curSec := secIdx.sectionOf(target.ID); curSec != nil {
+			destSec = curSec
+		}
+		return workspaceMoveResult{ID: target.ID, SectionID: destSec.GetId(), SectionName: destSec.GetName(), Archived: false}, nil
+	}
+	return s.moveWorkspace(target.ID, destSec, "", curState)
+}
+
+func runWorkspaceMove(inv *cli.Invocation) (any, error) {
+	first := boolFlag(inv, "first")
+	last := boolFlag(inv, "last")
+	beforeRaw := strings.TrimSpace(stringFlag(inv, "before"))
+	afterRaw := strings.TrimSpace(stringFlag(inv, "after"))
+	if inv.Changed("before") && beforeRaw == "" {
+		return nil, cli.Usagef("--before must not be empty")
+	}
+	if inv.Changed("after") && afterRaw == "" {
+		return nil, cli.Usagef("--after must not be empty")
+	}
+	hasPosition := first || last || beforeRaw != "" || afterRaw != ""
+	spec, err := parsePositionSpec(first, last, beforeRaw, afterRaw)
+	if err != nil {
+		return nil, cli.Usagef("%s", err.Error())
+	}
+	if !inv.Changed("section") && !hasPosition {
+		return nil, cli.Usagef("specify --section or a position flag (--first, --last, --before, --after)")
+	}
+
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+
+	var (
+		target resolve.Target
+		list   *leapmuxv1.ListSectionsResponse
+		refWS  resolve.Target
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var rerr error
+		target, rerr = gs.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+		return rerr
+	})
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var lerr error
+		list, lerr = gs.listSections()
+		return lerr
+	})
+	if spec.refID != "" {
+		refInput := spec.refID
+		g.Go(func() error {
+			gs := *s
+			gs.ctx = gctx
+			var rerr error
+			refWS, rerr = gs.resolveOne(resolve.KindWorkspace, refInput)
+			return rerr
 		})
 	}
-
-	/*
-		The hub check, for the same reason `auth status` runs one: printing the
-		client's cached identity answers what the credential FILE says, and a
-		revoked credential's file keeps its username until something asks the
-		hub. hubCheck (shared with `auth status`) settles it -- confirmed
-		answers carry the hub's own username and admin flag; a refusal is an
-		honest not-logged-in; an unreachable or account:read-less credential
-		falls back to the cached identity with a warning that states what was
-		not verified.
-
-		is_admin stays present on the fallback (as null): the hub-confirmed
-		and fallback endings carry the same identity fields, and null is the
-		honest value for the one this ending cannot know -- a fabricated
-		false would tell an administrator's own machine the wrong flag
-		during an outage. The worker-IPC ending is the exception, and states
-		so where it emits (above): it answers from the spawn context the
-		worker holds, which carries no hub_url and no admin flag.
-	*/
-	user, warning, outcome, err := hubCheck(c)
-	switch outcome {
-	case hubCheckRefused:
-		return control.EmitErrorWith("not_logged_in", err)
-	case hubCheckFailed:
-		return control.EmitErrorWith("rpc_failed", err)
-	case hubCheckLocalFallback:
-		return control.EmitData(map[string]any{
-			"hub_url":  c.HubURL,
-			"user_id":  c.UserID,
-			"username": c.Username,
-			"is_admin": nil,
-			"warning":  warning,
-		})
-	case hubCheckConfirmed:
-		// The confirmed emit below is this outcome's return.
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
-	return control.EmitData(map[string]any{
-		"hub_url":  c.HubURL,
-		"user_id":  user.GetId(),
-		"username": user.GetUsername(),
-		"is_admin": user.GetIsAdmin(),
-	})
+	secIdx := indexSections(list)
+	var destSec *leapmuxv1.Section
+	if inv.Changed("section") {
+		destSec, err = resolveSection(list.GetSections(), stringFlag(inv, "section"))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		destSec = secIdx.sectionOf(target.ID)
+		if destSec == nil {
+			destSec = findSectionByType(list.GetSections(), leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+		}
+		if destSec == nil {
+			return nil, cli.Newf(cli.CodeNotFound, "workspace %s is not assigned to a sidebar section; pass --section <section>", cli.ShortID(target.ID))
+		}
+	}
+	if spec.refID != "" {
+		spec.refID = refWS.ID
+	}
+	pos := ""
+	if hasPosition {
+		var peers []rankedItem
+		for _, item := range list.GetItems() {
+			if item.GetSectionId() == destSec.GetId() && item.GetWorkspaceId() != target.ID {
+				peers = append(peers, rankedItem{ID: item.GetWorkspaceId(), Position: item.GetPosition()})
+			}
+		}
+		pos, err = computeRankedPosition(peers, target.ID, spec, "workspace")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s.moveWorkspace(target.ID, destSec, pos, secIdx.archiveState(target.ID))
 }
 
-// RunWorkspaceList enumerates the caller's own workspaces. The hub
-// takes the tenant from the session, so the command needs no entity ids
-// at all -- `workspace list` is a complete invocation, from a laptop or
-// from inside a worker-spawned agent.
-func RunWorkspaceList(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		var resp leapmuxv1.ListWorkspacesResponse
-		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
-			&leapmuxv1.ListWorkspacesRequest{}, &resp,
-			func() any {
-				rows := make([]map[string]any, 0, len(resp.GetWorkspaces()))
-				for _, ws := range resp.GetWorkspaces() {
-					rows = append(rows, workspaceToMap(ws))
-				}
-				return rows
-			})
-	})
+// workspaceDeleteResult is the result of `workspace delete`.
+type workspaceDeleteResult struct {
+	ID string `json:"id"`
+	// Status is "ok" when every Worker cleaned up, and "partial" when at
+	// least one failed.
+	Status    string          `json:"status"`
+	WorkerIDs []string        `json:"worker_ids"`
+	Cleanup   []workerCleanup `json:"cleanup"`
 }
 
-// RunWorkspaceGet looks up a single workspace. --workspace-id is the
-// canonical input, but the resolver also accepts --tab-id /
-// --tile-id (LocateTile / LocateTab derives the workspace).
-func RunWorkspaceGet(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		var resp leapmuxv1.GetWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
-			&leapmuxv1.GetWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp,
-			func() any { return workspaceToMap(resp.GetWorkspace()) })
-	})
+// workerCleanup is the outcome of one Worker's cleanup.
+type workerCleanup struct {
+	WorkerID string `json:"worker_id" table:"WORKER,short"`
+	Status   string `json:"status" table:"STATUS,state"`
+	Error    string `json:"error,omitempty" table:"ERROR"`
 }
 
-// workspaceToMap projects a Workspace into a JSON-friendly map. An explicit map
-// rather than the proto itself, so created_at prints as the same formatted
-// string every other listing verb prints (putTime), not as a protojson
-// Timestamp object.
-func workspaceToMap(ws *leapmuxv1.Workspace) map[string]any {
-	row := map[string]any{
-		"id":         ws.GetId(),
-		"created_by": ws.GetCreatedBy(),
-		"title":      ws.GetTitle(),
-	}
-	putTime(row, "created_at", ws.GetCreatedAt())
-	return row
-}
-
-// RunWorkspaceCreate provisions a new workspace for the authenticated
-// user. The hub takes the owner from the session, so the command needs
-// no entity ids at all -- `workspace create --title X` is a complete
-// invocation.
-func RunWorkspaceCreate(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, title string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.StringVar(&title, "title", "", "workspace title (required)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	if title == "" {
-		return control.EmitError("invalid_request", "--title is required")
-	}
-	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		var resp leapmuxv1.CreateWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
-			&leapmuxv1.CreateWorkspaceRequest{Title: title}, &resp,
-			func() any { return map[string]string{"workspace_id": resp.GetWorkspaceId()} })
-	})
-}
-
-// RunWorkspaceRename retitles a workspace. --workspace-id resolves
-// from --tab-id / --tile-id when only one of those is given.
-func RunWorkspaceRename(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, title string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.StringVar(&title, "title", "", "new title (required)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	if title == "" {
-		return control.EmitError("invalid_request", "--title is required")
-	}
-	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		var resp leapmuxv1.RenameWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
-			&leapmuxv1.RenameWorkspaceRequest{WorkspaceId: got.WorkspaceID, Title: title}, &resp,
-			func() any { return map[string]string{"workspace_id": got.WorkspaceID} })
-	})
-}
-
-// RunWorkspaceDelete drops the workspace row and fans out
-// CleanupWorkspace to every worker that hosted a tab. --workspace-id
-// can be derived from --tab-id / --tile-id via the resolver.
+// runWorkspaceDelete drops the workspace row and fans out CleanupWorkspace
+// to every worker that hosted a tab.
 //
-// The hub-side delete cascades into a worker-side CleanupWorkspace
-// fan-out that kills every PTY in the workspace — so running this
-// from a terminal tab inside the target workspace will sever the
-// caller's own shell mid-response. `guardWorkspaceDelete` rejects
-// that case unless --force is supplied.
-func RunWorkspaceDelete(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	var force bool
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.BoolVar(&force, "force", false, "delete even if the calling tab lives in the target workspace (would kill the caller's own PTY)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+// The hub-side delete cascades into a worker-side CleanupWorkspace fan-out
+// that kills every PTY in the workspace — so running this from a terminal
+// tab inside the target workspace will sever the caller's own shell
+// mid-response. `guardWorkspaceDelete` rejects that case unless
+// --allow-self is supplied.
+func runWorkspaceDelete(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
 	}
-	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		if err := guardWorkspaceDelete(ctx, c, got.WorkspaceID, force); err != nil {
-			return err
+	defer s.Close()
+	target, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+	if err != nil {
+		return nil, err
+	}
+	if err := guardWorkspaceDelete(s.ctx, s.c, target.ID, boolFlag(inv, allowSelfFlag)); err != nil {
+		return nil, err
+	}
+	if !boolFlag(inv, "allow-busy") {
+		cc, err := s.openCRDT(target.ID)
+		if err != nil {
+			return nil, err
 		}
-		var resp leapmuxv1.DeleteWorkspaceResponse
-		if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp); err != nil {
-			return control.EmitErrorWith(classifyHubError(err), err)
+		wsTabs := liveTabsOfWorkspace(cc.bs.State, target.ID)
+		if err := guardBulkCloseTabs(cc, wsTabs, false); err != nil {
+			return nil, err
 		}
+	}
+	var resp leapmuxv1.DeleteWorkspaceResponse
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: target.ID}, &resp); err != nil {
+		return nil, err
+	}
 
-		// Mirror the frontend's two-step delete: the hub drops the workspace
-		// row and returns each hosting worker WITH the tabs it must tear down
-		// (read inside the delete transaction), then we fan out
-		// CleanupWorkspace over E2EE. The fan-out logic is in
-		// runWorkspaceCleanupFanout so it can be exercised by unit tests
-		// without standing up a real E2EE worker harness.
-		//
-		// No pre-delete ListTabs read any more: this command used to resolve
-		// its own list beforehand and swallow that read's error to nil, which
-		// silently degraded the whole fan-out to "close nothing".
-		status, entries := runWorkspaceCleanupFanout(ctx, resp.GetWorkerTabs(), cliCleanupCaller(c))
+	// Mirror the frontend's two-step delete: the hub drops the workspace
+	// row and returns each hosting worker WITH the tabs it must tear down
+	// (read inside the delete transaction), then we fan out
+	// CleanupWorkspace over E2EE. The fan-out logic is in
+	// runWorkspaceCleanupFanout so it can be exercised by unit tests
+	// without standing up a real E2EE worker harness.
+	//
+	// No pre-delete ListTabs read any more: this command used to resolve
+	// its own list beforehand and swallow that read's error to nil, which
+	// silently degraded the whole fan-out to "close nothing".
+	status, entries := runWorkspaceCleanupFanout(s.ctx, resp.GetWorkerTabs(), cliCleanupCaller(s.c))
 
-		workerIDs := make([]string, 0, len(resp.GetWorkerTabs()))
-		for _, wt := range resp.GetWorkerTabs() {
-			workerIDs = append(workerIDs, wt.GetWorkerId())
-		}
-		return control.EmitData(map[string]any{
-			"workspace_id": got.WorkspaceID,
-			"worker_ids":   workerIDs,
-			"status":       status,
-			"cleanup":      entries,
-		})
-	})
+	workerIDs := make([]string, 0, len(resp.GetWorkerTabs()))
+	for _, wt := range resp.GetWorkerTabs() {
+		workerIDs = append(workerIDs, wt.GetWorkerId())
+	}
+	return workspaceDeleteResult{ID: target.ID, Status: status, WorkerIDs: workerIDs, Cleanup: entries}, nil
 }
 
 // cleanupCaller is the seam workspace-delete uses to fan out a
@@ -263,15 +562,37 @@ type cleanupCaller func(ctx context.Context, workerID string, tabs []*leapmuxv1.
 // cliCleanupCaller wires runWorkspaceCleanupFanout to the production
 // transport: every worker_id gets its own E2EE channel and a
 // CleanupWorkspace inner-RPC.
-func cliCleanupCaller(c *control.Client) cleanupCaller {
+func cliCleanupCaller(c control.Peer) cleanupCaller {
 	return func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		req := &leapmuxv1.CleanupWorkspaceRequest{Tabs: tabs}
 		var resp leapmuxv1.CleanupWorkspaceResponse
-		if err := callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, req, &resp); err != nil {
+		if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, req, &resp); err != nil {
 			return nil, err
 		}
 		return &resp, nil
 	}
+}
+
+// liveTabsOfWorkspace collects every live tab placed in wsID (both its main
+// tile tree and any live floating windows anchored in wsID), sorted by TabID.
+func liveTabsOfWorkspace(state *leapmuxv1.UserMaterialized, wsID string) []crdt.TabRef {
+	var out []crdt.TabRef
+	for _, t := range state.GetTabs() {
+		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
+			continue
+		}
+		tileID := t.GetTileId().GetValue()
+		if tileID == "" {
+			continue
+		}
+		if nodeWorkspaceFromState(state, tileID) == wsID {
+			out = append(out, crdt.TabRef{TabID: t.GetTabId(), TabType: t.GetTabType()})
+		}
+	}
+	slices.SortFunc(out, func(a, b crdt.TabRef) int {
+		return strings.Compare(a.TabID, b.TabID)
+	})
+	return out
 }
 
 // runWorkspaceCleanupFanout invokes call per worker in parallel and
@@ -289,21 +610,18 @@ func cliCleanupCaller(c *control.Client) cleanupCaller {
 // so they can decide whether to retry only the failures or rerun the
 // whole delete. errgroup.Group (no context cancellation) is used so
 // one worker's failure doesn't cancel the others' in-flight calls.
-func runWorkspaceCleanupFanout(ctx context.Context, workerTabs []*leapmuxv1.WorkerTabs, call cleanupCaller) (string, []map[string]any) {
-	entries := make([]map[string]any, len(workerTabs))
+func runWorkspaceCleanupFanout(ctx context.Context, workerTabs []*leapmuxv1.WorkerTabs, call cleanupCaller) (string, []workerCleanup) {
+	entries := make([]workerCleanup, len(workerTabs))
 	var failed atomic.Bool
 	var g errgroup.Group
 	g.SetLimit(8)
 	for i, wt := range workerTabs {
 		g.Go(func() error {
-			entry := map[string]any{"worker_id": wt.GetWorkerId()}
-			_, err := call(ctx, wt.GetWorkerId(), wt.GetTabs())
-			if err != nil {
-				entry["status"] = "failed"
-				entry["error"] = err.Error()
+			entry := workerCleanup{WorkerID: wt.GetWorkerId(), Status: "ok"}
+			if _, err := call(ctx, wt.GetWorkerId(), wt.GetTabs()); err != nil {
+				entry.Status = "failed"
+				entry.Error = err.Error()
 				failed.Store(true)
-			} else {
-				entry["status"] = "ok"
 			}
 			entries[i] = entry
 			return nil

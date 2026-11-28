@@ -375,14 +375,6 @@ func turnCompletedEvent(seq uint64, turnID, status string) []byte {
 	return runtimeEvent(seq, "turn.completed", turnID, "", map[string]any{"turn": map[string]any{"id": turnID, "status": status, "duration_ms": 1200}})
 }
 
-// mustJSON marshals a test value.
-func mustJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	require.NoError(t, err)
-	return encoded
-}
-
 // decodeJSON unmarshals a persisted row for an assertion.
 func decodeJSON(t *testing.T, raw []byte) map[string]any {
 	t.Helper()

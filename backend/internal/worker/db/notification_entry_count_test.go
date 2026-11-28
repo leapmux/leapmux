@@ -159,6 +159,38 @@ func TestNotificationEntryCountSurvivesResumeCloning(t *testing.T) {
 	assert.Equal(t, int64(2), count)
 }
 
+func TestCloneAgentMessagesForResumePreservesFromInputQueue(t *testing.T) {
+	t.Parallel()
+	store := newNotificationEntryStore(t)
+	queries := gendb.New(store)
+	ctx := t.Context()
+
+	_, err := store.ExecContext(ctx, `
+		INSERT INTO messages (id, agent_id, seq, source, content, content_compression, from_input_queue)
+		VALUES
+			('from-queue', 'root', 10, 1, X'7B7D', 1, 1),
+			('from-provider', 'root', 11, 1, X'7B7D', 1, 0)`)
+	require.NoError(t, err)
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
+		ID: "resume-target", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	cloned, err := queries.CloneAgentMessagesForResume(ctx, gendb.CloneAgentMessagesForResumeParams{
+		TargetAgentID: "resume-target", SourceAgentID: "root",
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, cloned, int64(2))
+
+	rows, err := queries.ListAllMessagesByAgentID(ctx, gendb.ListAllMessagesByAgentIDParams{
+		AgentID: "resume-target", Seq: 9,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, int64(10), rows[0].Seq)
+	assert.True(t, rows[0].FromInputQueue, "queue-accepted message must retain from_input_queue = true after resume clone")
+	assert.Equal(t, int64(11), rows[1].Seq)
+	assert.False(t, rows[1].FromInputQueue, "provider message must retain from_input_queue = false after resume clone")
+}
+
 // The generated column is not writable: no INSERT or UPDATE may spell it.
 func TestNotificationEntryCountRefusesDirectOverrides(t *testing.T) {
 	t.Parallel()

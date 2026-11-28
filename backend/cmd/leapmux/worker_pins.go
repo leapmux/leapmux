@@ -1,86 +1,200 @@
 package main
 
 import (
+	"cmp"
 	"context"
-	"flag"
 	"fmt"
-	"os"
+	"slices"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
+	"github.com/leapmux/leapmux/internal/cli"
+	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
 
-// crossWorkerPinsOpTimeout limits pin-store file transactions.
+// crossWorkerPinsOpTimeout limits the time a command spends in the pin store.
 const crossWorkerPinsOpTimeout = 10 * time.Second
 
-// runWorkerCrossWorkerPins implements `leapmux worker cross-worker-pins
-// list|remove [--target-worker-id <id>] [--data-dir <dir>]`.
+// newCrossWorkerPinsCommand builds `leapmux daemon worker cross-worker-pins`.
 //
-// The TOFU pin store lives next to the worker's data directory so this
-// command runs entirely against local files; no worker process needs to
-// be running. Used to clear a pin after a mismatch, once the presented
-// fingerprint matches the one the target worker logs when it starts.
-func runWorkerCrossWorkerPins(args []string) error {
-	if len(args) == 0 {
-		return crossWorkerPinsUsage(fmt.Errorf("missing subcommand"))
+// The trust-on-first-use (TOFU) pin store lives in the Worker's data
+// directory, so these commands work on local files alone; no Worker process
+// needs to run. Remove a pin after a mismatch, once the presented fingerprint
+// matches the one that the sibling Worker logs when it starts.
+func newCrossWorkerPinsCommand() *cobra.Command {
+	group := cli.Group("cross-worker-pins", "List and remove the keys this Worker pinned for its sibling Workers")
+	group.Long = `List and remove the keys this Worker pinned for its sibling Workers.
+
+The Worker pins the keys of a sibling Worker the first time it connects to it,
+and refuses a later connection whose keys differ. After you verify a sibling
+Worker's new keys, remove its pin. The next verified connection pins the new keys.`
+	group.AddCommand(
+		newPinStoreLeaf(cli.Leaf{
+			Use:     "list",
+			Aliases: []string{"ls"},
+			Short:   "List the pinned keys of every sibling Worker",
+			Examples: []cli.Example{
+				{Command: "leapmux daemon worker cross-worker-pins list"},
+			},
+		}, func(ctx context.Context, _ *cli.Invocation, store *tofupins.Store) (any, error) {
+			pins, err := store.Snapshot(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return crossWorkerPinList{Pins: crossWorkerPinRows(pins)}, nil
+		}),
+		newPinStoreLeaf(cli.Leaf{
+			Use:   "get <worker-id>",
+			Short: "Print the pinned keys of one sibling Worker",
+			Args:  map[string]string{"worker-id": pinStoreWorkerIDHelp},
+			Examples: []cli.Example{
+				{Command: "leapmux daemon worker cross-worker-pins get 0193c0de-7a1b-7c2d-8e3f-4a5b6c7d8e9f"},
+			},
+		}, func(ctx context.Context, inv *cli.Invocation, store *tofupins.Store) (any, error) {
+			pin, err := lookupCrossWorkerPin(ctx, store, inv.Arg("worker-id"))
+			if err != nil {
+				return nil, err
+			}
+			return pin, nil
+		}),
+		newPinStoreLeaf(cli.Leaf{
+			Use:         "remove <worker-id>",
+			Aliases:     []string{"rm"},
+			Short:       "Remove the pinned keys of one sibling Worker",
+			Mutates:     true,
+			Destructive: true,
+			Args:        map[string]string{"worker-id": pinStoreWorkerIDHelp},
+			Examples: []cli.Example{
+				{Command: "leapmux daemon worker cross-worker-pins remove 0193c0de-7a1b-7c2d-8e3f-4a5b6c7d8e9f"},
+			},
+		}, func(ctx context.Context, inv *cli.Invocation, store *tofupins.Store) (any, error) {
+			id := inv.Arg("worker-id")
+			if _, err := lookupCrossWorkerPin(ctx, store, id); err != nil {
+				return nil, err
+			}
+			if err := store.Remove(ctx, id); err != nil {
+				return nil, fmt.Errorf("remove the pin of %s: %w", id, err)
+			}
+			return crossWorkerPinRemoved{Removed: id}, nil
+		}),
+	)
+	return group
+}
+
+// pinStoreWorkerIDHelp describes the <worker-id> argument of the pin store
+// commands.
+const pinStoreWorkerIDHelp = "The full id of the sibling Worker, as `leapmux daemon worker cross-worker-pins list` prints it."
+
+// newPinStoreLeaf builds one command of the pin store: the instance
+// selection flags of the Worker, and run on the opened store.
+func newPinStoreLeaf(leaf cli.Leaf, run func(context.Context, *cli.Invocation, *tofupins.Store) (any, error)) *cobra.Command {
+	var flags *config.Flags
+	leaf.Flags = func(fs *pflag.FlagSet) {
+		// The data directory holds the store, so the command takes the flags
+		// that select it, as every other command of an instance does.
+		flags = config.NewFlags(config.LoadOptions{CLIFlags: instanceSelectionFlags})
+		flags.Register(fs)
 	}
-	sub := args[0]
-	rest := args[1:]
-	fs := flag.NewFlagSet("leapmux worker cross-worker-pins "+sub, flag.ContinueOnError)
-	var targetWorkerID, dataDir string
-	fs.StringVar(&targetWorkerID, "target-worker-id", "", "sibling worker id (required for show/remove)")
-	fs.StringVar(&dataDir, "data-dir", "", "worker data directory (defaults to the worker configuration: LEAPMUX_WORKER_DATA_DIR, data_dir in worker.yaml, or ~/.config/leapmux/worker)")
-	if err := fs.Parse(rest); err != nil {
-		return err
-	}
-	if dataDir == "" {
-		cfg, _, err := config.Load([]string{})
+	leaf.Run = func(inv *cli.Invocation) (any, error) {
+		fs := inv.Command.Flags()
+		var dataDir string
+		if fs.Changed("data-dir") && !fs.Changed("config") {
+			if raw := fs.Lookup("data-dir").Value.String(); raw != "" {
+				dataDir = internalconfig.ExpandHome(raw)
+			}
+		}
+		if dataDir == "" {
+			cfg, err := flags.Load(fs)
+			if err != nil {
+				return nil, err
+			}
+			dataDir = cfg.DataDir
+		}
+		store, err := crossworker.NewPinStore(dataDir)
 		if err != nil {
-			return fmt.Errorf("resolve data dir: %w", err)
+			return nil, fmt.Errorf("open the pin store: %w", err)
 		}
-		dataDir = cfg.DataDir
+		ctx, cancel := context.WithTimeout(inv.Context, crossWorkerPinsOpTimeout)
+		defer cancel()
+		return run(ctx, inv, store)
 	}
-	store, err := crossworker.NewPinStore(dataDir)
-	if err != nil {
-		return fmt.Errorf("open pin store: %w", err)
+	return cli.NewLeaf(leaf)
+}
+
+type crossWorkerPinList struct {
+	Pins []crossWorkerPin `json:"pins"`
+}
+
+func (l crossWorkerPinList) QuietLines() []string {
+	lines := make([]string, len(l.Pins))
+	for i, pin := range l.Pins {
+		lines[i] = pin.WorkerID
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), crossWorkerPinsOpTimeout)
-	defer cancel()
-	switch sub {
-	case "list":
-		pins, err := store.Snapshot(ctx)
-		if err != nil {
-			return fmt.Errorf("list: %w", err)
-		}
-		return printJSON(pins)
-	case "show":
-		if targetWorkerID == "" {
-			return fmt.Errorf("--target-worker-id is required for show")
-		}
-		pins, err := store.Snapshot(ctx)
-		if err != nil {
-			return fmt.Errorf("list: %w", err)
-		}
-		entry, ok := pins[targetWorkerID]
-		if !ok {
-			return fmt.Errorf("no pin recorded for target_worker_id=%s", targetWorkerID)
-		}
-		return printJSON(entry)
-	case "remove":
-		if targetWorkerID == "" {
-			return fmt.Errorf("--target-worker-id is required for remove")
-		}
-		if err := store.Remove(ctx, targetWorkerID); err != nil {
-			return fmt.Errorf("remove: %w", err)
-		}
-		return printJSON(map[string]string{"removed_target_worker_id": targetWorkerID})
-	default:
-		return crossWorkerPinsUsage(fmt.Errorf("unknown subcommand: %s", sub))
+	return lines
+}
+
+type crossWorkerPinRemoved struct {
+	Removed string `json:"removed"`
+}
+
+func (r crossWorkerPinRemoved) QuietLines() []string {
+	return []string{r.Removed}
+}
+
+// crossWorkerPin is one pinned sibling Worker, as the pin store commands
+// print it. The table of `list` leaves out the keys, which are too long for
+// a column; `get` and --json print them.
+type crossWorkerPin struct {
+	WorkerID        string    `json:"worker_id" table:"WORKER ID"`
+	FirstSeenAt     time.Time `json:"first_seen_at" table:"FIRST SEEN,dim"`
+	LastUsedAt      time.Time `json:"last_used_at" table:"LAST USED,dim"`
+	X25519PublicKey string    `json:"x25519_public_key"`
+	MlkemPublicKey  string    `json:"mlkem_public_key"`
+	SlhdsaPublicKey string    `json:"slhdsa_public_key"`
+}
+
+func (p crossWorkerPin) QuietLines() []string {
+	return []string{p.WorkerID}
+}
+
+func newCrossWorkerPin(id string, entry tofupins.Entry) crossWorkerPin {
+	return crossWorkerPin{
+		WorkerID:        id,
+		FirstSeenAt:     entry.FirstSeenAt,
+		LastUsedAt:      entry.LastUsedAt,
+		X25519PublicKey: entry.X25519PublicKey,
+		MlkemPublicKey:  entry.MlkemPublicKey,
+		SlhdsaPublicKey: entry.SlhdsaPublicKey,
 	}
 }
 
-func crossWorkerPinsUsage(err error) error {
-	fmt.Fprintln(os.Stderr, "usage: leapmux worker cross-worker-pins list|show|remove [--target-worker-id=<id>] [--data-dir=<dir>]")
-	return err
+// crossWorkerPinRows lists the pins in the order of their Worker ids, so the
+// output does not depend on the order of a map.
+func crossWorkerPinRows(pins map[string]tofupins.Entry) []crossWorkerPin {
+	rows := make([]crossWorkerPin, 0, len(pins))
+	for id, entry := range pins {
+		rows = append(rows, newCrossWorkerPin(id, entry))
+	}
+	slices.SortFunc(rows, func(a, b crossWorkerPin) int { return cmp.Compare(a.WorkerID, b.WorkerID) })
+	return rows
+}
+
+// lookupCrossWorkerPin returns the pin of the sibling Worker id. A Worker
+// without a pin is not found, so a mistyped id never reads as a removed pin.
+func lookupCrossWorkerPin(ctx context.Context, store *tofupins.Store, id string) (crossWorkerPin, error) {
+	pins, err := store.Snapshot(ctx)
+	if err != nil {
+		return crossWorkerPin{}, err
+	}
+	entry, ok := pins[id]
+	if !ok {
+		return crossWorkerPin{}, cli.Newf(cli.CodeNotFound, "no pin for the sibling Worker %q", id).
+			WithHint("run \"leapmux daemon worker cross-worker-pins list\" for the pinned Workers")
+	}
+	return newCrossWorkerPin(id, entry), nil
 }

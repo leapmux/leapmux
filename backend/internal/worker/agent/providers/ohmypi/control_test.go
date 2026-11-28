@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,8 +56,9 @@ func TestAToolApprovalIsPublishedWithItsCall(t *testing.T) {
 	controls := r.sink.PublishedControls()
 	require.Len(t, controls, 1)
 	assert.Equal(t, "158b2ba5001bfb93", controls[0].RequestID)
-	assert.JSONEq(t, frameApprovalDialog, string(controls[0].Payload), "the whole dialog reaches the browser")
+	assert.JSONEq(t, frameApprovalDialog, string(controls[0].Payload), "the whole dialog is the published request, which ReadControlRequest reads")
 	assert.Equal(t, int64(1), controls[0].SourceSeq, "the request points at the row of the call it asks about")
+	agenttest.AssertPublishedControlKeys(t, ompProvider{}, r.sink)
 }
 
 func TestAnApprovalStatesNoCallWhenTwoCallsOfTheToolRun(t *testing.T) {
@@ -236,7 +239,7 @@ func TestAnAnsweredDialogIsNotWithdrawnAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	r, ctx, clock := newDeadlineRig(t)
 	r.emit(frameTimedConfirm)
-	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`)}))
 	r.waitForCommand("extension_ui_response", 1)
 
 	clock.Advance(time.Minute).MustWait(ctx)
@@ -302,7 +305,7 @@ const frameCommandEditor = `{"type":"extension_ui_request","id":"e1","method":"e
 // the turn armed while the handler waits on its dialog.
 func armCommandTurn(t *testing.T, r *rig) {
 	t.Helper()
-	require.NoError(t, r.agent.SendInput("/e2e-editor", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "/e2e-editor", nil))
 	active, _ := r.sink.LastTurnActive()
 	require.True(t, active, "the command's turn runs while its dialog waits")
 }
@@ -364,7 +367,7 @@ func TestAnInterruptWithNoTurnAnswersOnlyTheDialogsOmpWaitsOn(t *testing.T) {
 		`{"type":"extension_ui_request","id":"open-b","method":"input","title":"Branch name"}`,
 		`{"type":"extension_ui_request","id":"open-a","method":"editor","title":"Commit message"}`,
 	)
-	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"answered","confirmed":true}`), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"answered","confirmed":true}`)}))
 	r.waitForCommand("extension_ui_response", 1)
 
 	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
@@ -462,10 +465,10 @@ func TestSendRawInputPassesADialogAnswerThrough(t *testing.T) {
 	r := newRig(t)
 	r.emit(frameApprovalDialog)
 	answer := `{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`
-	require.NoError(t, r.agent.SendRawInput([]byte(answer), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: []byte(answer)}))
 
 	answers := r.waitForCommand("extension_ui_response", 1)
-	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the browser's answer unchanged")
+	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the answer unchanged")
 }
 
 func TestFailedDialogAnswerKeepsTheRequest(t *testing.T) {
@@ -477,7 +480,7 @@ func TestFailedDialogAnswerKeepsTheRequest(t *testing.T) {
 	}
 	t.Cleanup(func() { close(done); a.Process.Stop() })
 	a.publishDialog(dialogHeader{ID: "request", Method: "confirm"}, []byte(`{"type":"extension_ui_request","id":"request","method":"confirm"}`))
-	require.Error(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"request","confirmed":true}`), agent.StopContext{}))
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"request","confirmed":true}`)}))
 	a.Mu.Lock()
 	_, pending := a.openDialogs["request"]
 	a.Mu.Unlock()
@@ -530,10 +533,10 @@ func TestDialogAnswerRefusesUnknownAndRepeatedRequests(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	answer := []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`)
-	require.Error(t, r.agent.SendRawInput(answer, agent.StopContext{}))
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlRequestNotPending)
 	r.emit(frameApprovalDialog)
-	require.NoError(t, r.agent.SendRawInput(answer, agent.StopContext{}))
-	require.Error(t, r.agent.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: answer}))
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlRequestNotPending)
 }
 
 func TestSendRawInputFailsAfterExit(t *testing.T) {
@@ -548,8 +551,205 @@ func TestSendRawInputFailsAfterExit(t *testing.T) {
 			return false
 		}
 	})
-	err := r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"x","value":"Approve"}`), agent.StopContext{})
-	assert.Error(t, err)
+	err := r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"x","value":"Approve"}`)})
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+}
+
+func TestControlRequestKeyBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		payload string
+		wantID  string
+		wantOK  bool
+	}{
+		{name: "valid string id", payload: `{"id":"req-1"}`, wantID: "req-1", wantOK: true},
+		{name: "malformed JSON", payload: `{not-json`, wantID: "", wantOK: false},
+		{name: "missing id", payload: `{"type":"extension_ui_request"}`, wantID: "", wantOK: false},
+		{name: "empty string id", payload: `{"id":""}`, wantID: "", wantOK: false},
+		{name: "numeric id", payload: `{"id":123}`, wantID: "", wantOK: false},
+		{name: "boolean id", payload: `{"id":true}`, wantID: "", wantOK: false},
+		{name: "null id", payload: `{"id":null}`, wantID: "", wantOK: false},
+		{name: "object id", payload: `{"id":{"nested":"x"}}`, wantID: "", wantOK: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			id, ok := ompProvider{}.ControlRequestKey([]byte(tc.payload), "")
+			assert.Equal(t, tc.wantID, id)
+			assert.Equal(t, tc.wantOK, ok)
+		})
+	}
+}
+
+type blockingDialogStdin struct {
+	entered   chan struct{}
+	release   chan struct{}
+	enterOnce sync.Once
+}
+
+func (s *blockingDialogStdin) Write(p []byte) (int, error) {
+	s.enterOnce.Do(func() { close(s.entered) })
+	<-s.release
+	return len(p), nil
+}
+
+func (*blockingDialogStdin) Close() error { return nil }
+
+type gatingPublishSink struct {
+	*agenttest.ControlSink
+	entered   chan struct{}
+	release   chan struct{}
+	enterOnce sync.Once
+	err       error
+}
+
+func (s *gatingPublishSink) PublishControlRequest(req agent.ControlRequest) error {
+	s.enterOnce.Do(func() { close(s.entered) })
+	<-s.release
+	if s.err != nil {
+		return s.err
+	}
+	return s.ControlSink.PublishControlRequest(req)
+}
+
+func TestSendRawInputDialogBoundaries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unpublished yolo-bypassed dialog returns ErrControlRequestNotPending", func(t *testing.T) {
+		t.Parallel()
+		r := withCatalog(newRig(t))
+		gate := &blockingDialogStdin{entered: make(chan struct{}), release: make(chan struct{})}
+		t.Cleanup(func() {
+			select {
+			case <-gate.release:
+			default:
+				close(gate.release)
+			}
+		})
+		r.agent.SetStdinForTest(gate)
+		require.True(t, r.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.OhMyPiApprovalModeYolo}).AppliedLive)
+
+		r.emit(frameApprovalDialog)
+		<-gate.entered
+
+		err := r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Deny"}`)})
+		require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+		close(gate.release)
+		waitFor(t, r.agent.approvalWork.Idle)
+	})
+
+	t.Run("withdrawn during publication returns ErrControlRequestNotPending after publicationDone", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		gate := &gatingPublishSink{ControlSink: r.sink, entered: make(chan struct{}), release: make(chan struct{})}
+		r.agent.sink = agent.NewProviderServices(gate)
+
+		publishDone := make(chan struct{})
+		go func() {
+			defer close(publishDone)
+			r.agent.HandleOutput([]byte(frameApprovalDialog))
+		}()
+		<-gate.entered
+
+		sendErr := make(chan error, 1)
+		go func() {
+			sendErr <- r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`)})
+		}()
+		for range 64 {
+			runtime.Gosched()
+		}
+		r.agent.withdrawDialog("158b2ba5001bfb93")
+		close(gate.release)
+		<-publishDone
+
+		require.ErrorIs(t, <-sendErr, agent.ErrControlRequestNotPending)
+	})
+
+	t.Run("publish failure returns ErrControlRequestNotPending after publicationDone", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		gate := &gatingPublishSink{
+			ControlSink: r.sink,
+			entered:     make(chan struct{}),
+			release:     make(chan struct{}),
+			err:         errors.New("publish failed"),
+		}
+		r.agent.sink = agent.NewProviderServices(gate)
+
+		publishDone := make(chan struct{})
+		go func() {
+			defer close(publishDone)
+			r.agent.HandleOutput([]byte(frameApprovalDialog))
+		}()
+		<-gate.entered
+
+		sendErr := make(chan error, 1)
+		go func() {
+			sendErr <- r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`)})
+		}()
+		for range 64 {
+			runtime.Gosched()
+		}
+		close(gate.release)
+		<-publishDone
+
+		require.ErrorIs(t, <-sendErr, agent.ErrControlRequestNotPending)
+	})
+
+	t.Run("concurrent answer while answering is true returns ErrControlRequestNotPending", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(frameApprovalDialog)
+		gate := &blockingDialogStdin{entered: make(chan struct{}), release: make(chan struct{})}
+		t.Cleanup(func() {
+			select {
+			case <-gate.release:
+			default:
+				close(gate.release)
+			}
+		})
+		r.agent.SetStdinForTest(gate)
+
+		answer := []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`)
+		firstErr := make(chan error, 1)
+		go func() {
+			firstErr <- r.agent.SendRawInput(agent.RawInput{Data: answer})
+		}()
+		<-gate.entered
+
+		secondErr := r.agent.SendRawInput(agent.RawInput{Data: answer})
+		require.ErrorIs(t, secondErr, agent.ErrControlRequestNotPending)
+
+		close(gate.release)
+		require.NoError(t, <-firstErr)
+	})
+
+	t.Run("context cancellation while waiting on publicationDone returns context error", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		gate := &gatingPublishSink{ControlSink: r.sink, entered: make(chan struct{}), release: make(chan struct{})}
+		r.agent.sink = agent.NewProviderServices(gate)
+
+		publishDone := make(chan struct{})
+		go func() {
+			defer close(publishDone)
+			r.agent.HandleOutput([]byte(frameApprovalDialog))
+		}()
+		<-gate.entered
+
+		sendErr := make(chan error, 1)
+		go func() {
+			sendErr <- r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`)})
+		}()
+		for range 64 {
+			runtime.Gosched()
+		}
+		r.cancel()
+		require.ErrorIs(t, <-sendErr, context.Canceled)
+
+		close(gate.release)
+		<-publishDone
+	})
 }
 
 func TestDialogHeaderDecodesTheRoutingFields(t *testing.T) {
@@ -573,7 +773,7 @@ func TestDialogHeaderDeadline(t *testing.T) {
 		{timeout: 1.5, want: 1500 * time.Microsecond},
 		// Past what a time.Duration holds: no limit in practice.
 		{timeout: 1e300, want: 0},
-		{timeout: maxDialogTimeoutMillis, want: 0},
+		{timeout: providerkit.MaxDialogTimeoutMillis, want: 0},
 	} {
 		assert.Equal(t, tc.want, dialogHeader{Timeout: tc.timeout}.deadline(), tc.timeout)
 	}

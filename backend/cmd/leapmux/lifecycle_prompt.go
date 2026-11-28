@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
-	"golang.org/x/term"
-
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
@@ -32,7 +31,7 @@ func writeSetupText(out io.Writer, text string) error {
 
 // promptStartupChoice shows the startup choice. Login startup is the
 // default for a new configuration.
-func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, error) {
+func promptStartupChoice(ctx context.Context, out io.Writer, in io.Reader) (lifecycle.StartupKind, error) {
 	if err := writeSetupText(out, "\nWhen should LeapMux start automatically?\n\n"+
 		"  1. When you log in\n"+
 		"     Runs as your account.\n"+
@@ -43,7 +42,10 @@ func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, er
 		return "", err
 	}
 
-	line, err := readTrimmedLine(in)
+	line, err := readTrimmedLine(ctx, in)
+	if ctx.Err() != nil {
+		return "", context.Cause(ctx)
+	}
 	if err != nil {
 		// End of input declines: a noninteractive caller must pass
 		// --startup and --yes instead of reading a closed stdin.
@@ -60,11 +62,15 @@ func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, er
 }
 
 // promptApply asks for the y/N consent after the preview.
-func promptApply(out io.Writer, in io.Reader) (bool, error) {
+func promptApply(ctx context.Context, out io.Writer, in io.Reader) (bool, error) {
 	if err := writeSetupText(out, "\nApply this configuration? [y/N]: "); err != nil {
 		return false, err
 	}
-	line, err := readTrimmedLine(in)
+	line, err := readTrimmedLine(ctx, in)
+	if ctx.Err() != nil {
+		// An interrupt ends the command; it is no answer.
+		return false, context.Cause(ctx)
+	}
 	if err != nil {
 		// End of input declines the configuration.
 		return false, nil
@@ -78,20 +84,35 @@ func promptApply(out io.Writer, in io.Reader) (bool, error) {
 	}
 }
 
-// readTrimmedLine reads one trimmed line.
-func readTrimmedLine(in io.Reader) (string, error) {
-	reader := bufio.NewReader(in)
-	line, err := reader.ReadString('\n')
+// readTrimmedLine reads one line and trims its spaces. A line that the input
+// ends before its line ending is no answer, so it returns only the error.
+func readTrimmedLine(ctx context.Context, in io.Reader) (string, error) {
+	line, err := cli.ReadLine(ctx, in)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
 }
 
-// requireInteractiveInput refuses missing setup options before reading a pipe.
+// lifecycleNoPromptEnv disables interactive prompts regardless of terminal
+// detection, matching LEAPMUX_CONTROL_NO_PROMPT in internal/cli/control.
+// Presence is the whole test: any non-empty value refuses prompting.
+const lifecycleNoPromptEnv = "LEAPMUX_CONTROL_NO_PROMPT"
+
+// isInteractiveInput reports whether standard input is an interactive terminal.
+// Tests replace it to exercise interactive prompt flows without a PTY.
+var isInteractiveInput = func() bool {
+	return cli.IsTerminalFD(os.Stdin.Fd())
+}
+
+// requireInteractiveInput refuses missing setup options when interactive
+// prompting is disabled via LEAPMUX_CONTROL_NO_PROMPT or stdin is not a TTY.
 func requireInteractiveInput(missingOptions ...string) error {
-	if term.IsTerminal(int(os.Stdin.Fd())) {
+	if os.Getenv(lifecycleNoPromptEnv) != "" {
+		return cli.Usagef("%s disables interactive prompts; pass %s", lifecycleNoPromptEnv, strings.Join(missingOptions, " and "))
+	}
+	if isInteractiveInput() {
 		return nil
 	}
-	return fmt.Errorf("noninteractive setup requires %s", strings.Join(missingOptions, " and "))
+	return cli.Usagef("noninteractive setup requires %s", strings.Join(missingOptions, " and "))
 }

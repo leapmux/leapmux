@@ -36,7 +36,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err = c.initialize(opts, a.handleOutput, func() { a.retireHost(c.ProcessExitCompletion()) }); err != nil {
 		return nil, err
 	}
-	if err = a.openSession(opts.ResumeSessionID, opts.EffectiveStartupTimeout()); err == nil {
+	resumeID := opts.Session.ResumeID()
+	if err = a.openSession(resumeID, opts.EffectiveStartupTimeout()); err == nil {
 		err = a.refreshCatalog(opts.EffectiveStartupTimeout())
 	}
 	if err == nil && opts.Effort() != "" && opts.Effort() != agent.EffortAuto {
@@ -44,8 +45,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	if err != nil {
 		err = errors.Join(err, c.close())
-		if opts.ResumeSessionID != "" {
-			err = providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+		if resumeID != "" {
+			err = providerkit.ResumeFailedError(resumeID, err)
 		}
 		return nil, c.FormatStartupError("start the Muse session", err)
 	}

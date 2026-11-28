@@ -1,6 +1,7 @@
 package droid
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -20,13 +22,7 @@ import (
 // marker for Droid. The browser interrupts through the InterruptAgent call; the
 // frame is for a caller of SendAgentRawMessage.
 func isDroidRawInterrupt(content []byte) bool {
-	var head struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(content, &head); err != nil {
-		return false
-	}
-	return head.Type == "interrupt"
+	return providerkit.StringField(content, "type") == "interrupt"
 }
 
 // HandleOutput feeds one stdout line into the dispatcher.
@@ -65,6 +61,9 @@ func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) func() {
 	switch env.Type {
 	case droidTypeNotification:
 		if env.Method == droidMethodSessionNotif {
+			if a.isSuppressingForkReplay() {
+				return nil
+			}
 			return a.handleNotification(env)
 		}
 	case droidTypeRequest:
@@ -72,6 +71,9 @@ func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) func() {
 	case droidTypeResponse:
 		// The startup response settles initialize_session or load_session.
 		if env.ID == droidInitRequestID {
+			a.Mu.Lock()
+			a.suppressForkReplay = false
+			a.Mu.Unlock()
 			if env.Error != nil {
 				a.settleStartup(env.Error)
 			} else {
@@ -457,7 +459,9 @@ func (a *Agent) onWorkingStateChanged(payload []byte, target droidOutputTarget) 
 	case contracts.DroidWorkingStateIdle:
 		if childSessionID != "" {
 			a.disarmChildTurn(childSessionID)
-		} else {
+		} else if a.currentReply == nil || a.currentReply.echoed {
+			// An idle can trail the previous completion. Keep the provisional
+			// turn until this input's committed echo arrives.
 			a.endTurn()
 		}
 	}
@@ -466,28 +470,27 @@ func (a *Agent) onWorkingStateChanged(payload []byte, target droidOutputTarget) 
 // onCreateMessage records a new message and opens a span for it.
 func (a *Agent) onCreateMessage(payload []byte, target droidOutputTarget) {
 	var n struct {
-		Type    string          `json:"type"`
-		Message json.RawMessage `json:"message"`
+		Type      string          `json:"type"`
+		RequestID string          `json:"requestId"`
+		Message   json.RawMessage `json:"message"`
 	}
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
-	var msg struct {
-		ID         string          `json:"id"`
-		Role       string          `json:"role"`
-		Visibility string          `json:"visibility"`
-		Content    json.RawMessage `json:"content"`
-	}
+	var msg droidReplyMessage
 	if err := json.Unmarshal(n.Message, &msg); err != nil {
 		return
+	}
+	if target.childSessionID == "" {
+		if msg.Role == "user" && msg.Visibility != "llm_only" && a.onSteerEcho(n.RequestID, msg, target) {
+			return
+		}
+		a.observeDroidReplyMessage(n.RequestID, msg)
 	}
 	if msg.Visibility == "llm_only" {
 		return
 	}
 	if msg.Role == "user" {
-		if target.childSessionID == "" {
-			a.onSteerEcho(msg.ID, target)
-		}
 		// The queue stores reader input. Child registration stores the parent's prompt.
 		return
 	}
@@ -509,35 +512,6 @@ func (a *Agent) onCreateMessage(payload []byte, target droidOutputTarget) {
 	}
 	// The native envelope retains the message metadata beside its assembled blocks.
 	a.enqueueOutput(target, content, agent.SpanInfo{SpanID: spanID}, droidOutputMessage)
-}
-
-// onSteerEcho uses Droid's client-supplied message ID, so equal text cannot confirm another input.
-func (a *Agent) onSteerEcho(messageID string, target droidOutputTarget) {
-	if !a.steers.EchoKey(messageID) {
-		return
-	}
-	// A queued steer can start after the previous turn ends. Keep the queue occupied before the echo removes its item.
-	a.startTurn()
-	a.persistRemainingGeneration(target, agent.MessageCompletionComplete)
-	a.flushPendingToolCalls(target)
-	a.steers.Settle(target.sink)
-}
-
-func (a *Agent) onQueuedMessagesDiscarded(payload []byte, target droidOutputTarget) {
-	if target.childSessionID == "" {
-		requestID := providerkit.StringField(payload, "requestId")
-		dropped := false
-		if requestID != "" {
-			dropped = a.steers.DropID(requestID)
-		} else {
-			dropped = a.steers.DropAll() > 0
-		}
-		if dropped {
-			a.steers.Settle(target.sink)
-			return
-		}
-	}
-	a.persistNotification(payload, target)
 }
 
 // droidTextDelta is the payload of assistant_text_delta.
@@ -672,6 +646,7 @@ type droidCommittedBlock struct {
 	index  int
 	raw    []byte
 	toolID string
+	kind   agent.AssembledMessageKind
 }
 
 // committedDroidBlocks validates every supported block before the agent changes any live state.
@@ -717,7 +692,7 @@ func committedDroidBlocks(content json.RawMessage) ([]droidCommittedBlock, error
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, droidCommittedBlock{index: index, raw: raw})
+		result = append(result, droidCommittedBlock{index: index, raw: raw, kind: kind})
 	}
 	return result, nil
 }
@@ -732,8 +707,15 @@ func (a *Agent) commitAssistantMessage(target droidOutputTarget, messageID strin
 	if message.finalized {
 		return false
 	}
+	var reply *droidNativeReply
+	if target.childSessionID == "" {
+		reply = a.droidReplyOwningMessage(messageID)
+	}
 	blocks, err := committedDroidBlocks(content)
 	if err != nil {
+		if reply != nil {
+			reply.unproved = true
+		}
 		slog.Debug("read the committed Droid message", "agent_id", a.AgentID(), "error", err)
 		return false
 	}
@@ -746,10 +728,20 @@ func (a *Agent) commitAssistantMessage(target droidOutputTarget, messageID strin
 	message.finalized, message.scopes = true, nil
 	for _, block := range blocks {
 		if block.toolID != "" {
+			if reply != nil {
+				reply.toolIDs[block.toolID] = true
+			}
 			a.flushPendingToolCall(target, block.toolID)
 			continue
 		}
-		a.enqueueOutput(target, agent.MessageContent{Original: block.raw, IdempotencyKey: droidMessageWriteKey(messageID, block.index)}, agent.SpanInfo{}, droidOutputMessage)
+		key := droidMessageWriteKey(messageID, block.index)
+		content := agent.MessageContent{Original: block.raw, IdempotencyKey: key}
+		retained := a.enqueueOutput(target, content, agent.SpanInfo{}, droidOutputMessage)
+		if reply != nil && block.kind == agent.AssembledMessageKindText {
+			if _, visible := agent.ReplyText(droidProvider{}, content); visible {
+				reply.recordText(key, retained)
+			}
+		}
 	}
 	return true
 }
@@ -858,6 +850,7 @@ func (a *Agent) onToolProgressUpdate(payload []byte, target droidOutputTarget) {
 type droidToolResult struct {
 	Type      string          `json:"type"`
 	ToolUseID string          `json:"toolUseId"`
+	MessageID string          `json:"messageId"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"isError"`
 }
@@ -867,6 +860,11 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 	var n droidToolResult
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
+	}
+	if target.childSessionID == "" && n.MessageID != "" {
+		if reply := a.droidReplyOwningTool(n.ToolUseID); reply != nil {
+			reply.messageIDs[n.MessageID] = true
+		}
 	}
 	spanID := "droid-tool-" + n.ToolUseID
 	if n.ToolUseID != "" && target.state.closedSpans.WasClosed(spanID) {
@@ -944,15 +942,28 @@ func (a *Agent) closeOpenTools(target droidOutputTarget, completion agent.Messag
 // onAgentTurnCompleted ends the turn. PersistTurnEnd runs before the clear, so
 // the turn's tool count reaches the activity latch first.
 func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
-	target.state.turnErrorSeen = false
-	if target.childSessionID == "" {
-		a.retryResolution.Reset()
-	}
 	var n struct {
 		Reason string `json:"reason"`
+		TurnID string `json:"turnId"`
 	}
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
+	}
+	if target.childSessionID == "" && a.isOlderDroidReplyEnd(n.TurnID) {
+		a.finishDroidReply(n.TurnID, n.Reason)
+		return
+	}
+	target.state.turnErrorSeen = false
+	if target.childSessionID == "" {
+		a.retryResolution.Reset()
+		if reply := a.nativeReplies[n.TurnID]; reply != nil {
+			for _, scope := range target.state.generation.ScopeIDs() {
+				if kind, _, ok := target.state.generation.ScopeSnapshot(scope); ok && kind == agent.AssembledMessageKindText {
+					reply.unproved = true
+					break
+				}
+			}
+		}
 	}
 	completion, status := droidTurnCompletion(n.Reason)
 	a.persistRemainingGeneration(target, completion)
@@ -967,7 +978,11 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 		if completion == agent.MessageCompletionInterrupted {
 			providerkit.ResetSpansAndProgress(target.sink)
 		}
+		a.finishDroidReply(n.TurnID, n.Reason)
 		a.endTurn()
+		if a.onTurnEnd != nil {
+			a.onTurnEnd(status)
+		}
 		a.refreshContextUsage()
 	}
 }
@@ -1037,8 +1052,21 @@ func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 	active := a.turnActive
 	a.Mu.Unlock()
 	if active {
+		if a.currentReply != nil {
+			a.retireDroidReply(a.currentReply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+		}
 		a.endTurn()
+		if a.onTurnEnd != nil {
+			a.onTurnEnd(bgtask.StatusFailed)
+		}
 	}
+}
+
+func (a *Agent) isSuppressingForkReplay() bool {
+	a.Mu.Lock()
+	suppress := a.suppressForkReplay
+	a.Mu.Unlock()
+	return suppress
 }
 
 // settleStartup sends the result of the one native startup request to Start.
@@ -1054,28 +1082,32 @@ func (a *Agent) settleStartup(err error) {
 	}
 }
 
-// adoptSessionID records the new or loaded session identity and settings.
+// adoptSessionID records the new, loaded, or forked session identity and settings.
 func (a *Agent) adoptSessionID(env *droidEnvelope) error {
 	var result struct {
-		SessionID       string              `json:"sessionId"`
+		SessionID string `json:"sessionId"`
+		Session   struct {
+			ID string `json:"id"`
+		} `json:"session"`
 		Settings        droidNativeSettings `json:"settings"`
 		AvailableModels []droidCatalogModel `json:"availableModels"`
 	}
 	if err := json.Unmarshal(env.Result, &result); err != nil {
 		return fmt.Errorf("read droid startup result: %w", err)
 	}
+	reportedID := cmp.Or(result.SessionID, result.Session.ID)
 	models := make([]droidModel, 0, len(result.AvailableModels))
 	for _, m := range result.AvailableModels {
 		models = append(models, droidModelFromNative(m))
 	}
 	a.Mu.Lock()
-	if a.sessionID != "" && result.SessionID != "" && a.sessionID != result.SessionID {
+	if a.sessionID != "" && reportedID != "" && a.sessionID != reportedID {
 		expected := a.sessionID
 		a.Mu.Unlock()
-		return fmt.Errorf("droid startup returned session %q instead of %q", result.SessionID, expected)
+		return fmt.Errorf("droid startup returned session %q instead of %q", reportedID, expected)
 	}
 	if a.sessionID == "" {
-		a.sessionID = result.SessionID
+		a.sessionID = reportedID
 	}
 	sessionID := a.sessionID
 	if sessionID == "" {

@@ -38,22 +38,6 @@ func SetLastActiveAt(ctx context.Context, exec func(context.Context, string, ...
 	return SetEntityColumnValue(ctx, exec, dialect, store.EntitySessions, "last_active_at", id, lastActiveAt)
 }
 
-// SetDeregisteringAt writes an exact deregistering_at timestamp for a worker
-// row, pinned to the workers table as SetLastActiveAt is to user_sessions. See
-// SetDeletedAt for the exec/dialect contract.
-func SetDeregisteringAt(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, workerID string, deregisteringAt time.Time) error {
-	return SetEntityColumnValue(ctx, exec, dialect, store.EntityWorkers, "deregistering_at", workerID, deregisteringAt)
-}
-
-// ClearWorkerDeregisteringAt restores only a live test worker. The identifiers
-// are fixed, and the worker ID remains a parameter in every dialect.
-func ClearWorkerDeregisteringAt(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, workerID string) error {
-	if err := validateDialect(dialect); err != nil {
-		return err
-	}
-	return exec(ctx, fmt.Sprintf("UPDATE workers SET deregistering_at = NULL WHERE id = %s AND deleted_at IS NULL", paramPlaceholder(dialect, 1)), workerID)
-}
-
 // CopyWorkspaceTitleCiphertext copies the raw encrypted workspaces.title bytes
 // from srcWorkspaceID to dstWorkspaceID to verify AAD tampering detection.
 // Uses two separate queries and closes *sql.Rows before calling exec so
@@ -125,7 +109,7 @@ func CopySettingSecretCiphertext(ctx context.Context, db DBQuery, exec func(cont
 }
 
 // SetEntityColumnValue backdates one fixed column (deleted_at/created_at/
-// last_active_at/deregistering_at -- a literal, never caller input) on a validated entity
+// last_active_at -- a literal, never caller input) on a validated entity
 // table. BOTH the entity and the column are checked against closed allowlists
 // so this cannot become an arbitrary-SQL escape hatch -- a future typed wrapper
 // that passes an unvalidated column fails loudly here rather than interpolating
@@ -156,10 +140,9 @@ func SetEntityColumnValue(ctx context.Context, exec func(context.Context, string
 // widen: a column outside this set is rejected before the sprintf, so the
 // interpolation only ever receives a known literal.
 var allowedEntityColumns = map[string]bool{
-	"deleted_at":       true,
-	"created_at":       true,
-	"last_active_at":   true,
-	"deregistering_at": true,
+	"deleted_at":     true,
+	"created_at":     true,
+	"last_active_at": true,
 }
 
 func validateEntityColumn(column string) error {

@@ -45,6 +45,9 @@ type CRDTRegistry interface {
 	// credential holds worker:read, through an already-loaded manager, and
 	// never bootstraps one.
 	BroadcastWorkersChanged(userID string)
+	// DrainLifecycle drains pending workspace lifecycle outbox rows for userID,
+	// coalescing concurrent callers onto one flight.
+	DrainLifecycle(ctx context.Context, userID string) error
 }
 
 type WorkerConnectorService struct {
@@ -153,6 +156,23 @@ func NewWorkerConnectorService(d WorkerConnectorServiceDeps) *WorkerConnectorSer
 // workerHelloTimeout limits the wait for the first message.
 const workerHelloTimeout = 10 * time.Second
 const workerHelloTimerTag = "worker-hello"
+
+// authenticateWorkerOwner authenticates the calling Worker via its bearer token
+// and mints its registrant's owner UserID.
+func (s *WorkerConnectorService) authenticateWorkerOwner(ctx context.Context) (*store.Worker, userid.UserID, error) {
+	worker, err := auth.AuthenticateWorkerBearer(ctx, s.store, s.hasher, serverCallInfo(ctx).RequestHeader().Get("Authorization"))
+	if err != nil {
+		if auth.IsWorkerCredentialError(err) {
+			return nil, userid.UserID{}, wrappedConnectError(connect.CodeUnauthenticated, err)
+		}
+		return nil, userid.UserID{}, wrappedConnectError(connect.CodeInternal, err)
+	}
+	owner, ok := userid.New(worker.RegisteredBy)
+	if !ok {
+		return nil, userid.UserID{}, connect.Errorf(connect.CodeInternal, "worker %s has a blank registrant", worker.ID)
+	}
+	return worker, owner, nil
+}
 
 // SetMaxWorkersPerUser limits how many Workers one user may have registered at
 // once; 0 (the zero value) is unlimited. Updates may run concurrently with
@@ -718,29 +738,23 @@ func (s *WorkerConnectorService) serveWorkerStream(reqCtx context.Context, worke
 		slog.Info("worker disconnected", "worker_id", worker.ID, "reason", exitReason)
 	}()
 
-	// A deregistering worker is told to stop on every connect: its persisted
-	// deregistering_at is the intent, and this connection is the delivery. A
-	// worker deleted with its user while it connected is told to stop too.
-	// The delivery runs beside the main loop rather than before it, because
-	// the DEREGISTER instruction reaches the wire through the loop's drain and
-	// its acknowledgement through the loop's receive (pending.Complete only
-	// runs from the loop). notifyDone ends the connection once the delivery
-	// returns, whatever its outcome. An ACTIVE worker starts no delivery
-	// goroutine.
+	// A worker deleted between bearer authentication and stream registration
+	// is told to stop on connect. The delivery runs beside the main loop rather
+	// than before it, because the DEREGISTER instruction reaches the wire
+	// through the loop's drain and its acknowledgement through the loop's
+	// receive (pending.Complete only runs from the loop). notifyDone ends the
+	// connection once delivery returns, whatever its outcome. An ACTIVE worker
+	// starts no delivery goroutine.
 	var notifyDone chan struct{} // nil for a normal worker: a nil select case blocks forever
 	if s.notifier != nil && current.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
 		notifyDone = make(chan struct{})
-		// Delivery owns a detached MarkDeleted write after acknowledgement.
-		// Every return joins it before unregistering, so store shutdown cannot
-		// leave the worker's local registration gone and its Hub row pending.
-		// Cancel first to release SendAndWait when no acknowledgement arrived.
 		defer func() {
 			cancelConn()
 			<-notifyDone
 		}()
 		go func() {
 			defer close(notifyDone)
-			s.notifier.DeliverOnConnect(ctx, current, conn)
+			s.notifier.DeliverOnConnect(ctx, current.ID, conn)
 		}()
 	}
 

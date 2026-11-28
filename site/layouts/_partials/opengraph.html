@@ -2,9 +2,10 @@
   LeapMux override of Hextra's _partials/opengraph.html (theme version is itself
   adapted from Hugo's internal opengraph). Focused on what this docs site uses,
   with these additions over the theme/default:
-    - og:image (+ width/height/type/alt) from the build-time card (og-image.html).
+    - og:image (+ width/height/type/alt for build-time cards) via og-image.html.
     - og:site_name (always), og:description via the shared page-description partial.
-    - article:section resolved to the real sub-section (theme emitted "docs").
+    - og:locale normalized to Open Graph language_TERRITORY form (en_US).
+    - article:section resolved through the shared section-label.html partial.
     - <meta name="keywords"> from keywords.html.
   Re-sync if the theme module is bumped.
 */ -}}
@@ -12,29 +13,31 @@
 {{- $iso8601 := "2006-01-02T15:04:05-07:00" -}}
 {{- $desc := partial "utils/page-description.html" . -}}
 {{- $ogImage := partial "og-image.html" . -}}
+{{- $hasCustomImage := gt (len (.Params.images | default slice)) 0 -}}
+{{- $locale := .Params.locale | default site.Params.locale | default site.Language.Locale -}}
+{{- if eq $locale "en" -}}
+  {{- $locale = "en_US" -}}
+{{- end -}}
 
 <meta property="og:title" content="{{ .Title | default .Site.Title }}" />
 <meta property="og:description" content="{{ $desc }}" />
 <meta property="og:type" content="{{ if .IsPage }}article{{ else }}website{{ end }}" />
 <meta property="og:url" content="{{ .Permalink }}" />
 <meta property="og:site_name" content="{{ .Site.Title }}" />
-<meta property="og:locale" content="{{ .Params.locale | default site.Language.Locale }}" />
+{{- if strings.Contains $locale "_" }}
+<meta property="og:locale" content="{{ $locale }}" />
+{{- end }}
 
 <meta property="og:image" content="{{ $ogImage }}" />
+{{- if not $hasCustomImage }}
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:image:alt" content="{{ .Title | default .Site.Title }} — {{ .Site.Title }}" />
+{{- end }}
+<meta property="og:image:alt" content="{{ if and .Title (ne .Title .Site.Title) }}{{ .Title }} — {{ .Site.Title }}{{ else }}{{ .Site.Title }}{{ end }}" />
 
 {{- if .IsPage }}
-  {{- $section := "Documentation" -}}
-  {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
-  {{- $labels := dict
-        "getting-started" "Getting Started"
-        "using" "Using LeapMux"
-        "operating" "Operating"
-        "reference" "Reference" -}}
-  {{- $section = index $labels $seg | default $section }}
+  {{- $section := partial "section-label.html" . | default "Documentation" }}
 <meta property="article:section" content="{{ $section }}" />
   {{- with .PublishDate }}{{ if not .IsZero }}
 <meta property="article:published_time" {{ .Format $iso8601 | printf "content=%q" | safeHTMLAttr }} />

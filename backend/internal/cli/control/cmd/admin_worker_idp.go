@@ -2,314 +2,629 @@ package cmd
 
 import (
 	"context"
-	"errors"
-	"flag"
-	"strconv"
+	"maps"
+	"slices"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/hub/oauth"
 )
 
-// Flag names, defaults, and validation messages carry over verbatim from
-// the old offline admin verbs; output uses the control JSON envelope.
-
-func RunAdminWorkerList(rawCtx any, args []string) error {
+func newAdminWorkerList() *cobra.Command {
 	var page adminPageFlags
 	var owner userFilterFlags
 	var status string
-	var statusEnum leapmuxv1.WorkerStatus
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page: &page,
-		Flags: func(fs *flag.FlagSet) {
+	statusChoices := append(enumTokens(leapmuxv1.WorkerStatus(0)), "all")
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List the workers of every user",
+		Examples: []cli.Example{
+			{Command: "leapmux admin worker list"},
+			{Comment: "Include the workers that are gone.", Command: "leapmux admin worker list --status all"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			page.bind(fs)
 			owner.bind(fs)
-			fs.StringVar(&status, "status", "active", "worker status filter (active, deregistering, deleted, all)")
+			fs.StringVar(&status, "status", "active", "worker status filter")
+			cli.SetEnum(fs, "status", statusChoices...)
 		},
-		BeforeDial: func(a adminArgs) error {
-			if err := owner.resolve(a); err != nil {
-				return err
+		Run: func(inv *cli.Invocation) (any, error) {
+			if err := page.validate(); err != nil {
+				return nil, err
 			}
-			switch status {
-			case "active":
-				statusEnum = leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
-			case "deregistering":
-				statusEnum = leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING
-			case "deleted":
-				statusEnum = leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
-			case "all", "":
+			ownerTarget, err := owner.parse(inv)
+			if err != nil {
+				return nil, err
+			}
+			var statusEnum leapmuxv1.WorkerStatus
+			if strings.EqualFold(status, "all") {
 				statusEnum = leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED
-			default:
-				return control.EmitError("invalid_request", "unknown worker status: "+status+" (use: active, deregistering, deleted, all)")
+			} else {
+				num, ok := parseEnumToken(leapmuxv1.WorkerStatus(0), status)
+				if !ok {
+					return nil, cli.Usagef("unknown worker status %q", status).
+						WithHint("use %s", strings.Join(statusChoices, ", "))
+				}
+				statusEnum = leapmuxv1.WorkerStatus(num)
 			}
-			return nil
-		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().ListWorkers(context.Background(), &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-				User: owner.Selector(), Status: statusEnum, Page: page.request(),
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := callWithAdminUserTarget(inv.Context, c, ownerTarget, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
+				return c.AdminWorkerService().ListWorkers(inv.Context, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
+					User: sel, Status: statusEnum, Page: page.request(),
+				})
 			})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetWorkers()))
+			rows := make([]adminWorkerRow, 0, len(resp.GetWorkers()))
 			for _, w := range resp.GetWorkers() {
-				rows = append(rows, adminWorkerJSON(w))
+				rows = append(rows, adminWorkerRowOf(w))
 			}
-			return control.EmitData(map[string]any{"workers": rows, "next_cursor": resp.GetPage().GetNextCursor()})
+			return adminWorkerListResult{Workers: rows, NextCursor: resp.GetPage().GetNextCursor()}, nil
 		},
 	})
 }
 
-// adminWorkerJSON renders one worker row.
-//
-// owner_deleted is what tells an operator that `username` is empty because
-// the account is gone, rather than because the worker has no owner: the
-// hub blanks the name for a soft-deleted owner and reports the fact in
-// this flag alone.
-func adminWorkerJSON(w *leapmuxv1.AdminWorker) map[string]any {
-	row := map[string]any{
-		"id":              w.GetId(),
-		"registered_by":   w.GetRegisteredBy(),
-		"username":        w.GetOwnerUsername(),
-		"owner_deleted":   w.GetOwnerDeleted(),
-		"status":          w.GetStatus().String(),
-		"auto_registered": w.GetAutoRegistered(),
+type adminWorkerListResult struct {
+	Workers    []adminWorkerRow `json:"workers"`
+	NextCursor string           `json:"next_cursor"`
+}
+
+func (r adminWorkerListResult) QuietLines() []string {
+	out := make([]string, 0, len(r.Workers))
+	for _, w := range r.Workers {
+		out = append(out, w.ID)
 	}
-	putTime(row, "created_at", w.GetCreatedAt())
-	putTime(row, "last_seen_at", w.GetLastSeenAt())
-	return row
+	return out
 }
 
-func RunAdminWorkerGet(rawCtx any, args []string) error {
-	var id string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "worker ID (required)")
+func resolveAdminWorker(ctx context.Context, c *control.HubClient, raw string) (string, *leapmuxv1.AdminWorker, error) {
+	byID := map[string]*leapmuxv1.AdminWorker{}
+	resolved, err := resolvePagedAdminID(ctx, "worker", raw, false,
+		func(ctx context.Context, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminWorker, *leapmuxv1.PageResponse, error) {
+			resp, err := c.AdminWorkerService().ListWorkers(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
+				Status:   leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED,
+				IdPrefix: idPrefix,
+				Page:     page,
+			})
+			return resp.GetWorkers(), resp.GetPage(), err
 		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().GetWorker(context.Background(), &leapmuxv1.AdminWorkerServiceGetWorkerRequest{Id: id})
+		(*leapmuxv1.AdminWorker).GetId,
+		func(w *leapmuxv1.AdminWorker) cli.Candidate {
+			byID[w.GetId()] = w
+			return cli.Candidate{ID: w.GetId(), Kind: "worker", Title: w.GetOwnerUsername()}
+		},
+	)
+	if err != nil {
+		return "", nil, err
+	}
+	return resolved, byID[resolved], nil
+}
+
+func resolveAdminWorkerID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
+	resolved, _, err := resolveAdminWorker(ctx, c, raw)
+	return resolved, err
+}
+
+func resolveAdminRegKeyID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
+	return resolveLiveThenAllPagedAdminID(ctx, "registration key", raw, false,
+		func(ctx context.Context, includeExpired bool, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminRegistrationKey, *leapmuxv1.PageResponse, error) {
+			resp, err := c.AdminWorkerService().ListRegistrationKeys(ctx, &leapmuxv1.ListRegistrationKeysRequest{
+				IncludeExpired: includeExpired,
+				IdPrefix:       idPrefix,
+				Page:           page,
+			})
+			return resp.GetKeys(), resp.GetPage(), err
+		},
+		(*leapmuxv1.AdminRegistrationKey).GetId,
+		func(k *leapmuxv1.AdminRegistrationKey) cli.Candidate {
+			return cli.Candidate{ID: k.GetId(), Kind: "reg-key", Title: k.GetCreatorUsername()}
+		},
+	)
+}
+
+func resolveAdminIdPID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
+	return resolveAdminTarget(ctx, raw, "sign-in provider", true, func(ctx context.Context, idPrefix string) ([]cli.Candidate, error) {
+		resp, err := c.AdminIdPService().ListOAuthProviders(ctx, &leapmuxv1.ListOAuthProvidersRequest{
+			IdPrefix: idPrefix,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]cli.Candidate, 0, len(resp.GetProviders()))
+		for _, p := range resp.GetProviders() {
+			out = append(out, cli.Candidate{ID: p.GetId(), Kind: p.GetProviderType(), Title: p.GetName()})
+		}
+		return out, nil
+	})
+}
+
+// adminWorkerRow reports a soft-deleted owner in OwnerDeleted. The Hub
+// clears Username in that case, so the flag distinguishes deletion from
+// a worker without an owner.
+type adminWorkerRow struct {
+	ID             string `json:"id" table:"ID,short"`
+	RegisteredBy   string `json:"registered_by"`
+	Username       string `json:"username" table:"USERNAME"`
+	OwnerDeleted   bool   `json:"owner_deleted"`
+	Status         string `json:"status" table:"STATUS,state"`
+	AutoRegistered bool   `json:"auto_registered"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	LastSeenAt     string `json:"last_seen_at,omitempty" table:"LAST SEEN,dim"`
+}
+
+func (r adminWorkerRow) QuietLines() []string { return []string{r.ID} }
+
+func adminWorkerRowOf(w *leapmuxv1.AdminWorker) adminWorkerRow {
+	return adminWorkerRow{
+		ID:             w.GetId(),
+		RegisteredBy:   w.GetRegisteredBy(),
+		Username:       w.GetOwnerUsername(),
+		OwnerDeleted:   w.GetOwnerDeleted(),
+		Status:         enumToken(w.GetStatus()),
+		AutoRegistered: w.GetAutoRegistered(),
+		CreatedAt:      formatTime(w.GetCreatedAt()),
+		LastSeenAt:     formatTime(w.GetLastSeenAt()),
+	}
+}
+
+func newAdminWorkerGet() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:   "get <worker>",
+		Short: "Show a worker of any user",
+		Examples: []cli.Example{
+			{Command: "leapmux admin worker get 5f2c9a1d"},
+		},
+		Complete: completeAdminWorkers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, "worker")
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminWorkerJSON(resp.GetWorker()))
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, worker, err := resolveAdminWorker(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			if worker != nil {
+				return adminWorkerRowOf(worker), nil
+			}
+			resp, err := c.AdminWorkerService().GetWorker(inv.Context, &leapmuxv1.AdminWorkerServiceGetWorkerRequest{Id: resolved})
+			if err != nil {
+				return nil, err
+			}
+			return adminWorkerRowOf(resp.GetWorker()), nil
 		},
 	})
 }
 
-func RunAdminWorkerDeregister(rawCtx any, args []string) error {
-	var id string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "worker ID (required)")
+type adminDeregisterResult struct {
+	Deregistered string `json:"deregistered"`
+}
+
+func (r adminDeregisterResult) QuietLines() []string { return []string{r.Deregistered} }
+
+func newAdminWorkerDeregister() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "deregister <worker>",
+		Short:       "Deregister a worker of any user",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin worker deregister 5f2c9a1d"},
 		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminWorkerService().DeregisterWorker(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: id}); err != nil {
-				return control.EmitErrorWith("deregister_failed", err)
+		Complete: completeAdminWorkers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, "worker")
+			if err != nil {
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"deregistered": id})
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminWorkerID(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.AdminWorkerService().DeregisterWorker(inv.Context, &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: resolved}); err != nil {
+				return nil, err
+			}
+			return adminDeregisterResult{Deregistered: resolved}, nil
 		},
 	})
 }
 
-func RunAdminWorkerRegKeyList(rawCtx any, args []string) error {
+func newAdminWorkerRegKeyList() *cobra.Command {
 	var page adminPageFlags
 	var includeExpired bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page: &page,
-		Flags: func(fs *flag.FlagSet) {
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List worker registration keys",
+		Examples: []cli.Example{
+			{Command: "leapmux admin worker reg-key list"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			page.bind(fs)
 			fs.BoolVar(&includeExpired, "include-expired", false, "include revoked or expired keys (forensics; default shows only live keys)")
 		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().ListRegistrationKeys(context.Background(), &leapmuxv1.ListRegistrationKeysRequest{
+		Run: func(inv *cli.Invocation) (any, error) {
+			if err := page.validate(); err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AdminWorkerService().ListRegistrationKeys(inv.Context, &leapmuxv1.ListRegistrationKeysRequest{
 				IncludeExpired: includeExpired, Page: page.request(),
 			})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetKeys()))
+			rows := make([]adminRegistrationKeyRow, 0, len(resp.GetKeys()))
 			for _, k := range resp.GetKeys() {
-				rows = append(rows, adminRegistrationKeyJSON(k))
+				rows = append(rows, adminRegistrationKeyRowOf(k))
 			}
-			return control.EmitData(map[string]any{"keys": rows, "next_cursor": resp.GetPage().GetNextCursor()})
+			return adminRegKeyListResult{Keys: rows, NextCursor: resp.GetPage().GetNextCursor()}, nil
 		},
 	})
 }
 
-// adminRegistrationKeyJSON renders one worker registration-key row.
-//
-// The owner column is spelled `username`, as it is on every other admin
-// row, so one filter or script reads them all. creator_deleted is what
-// tells an operator that the name is empty because the account is gone
-// rather than because the key has no creator. Both stamps go through
-// putTime for the reason tokenLifecycleJSON states.
-func adminRegistrationKeyJSON(k *leapmuxv1.AdminRegistrationKey) map[string]any {
-	row := map[string]any{
-		"id":              k.GetId(),
-		"created_by":      k.GetCreatedBy(),
-		"username":        k.GetCreatorUsername(),
-		"creator_deleted": k.GetCreatorDeleted(),
+type adminRegKeyListResult struct {
+	Keys       []adminRegistrationKeyRow `json:"keys"`
+	NextCursor string                    `json:"next_cursor"`
+}
+
+func (r adminRegKeyListResult) QuietLines() []string {
+	out := make([]string, 0, len(r.Keys))
+	for _, k := range r.Keys {
+		out = append(out, k.ID)
 	}
-	putTime(row, "created_at", k.GetCreatedAt())
-	putTime(row, "expires_at", k.GetExpiresAt())
-	return row
+	return out
 }
 
-func RunAdminWorkerRegKeyRevoke(rawCtx any, args []string) error {
-	var id string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "registration key ID (required)")
-		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminWorkerService().RevokeRegistrationKey(context.Background(), &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: id}); err != nil {
-				return control.EmitErrorWith("revoke_failed", err)
-			}
-			return control.EmitData(map[string]any{"revoked": id})
+// adminRegistrationKeyRow uses Username for the creator, matching the
+// other admin rows. CreatorDeleted distinguishes a deleted creator
+// from a key without a creator.
+type adminRegistrationKeyRow struct {
+	ID             string `json:"id" table:"ID,short"`
+	CreatedBy      string `json:"created_by"`
+	Username       string `json:"username" table:"USERNAME"`
+	CreatorDeleted bool   `json:"creator_deleted"`
+	CreatedAt      string `json:"created_at,omitempty" table:"CREATED,dim"`
+	ExpiresAt      string `json:"expires_at,omitempty" table:"EXPIRES,dim"`
+}
+
+func adminRegistrationKeyRowOf(k *leapmuxv1.AdminRegistrationKey) adminRegistrationKeyRow {
+	return adminRegistrationKeyRow{
+		ID:             k.GetId(),
+		CreatedBy:      k.GetCreatedBy(),
+		Username:       k.GetCreatorUsername(),
+		CreatorDeleted: k.GetCreatorDeleted(),
+		CreatedAt:      formatTime(k.GetCreatedAt()),
+		ExpiresAt:      formatTime(k.GetExpiresAt()),
+	}
+}
+
+func newAdminWorkerRegKeyRevoke() *cobra.Command {
+	return newAdminRevokeLeaf(adminRevokeLeafConfig{
+		argName:  "reg-key",
+		short:    "Revoke a worker registration key",
+		example:  "leapmux admin worker reg-key revoke 9Zt4Kp",
+		complete: completeAdminRegKeys,
+		resolve:  resolveAdminRegKeyID,
+		revoke: func(ctx context.Context, c *control.HubClient, id string) error {
+			_, err := c.AdminWorkerService().RevokeRegistrationKey(ctx, &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: id})
+			return err
 		},
 	})
 }
 
-func RunAdminWorkerRegKeyPurgeExpired(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().PurgeExpiredRegistrationKeys(context.Background(), &leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
+func newAdminWorkerRegKeyPurgeExpired() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:              "purge-expired",
+		Short:            "Delete every expired or revoked registration key",
+		Mutates:          true,
+		Destructive:      true,
+		QuietUnsupported: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin worker reg-key purge-expired"},
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("purge_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"purged": resp.GetPurged()})
+			resp, err := c.AdminWorkerService().PurgeExpiredRegistrationKeys(inv.Context, &leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
+			if err != nil {
+				return nil, err
+			}
+			return adminPurgeResult{Purged: resp.GetPurged()}, nil
 		},
 	})
 }
 
-// adminOAuthProviderJSON renders one OAuth provider row. Its stamp goes
-// through putTime for the reason tokenLifecycleJSON states.
-func adminOAuthProviderJSON(p *leapmuxv1.AdminOAuthProvider) map[string]any {
-	row := map[string]any{
-		"id":          p.GetId(),
-		"type":        p.GetProviderType(),
-		"name":        p.GetName(),
-		"issuer_url":  p.GetIssuerUrl(),
-		"client_id":   p.GetClientId(),
-		"scopes":      p.GetScopes(),
-		"trust_email": p.GetTrustEmail(),
-		"enabled":     p.GetEnabled(),
-	}
-	putTime(row, "created_at", p.GetCreatedAt())
-	return row
+type adminOAuthProviderRow struct {
+	ID           string `json:"id" table:"ID,short"`
+	Type         string `json:"type" table:"TYPE"`
+	Name         string `json:"name" table:"NAME"`
+	IssuerURL    string `json:"issuer_url"`
+	ClientID     string `json:"client_id" table:"CLIENT ID"`
+	Scopes       string `json:"scopes"`
+	TrustEmail   bool   `json:"trust_email"`
+	ResponseMode string `json:"response_mode,omitempty"`
+	Enabled      bool   `json:"enabled" table:"ENABLED"`
+	CreatedAt    string `json:"created_at,omitempty"`
 }
 
-func RunAdminOAuthProviderAdd(rawCtx any, args []string) error {
-	var providerType, name, clientID, clientSecret, issuerURL, scopes string
-	var trustEmail string
-	var req *leapmuxv1.AddOAuthProviderRequest
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&providerType, "type", "", "provider type (github, google, apple, oidc)")
+func (r adminOAuthProviderRow) QuietLines() []string { return []string{r.ID} }
+
+type adminOAuthProviderListResult struct {
+	Providers []adminOAuthProviderRow `json:"providers"`
+}
+
+func (r adminOAuthProviderListResult) QuietLines() []string {
+	out := make([]string, 0, len(r.Providers))
+	for _, p := range r.Providers {
+		out = append(out, p.ID)
+	}
+	return out
+}
+
+func adminOAuthProviderRowOf(p *leapmuxv1.AdminOAuthProvider) adminOAuthProviderRow {
+	return adminOAuthProviderRow{
+		ID:           p.GetId(),
+		Type:         p.GetProviderType(),
+		Name:         p.GetName(),
+		IssuerURL:    p.GetIssuerUrl(),
+		ClientID:     p.GetClientId(),
+		Scopes:       p.GetScopes(),
+		TrustEmail:   p.GetTrustEmail(),
+		ResponseMode: p.GetResponseMode(),
+		Enabled:      p.GetEnabled(),
+		CreatedAt:    formatTime(p.GetCreatedAt()),
+	}
+}
+
+func newAdminOAuthProviderAdd() *cobra.Command {
+	var providerType, name, clientID, clientSecret, issuerURL, scopes, responseMode string
+	supportedTypes := slices.Sorted(maps.Keys(oauth.Presets))
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "add",
+		Short:   "Add an OAuth or OIDC sign-in provider",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin idp add --type github --client-id Iv1.abc --client-secret s3cr3t"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			fs.StringVar(&providerType, "type", "", "provider type")
+			cli.SetEnum(fs, "type", supportedTypes...)
+			cli.MarkRequired(fs, "type")
 			fs.StringVar(&name, "name", "", "display name (defaults to the preset name)")
 			fs.StringVar(&clientID, "client-id", "", "OAuth client ID")
 			fs.StringVar(&clientSecret, "client-secret", "", "OAuth client secret")
 			fs.StringVar(&issuerURL, "issuer-url", "", "OIDC issuer URL")
 			fs.StringVar(&scopes, "scopes", "", "space-separated scopes")
-			fs.StringVar(&trustEmail, "trust-email", "", "trust verified provider emails (true/false; required for generic OIDC)")
-		},
-		BeforeDial: func(adminArgs) error {
-			req = &leapmuxv1.AddOAuthProviderRequest{
-				ProviderType: providerType, Name: name, ClientId: clientID,
-				ClientSecret: clientSecret, IssuerUrl: issuerURL, Scopes: scopes,
+			fs.String("trust-email", "", "trust verified provider emails (required for generic OIDC)")
+			cli.SetEnum(fs, "trust-email", "true", "false")
+			fs.StringVar(&responseMode, "response-mode", "", "OAuth callback response mode (defaults to form_post for apple, query otherwise)")
+			cli.SetEnum(fs, "response-mode", "query", "form_post")
+			for _, f := range []string{"type", "name", "issuer-url"} {
+				cli.SetFlagGroup(fs, f, "Provider")
 			}
-			if trustEmail != "" {
-				b, err := parseBoolFlag(trustEmail, "trust-email")
+			for _, f := range []string{"client-id", "client-secret"} {
+				cli.SetFlagGroup(fs, f, "Credentials")
+			}
+			for _, f := range []string{"scopes", "trust-email", "response-mode"} {
+				cli.SetFlagGroup(fs, f, "Behavior")
+			}
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			normalizedType := strings.TrimSpace(providerType)
+			preset, ok := oauth.Presets[normalizedType]
+			if !ok {
+				return nil, cli.Usagef("unknown provider type %q", providerType).
+					WithHint("use %s", strings.Join(supportedTypes, ", "))
+			}
+			if inv.Changed("response-mode") {
+				parsedMode, err := oauth.ParseResponseMode(responseMode)
 				if err != nil {
-					return control.EmitError("invalid_request", err.Error())
+					return nil, cli.Wrap(cli.CodeUsage, err, "")
 				}
-				req.TrustEmail = &b
+				if preset.ProviderType == oauth.ProviderTypeGitHub && parsedMode == oauth.ResponseModeFormPost {
+					return nil, cli.Usagef("form_post response_mode is only supported for OIDC providers")
+				}
 			}
-			return nil
-		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminIdPService().AddOAuthProvider(context.Background(), req)
+			trustEmail, err := parseOptionalBoolFlag(inv, "trust-email")
 			if err != nil {
-				return control.EmitErrorWith("add_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminOAuthProviderJSON(resp.GetProvider()))
+			req := &leapmuxv1.AddOAuthProviderRequest{
+				ProviderType: normalizedType, Name: name, ClientId: clientID,
+				ClientSecret: clientSecret, IssuerUrl: issuerURL, Scopes: scopes,
+				TrustEmail: trustEmail, ResponseMode: responseMode,
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AdminIdPService().AddOAuthProvider(inv.Context, req)
+			if err != nil {
+				return nil, err
+			}
+			return adminOAuthProviderRowOf(resp.GetProvider()), nil
 		},
 	})
 }
 
-func RunAdminOAuthProviderList(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminIdPService().ListOAuthProviders(context.Background(), &leapmuxv1.ListOAuthProvidersRequest{})
+func newAdminOAuthProviderList() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List the sign-in providers",
+		Examples: []cli.Example{
+			{Command: "leapmux admin idp list"},
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			providers := make([]map[string]any, 0, len(resp.GetProviders()))
+			resp, err := c.AdminIdPService().ListOAuthProviders(inv.Context, &leapmuxv1.ListOAuthProvidersRequest{})
+			if err != nil {
+				return nil, err
+			}
+			providers := make([]adminOAuthProviderRow, 0, len(resp.GetProviders()))
 			for _, p := range resp.GetProviders() {
-				providers = append(providers, adminOAuthProviderJSON(p))
+				providers = append(providers, adminOAuthProviderRowOf(p))
 			}
-			return control.EmitData(providers)
+			return adminOAuthProviderListResult{Providers: providers}, nil
 		},
 	})
 }
 
-// RunAdminOAuthProviderRemove implements `control admin idp
-// remove`.
-//
-// Deleting the provider row cascades every account link to it away. An
-// account with no password whose only link was this provider then has no
-// login method left, and only the offline `leapmux recover` restores it.
-// The hub refuses that removal, and --force removes the provider anyway.
-//
-// locked_out_users counts those accounts. The reply carries it either
-// way, and it is the only report an operator gets of how many accounts a
-// forced removal locked out.
-func RunAdminOAuthProviderRemove(rawCtx any, args []string) error {
-	var id string
+type adminIdPRemoveResult struct {
+	Removed        string `json:"removed"`
+	LockedOutUsers int64  `json:"locked_out_users"`
+}
+
+func (r adminIdPRemoveResult) QuietLines() []string { return []string{r.Removed} }
+
+// newAdminOAuthProviderRemove builds `admin idp remove`.
+func newAdminOAuthProviderRemove() *cobra.Command {
 	var force bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "provider ID")
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "remove <idp>",
+		Aliases:     []string{"rm"},
+		Short:       "Remove a sign-in provider",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin idp remove 3hKd9s"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.BoolVar(&force, "force", false, "required to remove a provider that is the last login method of an account")
 		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminIdPService().RemoveOAuthProvider(context.Background(), &leapmuxv1.RemoveOAuthProviderRequest{
-				Id: id, Force: force,
+		Complete: completeAdminIdPs,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, "idp")
+			if err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminIdPID(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AdminIdPService().RemoveOAuthProvider(inv.Context, &leapmuxv1.RemoveOAuthProviderRequest{
+				Id: resolved, Force: force,
 			})
 			if err != nil {
-				return control.EmitErrorWith("remove_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"removed": id, "locked_out_users": resp.GetLockedOutUsers()})
+			return adminIdPRemoveResult{Removed: resolved, LockedOutUsers: resp.GetLockedOutUsers()}, nil
 		},
 	})
 }
 
-// RunAdminOAuthProviderSetEnabled implements `control admin idp
-// enable|disable`.
-func RunAdminOAuthProviderSetEnabled(rawCtx any, args []string, enabled bool) error {
-	var id string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "provider ID")
-		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminIdPService().SetOAuthProviderEnabled(context.Background(), &leapmuxv1.SetOAuthProviderEnabledRequest{
-				Id: id, Enabled: enabled,
+type adminIdPEnabledResult struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
+}
+
+func (r adminIdPEnabledResult) QuietLines() []string { return []string{r.ID} }
+
+// newAdminOAuthProviderSetEnabled builds `admin idp enable|disable`.
+func newAdminOAuthProviderSetEnabled(enabled bool, use, short string, examples []cli.Example) *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:      use,
+		Short:    short,
+		Examples: examples,
+		Mutates:  true,
+		Complete: completeAdminIdPs,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, "idp")
+			if err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminIdPID(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.AdminIdPService().SetOAuthProviderEnabled(inv.Context, &leapmuxv1.SetOAuthProviderEnabledRequest{
+				Id: resolved, Enabled: enabled,
 			}); err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"id": id, "enabled": enabled})
+			return adminIdPEnabledResult{ID: resolved, Enabled: enabled}, nil
 		},
 	})
 }
 
-// parseBoolFlag parses a tri-state string flag ("true"/"false").
-func parseBoolFlag(raw, name string) (bool, error) {
-	b, err := strconv.ParseBool(raw)
-	if err != nil {
-		return false, errors.New(name + " must be 'true' or 'false'")
-	}
-	return b, nil
+type adminIdPRotateSecretResult struct {
+	ID string `json:"id"`
+}
+
+func (r adminIdPRotateSecretResult) QuietLines() []string { return []string{r.ID} }
+
+// newAdminOAuthProviderRotateSecret builds `admin idp rotate-secret`.
+func newAdminOAuthProviderRotateSecret() *cobra.Command {
+	var clientSecret string
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "rotate-secret <idp>",
+		Short:   "Replace a sign-in provider's client secret without removing linked users",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin idp rotate-secret 3hKd9s --client-secret new-s3cr3t"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			fs.StringVar(&clientSecret, "client-secret", "", "new OAuth client secret")
+			cli.MarkRequired(fs, "client-secret")
+		},
+		Complete: completeAdminIdPs,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, "idp")
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(clientSecret) == "" {
+				return nil, cli.Usagef("--client-secret is empty")
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminIdPID(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.AdminIdPService().UpdateOAuthProviderSecret(inv.Context, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+				Id: resolved, ClientSecret: clientSecret,
+			}); err != nil {
+				return nil, err
+			}
+			return adminIdPRotateSecretResult{ID: resolved}, nil
+		},
+	})
 }

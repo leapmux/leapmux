@@ -24,14 +24,6 @@
         ],
         "why": "The worker persists only the completed review, whose status is never in progress, so the browser never draws one. The worker still reads the word to convert every status into its core spelling."
       }
-    },
-    "asyncQuestionInput": {
-      "QuestionItemID": {
-        "sides": [
-          "ts"
-        ],
-        "why": "The worker builds the reply from this identity. The browser shows only the title and the options."
-      }
     }
   },
   "supplement": {

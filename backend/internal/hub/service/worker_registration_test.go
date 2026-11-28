@@ -161,10 +161,10 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 	// One notifier for both services, as hub/server.go wires it: the
-	// connector delivers DEREGISTER to a deregistering worker that connects,
+	// connector delivers DEREGISTER to a worker deleted mid-connect,
 	// and the management service sends it to a connected one. Every
-	// workers-changed notification goes through the CRDT registry, as there.
-	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() }, registry.BroadcastWorkersChanged)
+	// workers-changed notification goes through WorkerDeregisterEffects.
+	notif := notifier.New(wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 	connectorSt := st
 	if options.connectorStore != nil {
 		connectorSt = options.connectorStore(st)
@@ -814,7 +814,7 @@ func TestDeregisterWorker_AllowsManuallyRegisteredWorker(t *testing.T) {
 
 	worker, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, worker.Status)
 }
 
 // createBundledWorker adds an auto-registered worker row for the admin, as
@@ -849,7 +849,7 @@ func TestDeregisterWorker_AllowsAnOfflineBundledWorker(t *testing.T) {
 
 	worker, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, worker.Status)
 }
 
 // The owner cannot stop a connected bundled worker: the app would run with no
@@ -1553,11 +1553,11 @@ func (u userReadFailUsers) GetByID(ctx context.Context, id string) (*store.User,
 	return u.UserStore.GetByID(ctx, id)
 }
 
-// TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck pins the
-// recovery for a worker deregistered while it was offline. deregistering_at is
-// the persisted intent, so its next connect must carry the DEREGISTER
-// instruction, and the worker's acknowledgement deletes it.
-func TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck(t *testing.T) {
+// TestConnect_RefusesAnOfflineDeregisteredWorkerWithWorkerDeleted pins the
+// behavior for a worker deregistered while offline: deregistration sets
+// deleted_at immediately, so its next connect is refused with WORKER_DELETED
+// and never enters the active worker stream.
+func TestConnect_RefusesAnOfflineDeregisteredWorkerWithWorkerDeleted(t *testing.T) {
 	t.Parallel()
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
@@ -1571,38 +1571,23 @@ func TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deregistered, "the worker is deregistered while no connection exists")
 
+	row, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, row.Status)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stream := dialWorker(t, ctx, env.server, regResp.GetAuthToken())
-	require.NoError(t, stream.Send(helloRequest(postQuantumHello(0x31))))
-
-	var instruction *leapmuxv1.ConnectResponse
-	for instruction == nil {
-		frame, err := stream.Receive()
-		require.NoError(t, err, "the Hub must send DEREGISTER before it ends the stream")
-		if frame.GetDeregister() != nil {
-			instruction = frame
-		}
-	}
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		RequestId: instruction.GetRequestId(),
-		Payload:   &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
-	}))
-
-	testutil.AssertEventually(t, func() bool {
-		row, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
-		return err == nil && row.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
-	})
-	testutil.AssertEventually(t, func() bool {
-		return !env.wMgr.OnlineForTrustedPath(workerID)
-	})
-	require.NoError(t, stream.Close())
+	_, err = stream.Receive()
+	require.Error(t, err)
+	requireWorkerClose(t, err, websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonDeleted)
+	assert.False(t, env.wMgr.OnlineForTrustedPath(workerID))
 }
 
 func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing.T) {
 	t.Parallel()
-	for _, deleted := range []bool{false, true} {
-		t.Run(map[bool]string{false: "deregistering on reconnect", true: "deleted on reconnect"}[deleted], func(t *testing.T) {
+	for _, method := range []string{"deregistered on reconnect", "deleted on reconnect"} {
+		t.Run(method, func(t *testing.T) {
 			env := setupRegKeyEnv(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -1623,14 +1608,14 @@ func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing
 					break
 				}
 			}
-			if deleted {
+			if method == "deleted on reconnect" {
 				require.NoError(t, env.store.Workers().MarkDeleted(ctx, registered.GetWorkerId()))
 			} else {
 				_, err := env.store.Workers().ForceDeregister(ctx, registered.GetWorkerId())
 				require.NoError(t, err)
 			}
-			failed := notifier.New(env.store, env.wMgr, failedStopSender{}, func() time.Duration { return time.Second }, nil)
-			require.NoError(t, failed.SendDeregister(ctx, registered.GetWorkerId()))
+			failed := notifier.New(env.wMgr, failedStopSender{}, func() time.Duration { return time.Second })
+			failed.SendDeregister(ctx, registered.GetWorkerId())
 			for {
 				_, err := first.Receive()
 				if err != nil {
@@ -1640,27 +1625,9 @@ func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing
 			require.NoError(t, ctx.Err(), "the stream must end because delivery forced reconnect, not because the test expired")
 			testutil.AssertEventually(t, func() bool { return !env.wMgr.OnlineForTrustedPath(registered.GetWorkerId()) })
 			next := dialWorker(t, ctx, env.server, registered.GetAuthToken())
-			if deleted {
-				_, err := next.Receive()
-				require.Error(t, err)
-				requireWorkerClose(t, err, websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonDeleted)
-				return
-			}
-			require.NoError(t, next.Send(helloRequest(postQuantumHello(0x31))))
-			for {
-				frame, err := next.Receive()
-				require.NoError(t, err)
-				if frame.GetDeregister() != nil {
-					require.NoError(t, next.Send(&leapmuxv1.ConnectRequest{
-						RequestId: frame.GetRequestId(), Payload: &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
-					}))
-					break
-				}
-			}
-			testutil.AssertEventually(t, func() bool {
-				worker, err := env.store.Workers().GetByIDIncludeDeleted(ctx, registered.GetWorkerId())
-				return err == nil && worker.DeletedAt != nil
-			})
+			_, err = next.Receive()
+			require.Error(t, err)
+			requireWorkerClose(t, err, websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonDeleted)
 		})
 	}
 }
@@ -1737,7 +1704,7 @@ func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
 						// The durable change commits first, and the notifier
 						// runs after it, exactly as the services call it.
 						assert.NoError(t, tt.change(ctx, env.store, worker.ID))
-						assert.NoError(t, env.notifier.SendDeregister(ctx, worker.ID))
+						env.notifier.SendDeregister(ctx, worker.ID)
 					})
 				}}
 			}})
@@ -1959,7 +1926,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 
 	deregistered, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), first.GetWorkerId())
 	require.NoError(t, err)
-	require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, deregistered.Status)
+	require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, deregistered.Status)
 
 	// The deregistering row still holds a writable connection and queue membership.
 	env.connector.RedeliverWorkerIdentity(env.adminID(t))
@@ -2284,4 +2251,44 @@ func registrationKeyID(t *testing.T, env *regKeyEnv, key string) string {
 	row, err := env.store.RegistrationKeys().GetByKeyHash(t.Context(), hubtestutil.TestSecretHasher().Hash(key))
 	require.NoError(t, err)
 	return row.ID
+}
+
+func TestWorkerManagementService_GetWorkerInventory(t *testing.T) {
+	t.Parallel()
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	adminID := env.adminID(t)
+
+	inv0, err := env.mgmtClient.GetWorkerInventory(authedReq(t.Context(), &leapmuxv1.GetWorkerInventoryRequest{}, token))
+	require.NoError(t, err)
+	assert.Equal(t, adminID, inv0.GetOwnerUserId())
+	assert.Zero(t, inv0.GetRevision())
+	assert.Empty(t, inv0.GetWorkerIds())
+
+	registerOne := func() string {
+		keyResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(t.Context(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		require.NoError(t, err)
+		regResp, err := env.registerWithKeys(t, keyResp.GetRegistrationKey(), workerkeystest.Keys(0x41))
+		require.NoError(t, err)
+		return regResp.GetWorkerId()
+	}
+
+	w1 := registerOne()
+	w2 := registerOne()
+	wantIDs := []string{w1, w2}
+	slices.Sort(wantIDs)
+
+	inv2, err := env.mgmtClient.GetWorkerInventory(authedReq(t.Context(), &leapmuxv1.GetWorkerInventoryRequest{}, token))
+	require.NoError(t, err)
+	assert.Equal(t, adminID, inv2.GetOwnerUserId())
+	assert.Equal(t, int64(2), inv2.GetRevision())
+	assert.Equal(t, wantIDs, inv2.GetWorkerIds())
+
+	_, err = env.mgmtClient.DeregisterWorker(authedReq(t.Context(), &leapmuxv1.DeregisterWorkerRequest{WorkerId: w1}, token))
+	require.NoError(t, err)
+
+	invAfterDereg, err := env.mgmtClient.GetWorkerInventory(authedReq(t.Context(), &leapmuxv1.GetWorkerInventoryRequest{}, token))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), invAfterDereg.GetRevision())
+	assert.Equal(t, []string{w2}, invAfterDereg.GetWorkerIds())
 }

@@ -1,5 +1,6 @@
 // Package streamevents supplies cursors and subscriptions for worker WatchEvents streams.
-// The agent messages and events commands share its resume logic.
+// `agent messages --follow` resumes through its cursors. `agent wait`, `agent send --wait`
+// and `events` watch in notify mode through its subscriptions, which need no cursor.
 // Each request lists the exact agents and terminals that the caller wants.
 // Update replaces that interest on the existing stream.
 // An unchanged FULL agent keeps its replay identity and fixed replay cursor.
@@ -76,21 +77,39 @@ func (c *Cursor[Entry]) Update(id string, value int64) int64 {
 // -- exactly one sees advanced=true. A separate Get-then-Update has a window between
 // the two locks where both readers see the stale value.
 func (c *Cursor[Entry]) Advance(id string, value int64) bool {
+	_, advanced := c.advanceFrom(id, value)
+	return advanced
+}
+
+// advanceFrom returns the prior cursor and advances it in the same operation.
+// A terminal uses the prior offset to trim the part of a chunk it has seen.
+func (c *Cursor[Entry]) advanceFrom(id string, value int64) (int64, bool) {
 	if id == "" {
-		return false
+		return 0, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.advanceLocked(id, value)
 }
 
-func (c *Cursor[Entry]) advanceLocked(id string, value int64) bool {
+func (c *Cursor[Entry]) advanceLocked(id string, value int64) (int64, bool) {
 	cur, ok := c.values[id]
 	if !ok || value > cur {
 		c.values[id] = value
-		return true
+		return cur, true
 	}
-	return false
+	return cur, false
+}
+
+// replace sets the absolute offset of a replacement snapshot. A new PTY can
+// report a lower offset than the terminal the snapshot replaced.
+func (c *Cursor[Entry]) replace(id string, value int64) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.values[id] = value
 }
 
 // Get returns the current cursor for id, or 0 if untracked.
@@ -146,18 +165,23 @@ func (c *Cursor[Entry]) Snapshot(restrict map[string]struct{}) []Entry {
 	return out
 }
 
+type retractionFence struct {
+	seqs map[int64]struct{}
+	min  int64
+}
+
 // AgentCursor records the highest delivered sequence and fences ahead-of-cursor
 // retractions. An older replay page can have read those rows before deletion.
 type AgentCursor struct {
 	*Cursor[*leapmuxv1.WatchAgentEntry]
-	retracted map[string]map[int64]struct{}
+	retracted map[string]*retractionFence
 }
 
 // NewAgentCursor returns an empty cursor seeded with no agents.
 func NewAgentCursor() *AgentCursor {
 	return &AgentCursor{
 		Cursor:    NewCursor(AgentWatchEntry),
-		retracted: make(map[string]map[int64]struct{}),
+		retracted: make(map[string]*retractionFence),
 	}
 }
 
@@ -173,11 +197,64 @@ func (c *AgentCursor) recordRetraction(id string, sequences []int64) {
 			continue
 		}
 		if fence == nil {
-			fence = make(map[int64]struct{})
+			fence = &retractionFence{
+				seqs: make(map[int64]struct{}),
+				min:  sequence,
+			}
 			c.retracted[id] = fence
 		}
-		fence[sequence] = struct{}{}
+		fence.seqs[sequence] = struct{}{}
+		if sequence < fence.min {
+			fence.min = sequence
+		}
 	}
+}
+
+func (c *AgentCursor) pruneRetractionsLocked(id string, fence *retractionFence, value int64) {
+	var nextMin int64
+	hasNextMin := false
+	for sequence := range fence.seqs {
+		if sequence < value {
+			delete(fence.seqs, sequence)
+			continue
+		}
+		if !hasNextMin || sequence < nextMin {
+			nextMin = sequence
+			hasNextMin = true
+		}
+	}
+	if !hasNextMin {
+		delete(c.retracted, id)
+		return
+	}
+	fence.min = nextMin
+}
+
+// Update records value for id iff it advances the counter and is not fenced by
+// a prior retraction. Returns the cursor value after the update.
+func (c *AgentCursor) Update(id string, value int64) int64 {
+	if id == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var fence *retractionFence
+	if len(c.retracted) > 0 {
+		fence = c.retracted[id]
+		if fence != nil {
+			if _, deleted := fence.seqs[value]; deleted {
+				return c.values[id]
+			}
+		}
+	}
+	cur, advanced := c.advanceLocked(id, value)
+	if !advanced {
+		return cur
+	}
+	if fence != nil && value > fence.min {
+		c.pruneRetractionsLocked(id, fence, value)
+	}
+	return value
 }
 
 // Advance admits a new message unless a retraction already removed it.
@@ -187,17 +264,20 @@ func (c *AgentCursor) Advance(id string, value int64) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fence := c.retracted[id]
-	if _, deleted := fence[value]; deleted || !c.advanceLocked(id, value) {
-		return false
-	}
-	for sequence := range fence {
-		if sequence < value {
-			delete(fence, sequence)
+	var fence *retractionFence
+	if len(c.retracted) > 0 {
+		fence = c.retracted[id]
+		if fence != nil {
+			if _, deleted := fence.seqs[value]; deleted {
+				return false
+			}
 		}
 	}
-	if len(fence) == 0 {
-		delete(c.retracted, id)
+	if _, advanced := c.advanceLocked(id, value); !advanced {
+		return false
+	}
+	if fence != nil && value > fence.min {
+		c.pruneRetractionsLocked(id, fence, value)
 	}
 	return true
 }
@@ -225,8 +305,8 @@ func IsResumeCursor(seq int64) bool {
 // (IsResumeCursor false) maps to a fresh LATEST subscription (tail from the most
 // recent page), while a real resume cursor maps to AFTER_CURSOR resume from that seq.
 // The wire entry is explicit either way -- no 0/sign overload. Shared by the cursor's
-// Snapshot builder (the `events` fan-out) and the `agent messages --follow` reconnect
-// loop so the mapping lives in one place.
+// Snapshot builder and the `agent messages --follow` reconnect loop so the mapping
+// lives in one place.
 func AgentWatchEntry(id string, seq int64) *leapmuxv1.WatchAgentEntry {
 	if !IsResumeCursor(seq) {
 		return &leapmuxv1.WatchAgentEntry{
@@ -243,14 +323,9 @@ func AgentWatchEntry(id string, seq int64) *leapmuxv1.WatchAgentEntry {
 	}
 }
 
-// TerminalCursor records the highest cumulative `end_offset` seen per
-// terminal_id. Behaves identically to AgentCursor, but the proto
-// contract for terminals (`backend/internal/worker/service/terminal.go`)
-// allows the worker to silently treat an `after_offset` past the
-// retention window or larger than the live counter as 0 — so cursor
-// resets aren't a CLI-side error, they're a normal state-rollover
-// event the consumer must handle. The Subscription layer flags those
-// frames via `is_snapshot=true`.
+// TerminalCursor records the expected end offset of each terminal. It
+// advances through live chunks and adopts the offset of a replacement
+// snapshot, including a lower offset after a restart.
 type TerminalCursor = Cursor[*leapmuxv1.WatchTerminalEntry]
 
 // NewTerminalCursor returns an empty cursor.

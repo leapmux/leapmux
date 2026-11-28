@@ -337,6 +337,36 @@ func (svc *Service) prepareTabClose(ctx context.Context, tabType leapmuxv1.TabTy
 	stopProcess()
 
 	result := &leapmuxv1.CloseTabResponse{}
+	snapshot := &tabCloseSnapshot{
+		TabType: tabType, TabID: tabID, UserID: userID, Action: action, LinkPolicy: linkPolicy,
+		WorkingDir: workingDir, RootEligible: rootEligible, RemovalInfo: removalInfo, Result: result,
+	}
+	const selectionRefusalMessage = "The Worker kept the worktree because it could not verify the selected checkout"
+	var selection *selectedWorktreeIdentity
+	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE &&
+		(tabType == leapmuxv1.TabType_TAB_TYPE_AGENT || tabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL) {
+		owner, owned := userid.New(userID)
+		err := errCreationOwnerMissing
+		if owned {
+			selection, err = svc.readTabWorktreeSelection(ctx, tabType, tabID, owner)
+		}
+		if err != nil {
+			setWorktreeRemovalFailed(result, &db.Worktree{WorktreePath: workingDir}, err)
+			snapshot.LookupFailed = true
+			return snapshot
+		}
+		if selection != nil {
+			err = errSelectedWorktreeUnproved
+			if rootEligible {
+				err = selection.verify(removalInfo, true)
+			}
+			if err != nil {
+				setWorktreeRemovalRefused(result, &db.Worktree{WorktreePath: selection.Path}, selectionRefusalMessage, err.Error())
+				snapshot.Action = leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP
+				return snapshot
+			}
+		}
+	}
 
 	// When REMOVE is requested, look up the worktree BEFORE the
 	// tab-worktree association is dropped, so we still see the link.
@@ -375,16 +405,26 @@ func (svc *Service) prepareTabClose(ctx context.Context, tabType leapmuxv1.TabTy
 		}
 	}
 
-	var identity *worktreeRemovalIdentity
+	snapshot.Worktree = wtForRemoval
+	snapshot.LookupFailed = worktreeLookupFailed
 	if wtForRemoval != nil && rootEligible && !worktreeLookupFailed {
-		var err error
-		identity, err = svc.captureWorktreeRemovalIdentity(ctx, *wtForRemoval, newOwnedTabKey(tabType, tabID, userID))
+		err := svc.withGitIndexLock(wtForRemoval.RepoGitDir, func() error {
+			var captureErr error
+			snapshot.RemovalIdentity, captureErr = svc.captureWorktreeRemovalIdentityLocked(ctx, *wtForRemoval, newOwnedTabKey(tabType, tabID, userID), selection)
+			return captureErr
+		})
+		if errors.Is(err, errSelectedWorktreeChanged) || errors.Is(err, errSelectedWorktreeUnproved) {
+			setWorktreeRemovalRefused(result, wtForRemoval, selectionRefusalMessage, err.Error())
+			snapshot.Action = leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP
+			snapshot.Worktree = nil
+			return snapshot
+		}
 		if err != nil {
 			setWorktreeRemovalFailed(result, wtForRemoval, err)
-			worktreeLookupFailed = true
+			snapshot.LookupFailed = true
 		}
 	}
-	return &tabCloseSnapshot{TabType: tabType, TabID: tabID, UserID: userID, Action: action, LinkPolicy: linkPolicy, WorkingDir: workingDir, RootEligible: rootEligible, RemovalInfo: removalInfo, Worktree: wtForRemoval, RemovalIdentity: identity, LookupFailed: worktreeLookupFailed, Result: result}
+	return snapshot
 }
 
 func (svc *Service) continueTabClose(ctx context.Context, snapshot *tabCloseSnapshot, retiredLiveRow bool, journal worktreeRemovalJournal) (*leapmuxv1.CloseTabResponse, error) {
@@ -691,6 +731,13 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 			slog.Warn("close agent: list descendants failed", "agent", agentID, "err", derr)
 			childDescendants = nil
 		}
+		// The row stays open, but the tab and its subagent tabs close, and a
+		// status belongs to the tab. This branch skips applyTabCloseEffects,
+		// so it clears the statuses itself.
+		svc.TabStatuses.forgetClosed(newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID))
+		for _, id := range childDescendants {
+			svc.TabStatuses.forgetClosed(newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, id, userID))
+		}
 		return &leapmuxv1.CloseTabResponse{DescendantAgentIds: childDescendants}
 	}
 	// A cold start can hold the lifecycle lock while its provider handshake
@@ -706,7 +753,10 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 
 	rootTeardown := func() { svc.stopRootAgentTabForClose(bgCtx(), userID, agentID, dbAgent, action, linkPolicy) }
 	rootClose := func() (bool, error) {
-		retirement, err := svc.retireTabResource(bgCtx(), svc.Queries, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID))
+		if svc.beforeAgentRetirementFn != nil {
+			svc.beforeAgentRetirementFn(agentID)
+		}
+		retirement, err := svc.retireAgentTree(bgCtx(), newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID))
 		descendants = retirement.Descendants
 		svc.applyTabCloseEffects(bgCtx(), newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID), retirement)
 		return retirement.RetiredLiveRow, err
@@ -729,6 +779,8 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 // leaves the manager's terminals/meta/exitDone entries behind, which the
 // reconciler used to do and which leaked one entry per reaped terminal.
 func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResponse {
+	releaseCloseAdmission := svc.TerminalStartup.holdCloseAdmission(terminalID)
+	defer releaseCloseAdmission()
 	if svc.QuakeTerminals.Has(terminalID) {
 		return svc.closeQuakeTerminal(terminalID)
 	}
@@ -751,7 +803,11 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 			svc.stopTerminalTabForClose(userID, terminalID, workingDir, termErr == nil, action, linkPolicy)
 		},
 		func() (bool, error) {
-			retirement, err := svc.retireTabResource(bgCtx(), svc.Queries, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID))
+			key := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID)
+			retirement, err := svc.retireTabResource(bgCtx(), svc.Queries, key)
+			// As the agent and payload closes do, so every tab type publishes
+			// what its close changed through the one funnel.
+			svc.applyTabCloseEffects(bgCtx(), key, retirement)
 			return retirement.RetiredLiveRow, err
 		},
 	)

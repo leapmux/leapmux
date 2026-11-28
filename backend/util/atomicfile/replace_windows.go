@@ -25,15 +25,29 @@ const (
 )
 
 func replaceFile(oldpath, newpath string) error {
+	return retryReplaceOnSharingConflict(
+		func() error { return os.Rename(oldpath, newpath) },
+		func() bool { return destCannotReplace(newpath) },
+	)
+}
+
+func replaceFileInRoot(root *os.Root, oldRel, newRel string) error {
+	return retryReplaceOnSharingConflict(
+		func() error { return root.Rename(oldRel, newRel) },
+		func() bool { return destCannotReplaceInRoot(root, newRel) },
+	)
+}
+
+func retryReplaceOnSharingConflict(rename func() error, cannotReplace func() bool) error {
 	deadline := time.Now().Add(replaceDeadline)
 	sleep := time.Millisecond
 	var err error
 	for {
-		err = os.Rename(oldpath, newpath)
+		err = rename()
 		if err == nil {
 			return nil
 		}
-		if destCannotReplace(newpath) || !isSharingConflict(err) {
+		if cannotReplace() || !isSharingConflict(err) {
 			return err
 		}
 		if !time.Now().Before(deadline) {
@@ -50,7 +64,14 @@ func replaceFile(oldpath, newpath string) error {
 }
 
 func destCannotReplace(path string) bool {
-	info, err := os.Stat(path)
+	return destInfoCannotReplace(os.Stat(path))
+}
+
+func destCannotReplaceInRoot(root *os.Root, rel string) bool {
+	return destInfoCannotReplace(root.Stat(rel))
+}
+
+func destInfoCannotReplace(info os.FileInfo, err error) bool {
 	if err != nil {
 		return false
 	}

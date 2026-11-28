@@ -1,212 +1,119 @@
 ---
-title: "Concepts & Architecture"
-description: "How LeapMux is built: the Hub, Worker, and Frontend, the solo and distributed deployment shapes, and the workspace, tile, tab, and worktree model."
+title: "Concepts & Topologies"
+description: "Choose a LeapMux deployment topology and learn how the Hub, Worker, Frontend, workspaces, worktrees, end-to-end encryption, and persistence fit together."
 type: docs
-weight: 2
+weight: 4
 ---
 
-This chapter is the overview. It explains the three components LeapMux is built from, the two shapes you can deploy it in, and the objects you work with every day — workspaces, layouts, tiles, tabs, worktrees, Workers, and the encrypted channels that connect them. Every concept links to the chapter that covers it in depth.
+Every LeapMux setup runs the same three components — **Frontend**, **Hub**, and **Worker** — with the same end-to-end encryption (E2EE). Topologies differ only in where those components run, how you sign in, and how many machines hold your repositories.
+
+## Choose your topology
+
+Start with this decision tree to pick the deployment mode that fits your setup today. You can move from Solo to a Distributed Hub later without relearning the app.
+
+```mermaid
+flowchart TD
+  Q1{"One machine or remote machines?"}
+  Q2{"Desktop app or browser / headless?"}
+  Q3{"Single developer or team?"}
+
+  M1["Solo Desktop (LeapMux Desktop)"]
+  M2["Solo Daemon (leapmux up)"]
+  M3["Distributed Hub + Remote Workers"]
+  M4["Multi-User Distributed Hub + Workers"]
+
+  Q1 -->|"One machine"| Q2
+  Q1 -->|"Remote machines / NAT"| Q3
+  Q2 -->|"Desktop app"| M1
+  Q2 -->|"Browser or background service"| M2
+  Q3 -->|"Solo"| M3
+  Q3 -->|"Multi-user"| M4
+```
+
+### Deployment modes compared
+
+| Mode | Best for | Processes | Network & ports | Login |
+| --- | --- | --- | --- | --- |
+| **Solo Desktop** | One developer on macOS, Linux, or Windows | Bundled Hub + Worker inside **LeapMux Desktop** | Local inter-process communication (IPC) only; no TCP port opened by default | None (local OS user trust) |
+| **Solo Daemon** (`leapmux up`) | One developer using a browser, CLI, or persistent local service | One `leapmux daemon solo` process (Hub + Worker) | Loopback `127.0.0.1:4327` plus local IPC | First browser visit sets the `solo` password |
+| **Distributed (Hub + Workers)** | Remote Linux/GPU devboxes behind firewalls, or a team sharing one Hub | One Hub (`daemon hub`) + one or more Workers (`daemon worker`) | Hub listens on `:4327` behind an HTTPS reverse proxy; Workers open zero inbound ports | Passwords, passkeys, OAuth/OIDC, API tokens |
+| **Dev** (`leapmux daemon dev`) | All-in-one Docker or remote single-host testing | One process (Hub + Worker) | All interfaces (`:4327`) | Full authentication bootstrapped via `/setup` |
+
+Notes on Solo Desktop:
+
+- By default, closing the **LeapMux Desktop** window quits the app and stops its embedded sidecar's live processes. Enable **Tray icon** / **Menu bar icon** in **Preferences → Desktop** if you want closing the window to hide LeapMux to the tray while live agents and terminals keep running; use **Solo Daemon** (`leapmux up`) or **Distributed** mode when you want agents and shells to keep running across app quits or logouts.
+- Cross-device layout sync requires **Network Access** enabled in Solo mode or a **Distributed** Hub.
+- The Linux `.AppImage` package bundles no `leapmux` CLI. Use the `.deb` package or the standalone binary on Linux if you want the control CLI or Agent Skills.
 
 ## The three components
 
-LeapMux has three components. The Hub and the Worker are roles of a single Go binary, `leapmux`. The Frontend is a web app that runs in your browser or the desktop app. In a running system all three are present; what changes between deployment shapes is whether the Hub and the Worker share one process.
+The **Hub** and the **Worker** are roles of one Go binary (`leapmux`). The **Frontend** runs in your web browser or inside **LeapMux Desktop**.
 
 | Component | Responsibility | Runs where | State it holds |
-|---|---|---|---|
-| **Frontend** | Renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It is where you click, type, and read. | Your browser or the native desktop app. | The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. |
-| **Hub** | Handles login, workspace management, and Worker registration, and **relays** encrypted Frontend↔Worker traffic. It is a coordinator and a relay, not a place where your code or conversations live. | A central Go service. | The central database (pluggable: SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). |
-| **Worker** | Runs your coding agents, PTY/terminal sessions, file browsing, and git operations. | A Go process, usually on the machine that holds your repos. It auto-reconnects to the Hub if the connection drops. | Its own local SQLite database. |
+| --- | --- | --- | --- |
+| **Frontend** | Renders workspaces, tiling layouts, agent chats, terminals, and the file browser. | Your browser or **LeapMux Desktop**. | Local client cache for fast rendering; see [Encryption & Data](/docs/admin/encryption-and-data/). |
+| **Hub** | Handles sign-in, workspace metadata, layout sync, Worker registration, and encrypted traffic relay. | A central Go service (or embedded in Solo). | Central SQL database (SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). |
+| **Worker** | Runs coding agents, pseudo-terminal (PTY) shells, file browsing, and git operations. | The machine that holds your repositories. | Its own local SQLite database and Worker identity. |
 
-**Your agent transcripts, terminal output, and file contents live on the Worker, never on the Hub.**
+**Your repositories, agent transcripts, and terminal output live on the Worker, never on the Hub.**
 
-The division protects content while the Hub only observes its database, logs, and relayed traffic. The Hub is trusted for identity, and a browser trusts it for code as well. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser — the desktop app runs its bundled Frontend, so no Hub can serve it code.
+The Hub relays encrypted traffic and cannot read agent chats, terminal output, or files. A compromised Hub still controls identity and could serve modified browser client code unless you run the desktop app (which ships its own Frontend) or pin trusted origins. See [Security & Authentication](/docs/admin/security-and-auth/).
 
-{{< callout type="info" >}}
-The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect to a remote Hub through its local service. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
-{{< /callout >}}
+## How outbound Workers work
 
-## The two deployment shapes
+In Distributed mode — whether one developer with two remote devboxes or a fifty-person team — every Worker **dials out** to the Hub over a persistent WebSocket and reconnects automatically after network drops. Nothing connects inbound to a Worker, so devboxes behind home routers, corporate firewalls, or network address translation (NAT) gateways need zero open inbound ports.
 
-LeapMux runs in two shapes. They use the same components and the same end-to-end encryption; they differ in whether the pieces are co-located and whether you log in.
+```mermaid
+flowchart LR
+  FE["Frontend (Desktop App or Browser)"]
+  Hub["Hub (HTTPS Reverse Proxy + :4327)"]
+  W1["Worker 1 (Laptop or Devbox, 0 inbound ports)"]
+  W2["Worker N (GPU Box, 0 inbound ports)"]
 
-### Solo mode
-
-Solo mode (`leapmux solo`) is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. The desktop app uses credential-free local inter-process communication (IPC). A browser connecting over TCP sets the first password before opening the workspace. Later TCP access requires that password.
-
-```text
-                 LeapMux (127.0.0.1:4327)
-┌───────────────────────────────────────────────────────┐
-│                                                       │
-│  ┌─────────────┐  in-process   ┌──────────────────┐   │
-│  │     Hub     │◄─────────────►│     Worker       │   │
-│  │ (1 account) │               │  ┌────────────┐  │   │
-│  │  + SQLite   │               │  │   Agents   │  │   │
-│  │             │               │  │ (multiple) │  │   │
-│  └─────────────┘               │  └────────────┘  │   │
-│         ▲                      │  + SQLite        │   │
-│         │ ConnectRPC + WS      └──────────────────┘   │
-└─────────┼─────────────────────────────────────────────┘
-          ▼
-   ┌───────────────┐
-   │   Frontend    │
-   │  (Browser /   │
-   │  Desktop App) │
-   └───────────────┘
+  FE <-->|"HTTPS / WebSocket"| Hub
+  Hub <-->|"Outbound WebSocket (Worker initiates)"| W1
+  Hub <-->|"Outbound WebSocket (Worker initiates)"| W2
 ```
 
-Solo mode is for one person. Local IPC uses its one account without a credential. A passwordless TCP caller can only set the first password, and the first successful caller claims the account. After setup, every TCP address requires sign-in. The end-to-end encryption between Frontend and Worker still operates inside the process, but it does not protect against an attacker who already controls your user account.
-
-{{< callout type="warning" >}}
-If solo mode answers on a non-loopback address, it logs a warning. Another machine can win first-password setup until the `solo` account has a password. Set that password from a trusted connection. Restrict access with a firewall, VPN, or SSH tunnel. The desktop app listens on a Unix socket or named pipe instead of TCP.
-{{< /callout >}}
-
-### Distributed mode
-
-For multi-user and remote setups, run a Hub (`leapmux hub`) and Workers (`leapmux worker`) as separate processes — often on different machines. The Hub requires real login (sign-up, passwords, sessions, OAuth, API tokens) and relays end-to-end encrypted traffic between Frontends and Workers. **Workers initiate outbound connections to the Hub**, so they can sit behind a NAT or firewall with no inbound ports open.
-
-```text
-┌────────────────┐              ┌─────────────────┐            ┌──────────────────┐
-│                │  ConnectRPC  │                 │ ConnectRPC │  Worker 1        │
-│   Frontend     │◄────────────►│       Hub       │◄──────────►│  ┌────────────┐  │
-│  (Browser /    │  WebSocket   │     (Relay)     │ WebSocket  │  │   Agents   │  │
-│  Desktop App)  │              │                 │            │  │ (multiple) │  │
-│                │              │    Go Service   │            │  └────────────┘  │
-└────────────────┘              │  + Database     │            │  + SQLite        │
-                                │   (SQLite,      │            └──────────────────┘
-                                │    PostgreSQL,  │                      ⋮
-                                │    MySQL, ...)  │            ┌──────────────────┐
-                                │                 │            │  Worker N        │
-                                └─────────────────┘            │  + Agents/SQLite │
-                                                               └──────────────────┘
-```
-
-One Hub coordinates one-or-more Workers. Each Worker is a separate process, usually on its own machine (a dev box, a build server, your laptop), running `leapmux worker`. You pick which Worker hosts each tab, so you can keep an agent's filesystem and git operations local to the machine that holds the repo.
-
-There is also dev mode (`leapmux dev`) — the same Hub+Worker-in-one-process runner as solo, but it binds all interfaces (`:4327`), requires real password auth, and bootstraps the first admin through the `/setup` flow. It is meant for development, not production.
-
-| Aspect | Solo (`leapmux solo`) | Distributed (`leapmux hub` + `leapmux worker`) |
-|---|---|---|
-| Processes | One (Hub + Worker together) | Two or more (one Hub, one-or-more Workers) |
-| Default listen | `127.0.0.1:4327` (loopback) | Hub `:4327` (all interfaces); Workers dial out |
-| Login | Local socket: none. TCP: set the first `solo` password, then sign in. | Real auth (password, OAuth, sessions) |
-| Workers | One local, in-process | One-or-more, local or remote, NAT-friendly |
-| Multiple user accounts | No | Yes |
-| Trust model | Local-host trust | Hub trusted for identity; a browser trusts it for code; content end-to-end encrypted |
-
-The default TCP port everywhere is **4327**. For run modes, ports, data directories, Docker, and reverse-proxy setup, see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/). For the full command surface, see the [CLI Reference](/docs/reference/cli-reference/).
+When you open a tab, you choose which Worker hosts it so filesystem and git operations stay local to that machine. You can even register your laptop alongside a remote GPU server on the same Hub and tile local and remote tabs in one workspace. A tab can run only while its hosting Worker is online.
 
 ## The object hierarchy
 
-Everything you see in the UI fits into one nested structure. From the outside in:
+Everything in the LeapMux interface fits into one nested hierarchy:
 
-```text
-User (you)
-└── Workspace
-    ├── Layout tree (tiles: leaf / split / grid)
-    │   └── Tabs (agent / terminal / file / image)
-    └── Floating windows (their own tile trees)
-        └── Tabs (agent / terminal / file / image)
+- **Owner (user account)** — You own every workspace, agent, and terminal you create. Workspaces are strictly owner-only with no cross-user sharing, even on a multi-user Hub. See [Accounts & Connected Apps](/docs/using/accounts-and-apps/).
+- **Workspace** — The top-level container for a unit of work, grouped under **In progress** and **Archived** in the left sidebar. See [Workspaces](/docs/using/workspaces/).
+- **Tiling layout and floating windows** — Inside a workspace, the center panel arranges panes into **tiles** (a single tab bar and active view), horizontal or vertical **splits**, multi-pane **grids**, and movable **floating windows**. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+- **Tab** — Holds an **Agent** chat, a **Terminal** shell, a **File** viewer or git diff, or an **Image** viewer. Each tab runs on a specific Worker and can use its own linked git worktree and branch. Creating a tab saves its placement on the Hub, starts the resource on the Worker, and syncs it to your other open clients.
 
-Each tab is hosted on a Worker, optionally bound to a worktree/branch.
-```
-
-### Ownership
-
-You own everything you create — workspaces, agents, and terminals. There is no sharing, inviting, or team tenancy: workspace access is strictly owner-only, and you see exactly the workspaces you own. See [Accounts & Authentication](/docs/using/accounts/).
-
-### Workspace
-
-A **workspace** is the unit of work and the top-level container you work in. It owns a tiling layout of tabs. One workspace is open at a time, and the one you were last on is remembered between visits. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator). See [Workspaces](/docs/using/workspaces/).
-
-### Layout, tiles, and floating windows
-
-Inside a workspace, the center panel is a recursive **tiling layout** — a tree of tiles you arrange to fit your work.
-
-- A **tile (leaf)** is a single rectangular pane. It shows a tab bar plus the content of its active tab.
-- A **split** divides a tile into two side-by-side panes (a vertical divider) or two stacked panes (a horizontal divider), with a draggable handle between them.
-- A **grid** turns a tile into a rows×cols arrangement of cells.
-- A **floating window** lifts a tab out of the layout into a movable, resizable, opacity-adjustable overlay. A floating window has its own internal tile tree and can itself be split or gridded.
-
-You can split, grid, resize, pop tabs out and back in, and drag tabs between tiles or even between workspaces. See [Tabs & Layout](/docs/using/tabs-and-layout/) for the full set of controls, the responsive behavior, and the close dialogs.
-
-### Tab
-
-A **tab** is one piece of content, and there are exactly four kinds:
-
-- **Agent** — a coding-agent chat session (Claude Code, Codex, and other supported agents).
-- **Terminal** — a PTY/shell session.
-- **File** — a file viewer / diff.
-- **Image** — one image an agent returned, opened from its chat row so you can zoom it.
-
-Every tab lives in a tile and carries an ordering position. Each tab is hosted on a specific Worker and may be **bound to a git worktree and branch**. The Worker is where the agent process or shell runs. The worktree and branch select the checkout it operates on. See [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/) for each tab type, and [Worktrees & Branches](/docs/using/worktrees-and-branches/) for the git binding.
-
-When you create a tab, the client captures its destination and sends the request to the hosting Worker. The Worker stores the resource and asks the Hub to commit its tab identity and placement. All clients receive that committed tab through the existing layout synchronization. The initiating client activates it when the tab arrives, provided you still have the same creation context open.
-
-A successful creation response confirms the Hub's commit. Agent and shell startup can continue asynchronously and report their status through the encrypted channel. The Worker retains pending creation operations across disconnects and restarts. A retry uses the same creation identity, so an uncertain response can complete without adding another resource.
-
-## Workers: where the work runs
-
-A **Worker** is a process (or, in solo mode, an in-process component) that runs your agents, terminals, file browsing, and git operations. When you open a tab you pick which Worker hosts it, so an agent's filesystem access and git commands happen on the machine that holds the repo — your laptop, a remote dev box, a build server.
-
-Key properties:
-
-- Workers keep their own **local SQLite database**. Agent and terminal state lives there, not in the Hub, so your work survives reconnects and restarts (see [Persistence](#persistence) below).
-- Workers **dial out** to the Hub and re-establish the connection automatically after a drop, so they work behind NATs and firewalls without inbound ports.
-- In distributed mode a Worker must be **registered** before it can connect: an authenticated user mints a registration key in the Hub UI and passes it to `leapmux worker register --hub https://hub.example.com --registration-key <key>` before running the Worker. Once registered, the Worker saves its credentials and reconnects on its own.
-
-For registering, approving, pinning, and selecting Workers, see [Managing Workers](/docs/admin/managing-workers/).
-
-{{< callout type="info" >}}
-A tab can only be used while its Worker is online. If the hosting Worker is offline, opening a channel to it fails until it reconnects.
-{{< /callout >}}
+See [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), [File Browser](/docs/using/file-browser/), and [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 ## End-to-end encrypted channels
 
-All Frontend↔Worker traffic is **end-to-end encrypted**. While the Hub only relays opaque ciphertext over a single WebSocket, it cannot see the plaintext.
+All Frontend-to-Worker traffic is **end-to-end encrypted** with a hybrid post-quantum handshake. The Hub relays ciphertext over WebSockets and cannot decrypt agent conversations, tool calls, terminal I/O, or file contents.
 
-Conceptually:
+Each Worker keeps a persistent static keypair that every client pins via **trust on first use (TOFU)**. If a Worker's presented key ever changes, the Frontend blocks the connection and displays a **Worker public key changed** dialog with four-word fingerprints so you can verify out of band before re-trusting it.
 
-- When the Frontend needs to talk to a Worker, it opens an **encrypted channel** to that Worker, multiplexed through the Hub. A Hub that only routes that ciphertext cannot decrypt it.
-- The encryption is a hybrid post-quantum handshake (classical + post-quantum key exchange, with authenticated encryption). A **classic** mode is also available. It authenticates the Worker with its static Module-Lattice-Based Key-Encapsulation Mechanism (ML-KEM) key. It omits the Stateless Hash-Based Digital Signature Algorithm (SLH-DSA) signature and post-quantum forward secrecy. The default is **post-quantum**. The specific algorithms are listed in [Security & Threat Model](/docs/admin/security/).
-- The Hub authenticates the channel open and names the user on the channel. The Frontend checks that name against the signed-in user. The Worker refuses any channel that carries no user identity.
+For trust boundaries, authentication rules, handshake details, and Hub encryption at rest, see [Security & Authentication](/docs/admin/security-and-auth/), [Cryptography & Key Architecture](/docs/admin/cryptography/), and [Encryption & Data](/docs/admin/encryption-and-data/).
 
-A Hub that only observes sees *who talks to whom* and the control-plane metadata needed to route traffic. Agent transcripts, tool calls, terminal I/O, and file contents travel inside the encrypted channel. That protects content from an observing Hub. Identity and Frontend code still depend on the Hub. It matters most in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/admin/security/).
+{{< callout type="warning" >}}
+If Solo Daemon listens on a non-loopback address before setup completes, another host on that network can claim the `solo` account by setting its first password. Set the password over a trusted connection and restrict network access with a firewall, VPN, or Secure Shell (SSH) tunnel.
+{{< /callout >}}
 
-### Worker identity is pinned (TOFU)
+## Persistence and device sync
 
-Each Worker has a persistent static keypair. The Frontend pins that key **trust-on-first-use (TOFU)**: it records the Worker's key on first connection and rejects any later handshake whose key doesn't match. If the key changes, you get a **"Worker public key changed"** dialog showing 4-word fingerprints for the expected and actual keys, and you must explicitly **Accept** or **Reject**. Pinning detects a Hub substituting a Worker key in a channel your browser opens. It does not stop a Hub opening its own channel or serving modified Frontend code. (Closing the dialog counts as Reject — it fails closed.)
+LeapMux keeps your work intact across disconnects and restarts:
 
-For the full protocol, threat model, and trust boundaries, see [Security & Threat Model](/docs/admin/security/). For administrator-side encryption at rest (a separate keystore protecting Hub-stored secrets like OAuth provider client secrets), see [Encryption & Data](/docs/admin/encryption-and-data/).
+- **Agent sessions** persist in the Worker's local database and re-attach automatically when the Worker reconnects — no manual `--resume`.
+- **Terminals** stay attached across disconnects. After a Worker reboot or Solo Desktop quit ends a shell process, LeapMux restores the last screen and starts a fresh shell when you press **Enter**.
+- **Workspaces, layouts, tabs, and floating windows** persist on the Hub and sync in near real time across your own windows and devices (in Distributed mode, or in Solo mode when **Network Access** is enabled).
 
-## Persistence
+The only presence signal LeapMux tracks is which of your own windows is active, so only the window you are looking at plays turn-end notification sounds. See [Workspaces — Live sync across devices](/docs/using/workspaces/#live-sync-across-devices).
 
-LeapMux is built to survive restarts:
+## Next steps
 
-- **Agent sessions** live in the Worker's local database. A Worker reboot or a dropped connection does not destroy them — they re-attach and resume when the Worker reconnects to the Hub. See [Coding Agents](/docs/using/coding-agents/).
-- **Terminals** ride out a dropped connection the same way, re-attaching when the Worker reconnects. A Worker reboot, though, ends the live shell: LeapMux preserves the terminal's last screen, so the tab returns showing where it left off and restarts on demand. See [Terminals](/docs/using/terminals/).
-- **Workspaces, layouts, tabs, and floating windows** are stored centrally (their structure, not their content) so the arrangement you left is the arrangement you return to, across reloads and across devices.
-
-You don't have to re-launch agents with `--resume` or rebuild your tiling by hand after a crash; LeapMux reattaches and redraws.
-
-## Presence and device sync
-
-A workspace's **layout** — the tiling tree, tabs, splits, grids, floating windows, and lifecycle (created / renamed / deleted) — stays synchronized across every client that has it open: your own browser tabs, windows, and devices. Changes appear within roughly a frame to a network round-trip, with no setup step.
-
-All of those clients are yours, and any of them can edit the layout — open, move, rename, or close things — with the rest following along live. You only ever see the workspaces you own.
-
-The one presence signal LeapMux exposes is a per-workspace "active client", used solely so that only the client you are actually looking at plays the agent turn-end notification sound. There are **no avatars, "who is viewing" badges, remote cursors, or typing indicators.**
-
-See [Device Sync](/docs/using/device-sync/) for exactly what does and doesn't sync, and [Settings & Preferences](/docs/using/settings/) for the turn-end sound preference.
-
-## Putting it together
-
-A typical mental walkthrough:
-
-1. You sign in to a **Hub** (or just launch **solo** and skip login). You land at `/`, with the workspaces you own listed in the sidebar.
-2. You open or create a **workspace**.
-3. Inside it you arrange a **layout** of **tiles** — splits, grids, maybe a **floating window**.
-4. In each tile you open **tabs**: an agent here, a terminal there, a file viewer alongside. Each tab is hosted on a **Worker** you choose, and an agent or terminal tab can be bound to a git **worktree/branch**.
-5. The Frontend talks to each Worker over an **end-to-end encrypted channel** relayed by the Hub. While the Hub only relays those bytes, it cannot read them.
-6. Everything keeps running on the Workers when you close the tab or reload the page, and your layout follows you across your devices.
-
-From here, jump to whichever piece you need: get LeapMux running in [Installation](/docs/getting-started/installation/) and [Quick Start](/docs/getting-started/quick-start/), or dig into any concept via its dedicated chapter linked above. New terms are collected in the [Glossary](/docs/reference/glossary/).
+- [Installation](/docs/getting-started/installation/) — install the desktop app, standalone binary, or Docker image.
+- [Quick Start](/docs/getting-started/quick-start/) — launch Solo mode and run two parallel agents in under five minutes.
+- [Connect a Remote Devbox Behind NAT](/docs/recipes/remote-devbox/) — attach a remote Linux or GPU machine behind NAT.
+- [Production Checklist](/docs/admin/production-checklist/) — prepare a Distributed Hub for daily team use.
+- [Glossary](/docs/reference/glossary/) — look up LeapMux terms.

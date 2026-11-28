@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,20 +20,18 @@ func TestStringSliceFlag_AppendsPerSet(t *testing.T) {
 	assert.Equal(t, []string{":8080", "unix:/tmp/x.sock"}, f.Get())
 }
 
-// String reports the comma-joined values, which is the spelling the help line
-// and FlagProvider.Value.String() read. A value that holds a comma is
-// indistinguishable from two values in that one string -- the flag Set path
-// itself never splits, which is what keeps such a value whole.
+// String formats values as bracketed CSV matching pflag's stringArrayValue so
+// values containing commas survive FlagSet.GetStringArray round-trips.
 func TestStringSliceFlag_ReportsTheJoinedString(t *testing.T) {
 	var target []string
 	f := NewStringSliceFlag(&target, []string{"a", "b"})
 
-	assert.Equal(t, "a,b", f.String(), "before the first Set the default is reported")
+	assert.Equal(t, "[a,b]", f.String(), "before the first Set the default is reported")
 	assert.Equal(t, []string{"a", "b"}, f.Get(), "before the first Set the default is returned")
 
 	require.NoError(t, f.Set("unix:/tmp/a,b.sock"))
 	require.NoError(t, f.Set(":8080"))
-	assert.Equal(t, "unix:/tmp/a,b.sock,:8080", f.String())
+	assert.Equal(t, `["unix:/tmp/a,b.sock",:8080]`, f.String())
 	assert.Equal(t, []string{"unix:/tmp/a,b.sock", ":8080"}, f.Get(),
 		"Set takes the value verbatim; the comma inside one value survives")
 }
@@ -67,16 +66,15 @@ func TestStringSliceFlag_SetTrimsTheEndsAndKeepsTheMiddle(t *testing.T) {
 	assert.Equal(t, []string{":4327", "bar baz", "unix:/tmp/my dir/s.sock", ""}, target)
 }
 
-// String reports the TRIMMED spelling, so the help line and the value
-// FlagProvider stores name the address the hub will actually bind rather than
-// the one the operator typed with stray spaces.
+// String reports the TRIMMED spelling in bracketed CSV format, matching the
+// addresses the hub will actually bind rather than stray spaces.
 func TestStringSliceFlag_ReportsTheTrimmedSpelling(t *testing.T) {
 	var target []string
 	f := NewStringSliceFlag(&target, nil)
 
 	require.NoError(t, f.Set(" :4327 "))
 	require.NoError(t, f.Set(" :9090"))
-	assert.Equal(t, ":4327,:9090", f.String())
+	assert.Equal(t, "[:4327,:9090]", f.String())
 	assert.Equal(t, []string{":4327", ":9090"}, f.Get())
 }
 
@@ -90,4 +88,45 @@ func TestSplitListValue_KeepsEmptyPiecesSoATypoFailsRatherThanBindsTheDefaults(t
 	assert.Equal(t, []string{":8080", ""}, SplitListValue(":8080,"))
 	assert.Equal(t, []string{"", ":8080"}, SplitListValue(" , :8080"))
 	assert.Equal(t, []string{"", "", ""}, SplitListValue(" , , "))
+}
+
+// Type is pflag's own name for a repeatable string, so the help marks the
+// flag repeatable.
+func TestStringSliceFlag_TypeMarksItRepeatable(t *testing.T) {
+	var target []string
+	assert.Equal(t, "stringArray", NewStringSliceFlag(&target, nil).Type())
+}
+
+func TestStringSliceFlag_ImplementsSliceValue(t *testing.T) {
+	var target []string
+	f := NewStringSliceFlag(&target, []string{"default"})
+	assert.Equal(t, []string{"default"}, f.GetSlice())
+
+	require.NoError(t, f.Append(" :8080 "))
+	assert.Equal(t, []string{":8080"}, f.GetSlice())
+
+	require.NoError(t, f.Replace([]string{" :9090 ", "unix:/tmp/a,b.sock"}))
+	assert.Equal(t, []string{":9090", "unix:/tmp/a,b.sock"}, f.GetSlice())
+	assert.Equal(t, []string{":9090", "unix:/tmp/a,b.sock"}, target)
+}
+
+func TestStringSliceFlag_GetStringArray(t *testing.T) {
+	t.Run("empty default does not panic", func(t *testing.T) {
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		var target []string
+		fs.Var(NewStringSliceFlag(&target, nil), "listen", "usage")
+		got, err := fs.GetStringArray("listen")
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("round-trips short, trimmed, and comma-containing values", func(t *testing.T) {
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		var target []string
+		fs.Var(NewStringSliceFlag(&target, nil), "listen", "usage")
+		require.NoError(t, fs.Parse([]string{"--listen", "a", "--listen", " :8080 ", "--listen", "unix:/tmp/a,b.sock"}))
+		got, err := fs.GetStringArray("listen")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"a", ":8080", "unix:/tmp/a,b.sock"}, got)
+	})
 }

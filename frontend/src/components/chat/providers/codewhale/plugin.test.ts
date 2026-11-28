@@ -1,21 +1,15 @@
-import type { ControlRequest } from '~/stores/control.store'
 import { describe, expect, it } from 'vitest'
 import { CODEWHALE_BLOCK_TYPE, CODEWHALE_DEFAULT_MODE, CODEWHALE_ITEM_KIND, CODEWHALE_MODE, CODEWHALE_OPTION, CODEWHALE_POSTURE, CODEWHALE_TOOL, CODEWHALE_TRANSCRIPT_ROLE, CODEWHALE_TURN_STATUS } from '~/generated/contracts/codewhale-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
-import { CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
-import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
-import { codewhaleIsQuestionRequest, codewhaleQuestionsFromPayload } from './askUserQuestion'
 import { classifyCodewhaleMessage } from './classification'
-import { codewhaleControlResponseSummary } from './controlResponse'
-import { approvalPayload, questionPayload, QUESTIONS } from './controls.fixtures'
-import { codewhaleExtractControl } from './extractControl'
 import { codewhaleCompactionStart, codewhaleNotificationEntry } from './extractors/notification'
 import { codewhaleOutputFilePaths } from './extractors/outputFilePaths'
 import { codewhaleResultDivider } from './extractors/resultDivider'
 import { codewhaleExtractRow } from './extractors/row'
+import { codewhalePermissionPresets } from './permissionPresets'
 import { codewhaleConfiguration } from './pluginConfiguration'
 import { codewhaleControls } from './pluginControls'
 import { codewhaleNeedsRequest, codewhaleSpanRole } from './spanRole'
@@ -36,23 +30,6 @@ function message(id: string, content: Record<string, unknown>, seq: bigint, span
   }, seq)
 }
 
-/** The bytes one control capability sends, decoded. */
-async function sent(send: (respond: (content: Uint8Array) => Promise<void>) => Promise<void>): Promise<unknown> {
-  let captured: Uint8Array | undefined
-  await send(async (content) => {
-    captured = content
-  })
-  return JSON.parse(new TextDecoder().decode(captured))
-}
-
-function request(payload: Record<string, unknown>): ControlRequest {
-  return {
-    requestId: String(payload.request_id),
-    agentId: 'agent-1',
-    payload,
-  }
-}
-
 describe('codewhale plugin', () => {
   // Identity, not presence: a hook wired to the wrong reader is defined too.
   it('is registered for the CODEWHALE provider with each hook wired to its own reader', () => {
@@ -68,10 +45,9 @@ describe('codewhale plugin', () => {
     })
     expect(plugin.controls).toBe(codewhaleControls)
     expect(plugin.configuration).toBe(codewhaleConfiguration)
-    expect(plugin.controls?.controlResponseDisplay).toBe(codewhaleControlResponseSummary)
-    expect(plugin.controls?.extractControl).toBe(codewhaleExtractControl)
-    expect(plugin.controls?.askUserQuestion?.isRequest).toBe(codewhaleIsQuestionRequest)
-    expect(plugin.controls?.askUserQuestion?.extractQuestions).toBe(codewhaleQuestionsFromPayload)
+    expect(plugin.controls).toStrictEqual({
+      permissionPresets: codewhalePermissionPresets,
+    })
   })
 
   // A turn takes text and inline images, and has no file field.
@@ -244,109 +220,5 @@ describe('codewhale span roles', () => {
     })
     expect(plugin.transcript.spanRole(reply.entry('reply').resolved)).toBe('other')
     expect(plugin.transcript.needsRequest?.(reply.entry('reply').resolved)).toBe(false)
-  })
-})
-
-describe('codewhale controls', () => {
-  const controls = plugin.controls!
-
-  it('sends the runtime\'s own answer list for a question', async () => {
-    const payload = questionPayload()
-    const questions = controls.askUserQuestion!.extractQuestions(payload)
-    const state = createControlAnswerState({
-      selections: {
-        0: ['Blue'],
-        1: ['S', 'M'],
-      },
-    })
-    const response = await sent(respond => controls.askUserQuestion!.sendAnswer(request(payload), respond, questions, state))
-    expect(response).toStrictEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'user_input:q1',
-        response: {
-          behavior: 'allow',
-          updatedInput: {
-            questions: QUESTIONS,
-            answers: [
-              { id: 'color', label: 'Blue', value: 'Blue' },
-              { id: 'sizes', label: 'S', value: 'S' },
-              { id: 'sizes', label: 'M', value: 'M' },
-            ],
-          },
-        },
-      },
-    })
-  })
-
-  it('sends a decline with the reason', async () => {
-    const payload = questionPayload()
-    const response = await sent(respond => controls.askUserQuestion!.sendReject(request(payload), respond, 'User stopped'))
-    expect(response).toMatchObject({
-      response: {
-        request_id: 'user_input:q1',
-        response: { behavior: 'deny', message: 'User stopped' },
-      },
-    })
-  })
-
-  it('answers an approval from the composer as a denial', () => {
-    expect(controls.buildControlResponse?.(approvalPayload(CODEWHALE_TOOL.Bash, {}), 'Use a dry run.', 'approval:ap1'))
-      .toMatchObject({
-        response: {
-          request_id: 'approval:ap1',
-          response: { behavior: 'deny', message: 'Use a dry run.' },
-        },
-      })
-  })
-
-  // An empty send denies with the shared placeholder, which the worker reads as a
-  // deny with no reason, so no empty message becomes the reader's next turn.
-  it('answers an empty send from the composer as a denial with no reason', () => {
-    expect(controls.buildControlResponse?.(approvalPayload(CODEWHALE_TOOL.Bash, {}), '', 'approval:ap1'))
-      .toMatchObject({
-        response: {
-          request_id: 'approval:ap1',
-          response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE },
-        },
-      })
-  })
-
-  it('sends free text as the Other answer, and an empty answer list for no answer', async () => {
-    const payload = questionPayload()
-    const questions = controls.askUserQuestion!.extractQuestions(payload)
-    const typed = await sent(respond => controls.askUserQuestion!.sendAnswer(request(payload), respond, questions, createControlAnswerState({
-      customTexts: { 0: 'Green' },
-    })))
-    expect(typed).toMatchObject({
-      response: {
-        response: {
-          behavior: 'allow',
-          updatedInput: {
-            answers: [
-              { id: 'color', label: 'Other', value: 'Green' },
-            ],
-          },
-        },
-      },
-    })
-    const unanswered = await sent(respond => controls.askUserQuestion!.sendAnswer(request(payload), respond, questions, createControlAnswerState({})))
-    expect(unanswered).toMatchObject({
-      response: {
-        response: {
-          behavior: 'allow',
-          updatedInput: { questions: QUESTIONS, answers: [] },
-        },
-      },
-    })
-  })
-
-  it('recognizes the question, and reads an approval into the permission row', () => {
-    expect(controls.askUserQuestion!.isRequest(questionPayload())).toBe(true)
-    expect(controls.askUserQuestion!.isRequest(approvalPayload(CODEWHALE_TOOL.Bash, {}))).toBe(false)
-    expect(controls.extractControl?.({
-      payload: approvalPayload(CODEWHALE_TOOL.Bash, { command: 'ls' }),
-    })?.kind).toBe('permission')
   })
 })

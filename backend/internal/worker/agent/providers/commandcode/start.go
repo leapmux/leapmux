@@ -13,6 +13,7 @@ import (
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -58,6 +59,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		runtimeDir:     directory, bridgeSecret: secret, outputDone: make(chan struct{}),
 		workingDir: opts.WorkingDir, homeDir: opts.HomeDir, clock: quartz.NewReal(),
 		permissionMode: opts.PermissionMode(), children: make(map[string]*childState),
+		replyProcessID: id.Generate(),
+	}
+	a.replies = providerkit.NativeReplyLedger{
+		RequireStart:  true,
+		DurableTurnID: a.commandCodeDurableTurnID,
+		Provider:      "Command Code",
+		AgentID:       opts.AgentID,
 	}
 	a.sink = agent.NewModelProgressResetSink(sink)
 	if err := a.StartCmd(); err != nil {
@@ -112,10 +120,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 func launchArgs(opts agent.Options, directory string) ([]string, error) {
 	args := []string{"--experimental", "--rpc", "--no-auto-update", "--skip-onboarding", "--mod", filepath.Join(directory, "bridge.mjs")}
-	if opts.ResumeSessionID != "" {
-		id, err := (commandcodeProvider{}).ResolveResumeHandle(opts.ResumeSessionID, opts.HomeDir)
+	if resumeID := opts.Session.ResumeID(); resumeID != "" {
+		id, err := (commandcodeProvider{}).ResolveResumeHandle(resumeID, opts.HomeDir)
 		if err != nil {
-			return nil, providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+			return nil, providerkit.ResumeFailedError(resumeID, err)
 		}
 		args = append(args, "--resume", id)
 	}

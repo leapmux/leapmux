@@ -360,3 +360,23 @@ SET password_hash = sqlc.arg(password_hash),
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token)
 RETURNING id, auth_generation;
+
+-- name: ListUsersByIDExact :many
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users
+WHERE id = sqlc.arg(id)
+  AND deleted_at IS NULL;
+
+-- name: ListUsersByIDPrefix :many
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users
+WHERE id >= sqlc.arg(id_lo)
+  AND id < sqlc.arg(id_hi)
+  AND id > sqlc.arg(id_gt)
+  AND deleted_at IS NULL
+ORDER BY id ASC
+LIMIT sqlc.arg(limit);

@@ -1,35 +1,87 @@
 package cmd
 
 import (
-	"github.com/leapmux/leapmux/generated/contracts"
+	"strings"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
-	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
-// Enums emitted by protobuf default to integer ordinals through
-// encoding/json, which is fine on the wire and terrible for a human
-// reading a CLI envelope. These helpers project each enum to the form
-// the rest of the product already uses:
+// Every enum in a result prints as one lowercase token, which a flag that
+// takes the same enum accepts back:
 //
-//   - TabType        -> "agent" / "terminal" / "file" / "image" (matches
-//                       the --type flag values and $LEAPMUX_CONTROL_TAB_TYPE)
-//   - AgentProvider  -> agentlabels.DisplayName, e.g. "Claude Code"
-//                       (the canonical display name the frontend
-//                       picker shows; parseProvider already accepts it)
-//   - AgentStatus    -> lowercase short label ("active", "starting",
-//                       "startup_failed", ...)
-//   - TerminalStatus -> same shape ("starting", "ready", ...)
+//   - A proto enum prints its value name without the enum's own prefix:
+//     NODE_KIND_LEAF is "leaf", and AGENT_ACTIVITY_STATE_WAITING_FOR_USER is
+//     "waiting_for_user". enumToken derives the token from the descriptor,
+//     so a new enum value needs no table here.
+//   - A TabType prints the token of contracts/tab-types.json via
+//     resolve.TabTypeWireName, which the frontend shares.
+//     TestEnumTokenMatchesTheTabTypeContract keeps the two rules in agreement.
+//   - An AgentProvider prints its canonical CLI alias from agentlabels,
+//     which --provider accepts.
 //
-// Unspecified / unknown enum values collapse to the empty string so
-// callers don't have to special-case zero-valued fields when they
-// build an output map.
+// The zero value of every enum prints "", so `omitempty` drops an unset
+// field.
 
-// tabTypeName projects a TabType to the token every envelope spells it with.
-// The table is generated from contracts/tab-types.json, so this projection and
-// the `--type` flag the same script emits cannot name a kind differently.
-func tabTypeName(t leapmuxv1.TabType) string {
-	return contracts.TabTypeWireToken[t]
+// enumToken returns the lowercase token of a proto enum value.
+func enumToken(e protoreflect.Enum) string {
+	if e == nil || e.Number() == 0 {
+		return ""
+	}
+	desc := e.Descriptor()
+	value := desc.Values().ByNumber(e.Number())
+	if value == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimPrefix(string(value.Name()), enumPrefix(desc)))
+}
+
+// enumPrefix is the prefix that every value name of the enum shares: the
+// name of its zero value without "UNSPECIFIED". TAB_TYPE_UNSPECIFIED gives
+// "TAB_TYPE_".
+func enumPrefix(desc protoreflect.EnumDescriptor) string {
+	zero := desc.Values().ByNumber(0)
+	if zero == nil {
+		return ""
+	}
+	return strings.TrimSuffix(string(zero.Name()), "UNSPECIFIED")
+}
+
+// enumTokens lists the token of every value of the enum but the zero value,
+// in declaration order, for the help of a flag that takes the enum.
+func enumTokens(e protoreflect.Enum) []string {
+	desc := e.Descriptor()
+	values := desc.Values()
+	prefix := enumPrefix(desc)
+	out := make([]string, 0, values.Len())
+	for i := range values.Len() {
+		v := values.Get(i)
+		if v.Number() == 0 {
+			continue
+		}
+		out = append(out, strings.ToLower(strings.TrimPrefix(string(v.Name()), prefix)))
+	}
+	return out
+}
+
+// parseEnumToken returns the number of the value whose token is token, and
+// false for an empty or unknown token.
+func parseEnumToken(e protoreflect.Enum, token string) (protoreflect.EnumNumber, bool) {
+	if token == "" {
+		return 0, false
+	}
+	desc := e.Descriptor()
+	values := desc.Values()
+	prefix := enumPrefix(desc)
+	for i := range values.Len() {
+		v := values.Get(i)
+		if v.Number() != 0 && strings.EqualFold(strings.TrimPrefix(string(v.Name()), prefix), token) {
+			return v.Number(), true
+		}
+	}
+	return 0, false
 }
 
 func agentProviderName(p leapmuxv1.AgentProvider) string {
@@ -39,157 +91,13 @@ func agentProviderName(p leapmuxv1.AgentProvider) string {
 	return agentlabels.DisplayName(p)
 }
 
-func messageSourceName(s leapmuxv1.MessageSource) string {
-	switch s {
-	case leapmuxv1.MessageSource_MESSAGE_SOURCE_USER:
-		return "user"
-	case leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT:
-		return "agent"
-	case leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX:
-		return "leapmux"
-	default:
-		return ""
+// kindLabel returns the token of a NodeKind for a message: "leaf",
+// "split" or "grid".
+func kindLabel(k leapmuxv1.NodeKind) string {
+	if token := enumToken(k); token != "" {
+		return token
 	}
-}
-
-func agentStatusName(s leapmuxv1.AgentStatus) string {
-	switch s {
-	case leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE:
-		return "active"
-	case leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE:
-		return "inactive"
-	case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
-		return "starting"
-	case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
-		return "startup_failed"
-	default:
-		return ""
-	}
-}
-
-func terminalStatusName(s leapmuxv1.TerminalStatus) string {
-	switch s {
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:
-		return "starting"
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY:
-		return "ready"
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
-		return "startup_failed"
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
-		return "exited"
-	default:
-		return ""
-	}
-}
-
-// parseEnumFlag looks up `value` in `mapping` and returns the matched
-// enum + ok. The error path is the caller's: empty `value` is treated
-// as "not provided" and returns (zero, false) so caller can apply its
-// own default.
-//
-// Centralises the "constrained --flag string → typed enum + emit
-// invalid_request on miss" pattern that previously open-coded a per-
-// flag switch for every CLI verb that wanted a typed enum.
-func parseEnumFlag[T comparable](value string, mapping map[string]T) (T, bool) {
-	var zero T
-	if value == "" {
-		return zero, false
-	}
-	v, ok := mapping[value]
-	return v, ok
-}
-
-// workspaceTabToMap projects a WorkspaceTab into a JSON-friendly map
-// with tab_type rendered as a human-readable string. Used by `tab
-// list` / `tab get` so the envelope shows "agent" instead of `1`.
-func workspaceTabToMap(t *leapmuxv1.WorkspaceTab) map[string]any {
-	return map[string]any{
-		"tab_id":       t.GetTab().GetTabId(),
-		"tab_type":     tabTypeName(t.GetTab().GetTabType()),
-		"tile_id":      t.GetTileId(),
-		"worker_id":    t.GetWorkerId(),
-		"workspace_id": t.GetWorkspaceId(),
-		"position":     t.GetPosition(),
-	}
-}
-
-// workspaceTabsToList runs every row in `tabs` through workspaceTabToMap.
-// Returns a non-nil zero-length slice when the input is empty, so the
-// JSON envelope renders `"tabs": []` rather than `"tabs": null`.
-func workspaceTabsToList(tabs []*leapmuxv1.WorkspaceTab) []map[string]any {
-	out := make([]map[string]any, 0, len(tabs))
-	for _, t := range tabs {
-		out = append(out, workspaceTabToMap(t))
-	}
-	return out
-}
-
-// agentInfoToMap projects an AgentInfo into a JSON-friendly map with
-// status / agent_provider rendered as strings and the option-group catalog
-// hand-projected into snake_case (optionGroupsToList) -- letting encoding/json
-// reflect the proto structs directly would leak PascalCase Go field names and
-// is no longer a flat string/bool shape now that AvailableOption carries an
-// int64 context_window and recursive sub_groups.
-func agentInfoToMap(a *leapmuxv1.AgentInfo) map[string]any {
-	groups := a.GetOptionGroups()
-	return map[string]any{
-		"id":               a.GetId(),
-		"title":            a.GetTitle(),
-		"model":            optionids.CurrentValue(groups, optionids.Model),
-		"status":           agentStatusName(a.GetStatus()),
-		"agent_provider":   agentProviderName(a.GetAgentProvider()),
-		"created_at":       a.GetCreatedAt(),
-		"closed_at":        a.GetClosedAt(),
-		"agent_session_id": a.GetAgentSessionId(),
-		"permission_mode":  optionids.CurrentValue(groups, optionids.PermissionMode),
-		"effort":           optionids.CurrentValue(groups, optionids.Effort),
-		"worker_id":        a.GetWorkerId(),
-		"working_dir":      a.GetWorkingDir(),
-		"git_status":       a.GetGitStatus(),
-		"option_groups":    optionGroupsToList(groups),
-		"startup_error":    a.GetStartupError(),
-		"startup_message":  a.GetStartupMessage(),
-	}
-}
-
-// optionGroupToMap projects an AvailableOptionGroup into a JSON-friendly, snake_case map
-// (matching the rest of the CLI envelope), recursively projecting each option's
-// model-dependent sub_groups. The explicit projection keeps the keys snake_case and the
-// int64 context_window a plain number, rather than letting encoding/json reflect the proto
-// struct's PascalCase Go field names.
-func optionGroupToMap(g *leapmuxv1.AvailableOptionGroup) map[string]any {
-	options := make([]map[string]any, 0, len(g.GetOptions()))
-	for _, o := range g.GetOptions() {
-		opt := map[string]any{
-			"id":          o.GetId(),
-			"name":        o.GetName(),
-			"description": o.GetDescription(),
-		}
-		if cw := o.GetContextWindow(); cw != 0 {
-			opt["context_window"] = cw
-		}
-		if subs := o.GetSubGroups(); len(subs) > 0 {
-			opt["sub_groups"] = optionGroupsToList(subs)
-		}
-		options = append(options, opt)
-	}
-	return map[string]any{
-		"id":            g.GetId(),
-		"label":         g.GetLabel(),
-		"options":       options,
-		"current_value": g.GetCurrentValue(),
-		"default_value": g.GetDefaultValue(),
-		"mutable":       g.GetMutable(),
-		"order":         g.GetOrder(),
-	}
-}
-
-// optionGroupsToList projects a slice of option groups (optionGroupToMap each). Returns a
-// non-nil zero-length slice so the JSON envelope renders `[]` rather than `null`.
-func optionGroupsToList(groups []*leapmuxv1.AvailableOptionGroup) []map[string]any {
-	out := make([]map[string]any, 0, len(groups))
-	for _, g := range groups {
-		out = append(out, optionGroupToMap(g))
-	}
-	return out
+	// A message that prints the kind must not lose it: "tile X is a  node"
+	// says nothing.
+	return "unknown"
 }

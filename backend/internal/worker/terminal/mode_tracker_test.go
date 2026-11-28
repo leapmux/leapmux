@@ -591,3 +591,49 @@ func TestModeTracker_MaxNotificationsPerChunk(t *testing.T) {
 		assert.Equal(t, SignalNotification, s.Kind)
 	}
 }
+
+// everyModeSet sets each tracked mode and the title, so a reset test sees
+// which ones the reset clears.
+const everyModeSet = "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1h\x1b[?2004h\x1b[?1003h\x1b[?1006h\x1b]2;build\x07"
+
+// A full reset (RIS) clears every tracked mode, as xterm.js's reset does: it
+// returns to the normal screen and drops the mouse modes. The title stays.
+func TestModeTracker_FullResetClearsEveryMode(t *testing.T) {
+	t.Parallel()
+	tr := &modeTracker{}
+	feedString(tr, everyModeSet+"\x1bc")
+	titleOnly := &modeTracker{title: []byte("build")}
+	assert.Equal(t, string(titleOnly.snapshotPrefix()), string(tr.snapshotPrefix()),
+		"only the title survives a full reset")
+	assert.False(t, tr.appCursorKeys, "cursor keys return to normal mode")
+	assert.False(t, tr.bracketedPaste)
+	assert.False(t, tr.altScreen)
+}
+
+// A soft reset (DECSTR) clears the input and cursor modes, as xterm.js's
+// softReset does, and keeps the screen, the mouse modes and the title.
+func TestModeTracker_SoftResetClearsTheInputAndCursorModes(t *testing.T) {
+	t.Parallel()
+	tr := &modeTracker{}
+	feedString(tr, everyModeSet+"\x1b[!p")
+	assert.False(t, tr.appCursorKeys)
+	assert.False(t, tr.bracketedPaste)
+	assert.False(t, tr.cursorHidden)
+	assert.False(t, tr.autoWrapOff)
+	assert.True(t, tr.altScreen, "a soft reset keeps the alternate screen")
+	assert.Equal(t, mouseTrackAnyEvent, tr.mouseTrack, "a soft reset keeps mouse tracking")
+	assert.Equal(t, mouseEncSGR, tr.mouseEncoding)
+	assert.Equal(t, "build", string(tr.title))
+}
+
+// Another CSI with final p, such as DECSCL (`CSI 61 " p`) or a private one,
+// is no soft reset.
+func TestModeTracker_OtherCSIFinalPIsNoReset(t *testing.T) {
+	t.Parallel()
+	for _, seq := range []string{"\x1b[61\"p", "\x1b[?5p", "\x1b[p", "\x1b[!!p"} {
+		tr := &modeTracker{}
+		feedString(tr, "\x1b[?1h\x1b[?2004h"+seq)
+		assert.True(t, tr.appCursorKeys, "%q", seq)
+		assert.True(t, tr.bracketedPaste, "%q", seq)
+	}
+}

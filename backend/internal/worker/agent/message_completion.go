@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -28,7 +29,7 @@ const (
 
 // MarshalAssembledMessage validates the neutral vocabulary before it encodes a row.
 func MarshalAssembledMessage(kind AssembledMessageKind, text string, completion MessageCompletion) ([]byte, error) {
-	if assembledMessageKindFromToken(string(kind)) == leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED {
+	if AssembledMessageKindFromToken(string(kind)) == leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED {
 		return nil, fmt.Errorf("the assembled message has an unknown kind %q", kind)
 	}
 	if err := ValidateMessageCompletion(MessageContent{Completion: completion}); err != nil {
@@ -42,26 +43,55 @@ func MarshalAssembledMessage(kind AssembledMessageKind, text string, completion 
 	})
 }
 
-// MessageMetadata keeps worker completion outside the provider's JSON schema.
-func MessageMetadata(content MessageContent) (leapmuxv1.AssembledMessageKind, leapmuxv1.MessageCompletion) {
-	kind := leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED
-	completion := messageCompletionFromToken(string(content.Completion))
-	var value map[string]json.RawMessage
-	if json.Unmarshal(content.Original, &value) != nil {
-		return kind, completion
+// assembledEnvelopeFields captures the top-level fields of an assembled or
+// notification-thread envelope without allocating a map for unrelated keys.
+type assembledEnvelopeFields struct {
+	Type       json.RawMessage `json:"type"`
+	Kind       json.RawMessage `json:"kind"`
+	Completion json.RawMessage `json:"completion"`
+	Text       json.RawMessage `json:"text"`
+}
+
+func decodeAssembledEnvelopeFields(raw []byte) (assembledEnvelopeFields, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return assembledEnvelopeFields{}, false
 	}
+	var fields assembledEnvelopeFields
+	if json.Unmarshal(trimmed, &fields) != nil {
+		return assembledEnvelopeFields{}, false
+	}
+	return fields, true
+}
+
+func (f assembledEnvelopeFields) envelopeType() string {
 	var messageType string
-	_ = json.Unmarshal(value[contracts.AssembledMessageFieldType], &messageType)
-	if messageType == contracts.AssembledMessageType {
+	_ = json.Unmarshal(f.Type, &messageType)
+	return messageType
+}
+
+func (f assembledEnvelopeFields) metadata(explicitCompletion MessageCompletion) (leapmuxv1.AssembledMessageKind, leapmuxv1.MessageCompletion) {
+	kind := leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED
+	completion := messageCompletionFromToken(string(explicitCompletion))
+	if f.envelopeType() == contracts.AssembledMessageType {
 		var kindToken, completionToken string
-		_ = json.Unmarshal(value[contracts.AssembledMessageFieldKind], &kindToken)
-		kind = assembledMessageKindFromToken(kindToken)
-		if content.Completion == "" {
-			_ = json.Unmarshal(value[contracts.AssembledMessageFieldCompletion], &completionToken)
+		_ = json.Unmarshal(f.Kind, &kindToken)
+		kind = AssembledMessageKindFromToken(kindToken)
+		if explicitCompletion == "" {
+			_ = json.Unmarshal(f.Completion, &completionToken)
 			completion = messageCompletionFromToken(completionToken)
 		}
 	}
 	return kind, completion
+}
+
+// MessageMetadata keeps worker completion outside the provider's JSON schema.
+func MessageMetadata(content MessageContent) (leapmuxv1.AssembledMessageKind, leapmuxv1.MessageCompletion) {
+	fields, ok := decodeAssembledEnvelopeFields(content.Original)
+	if !ok {
+		return leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED, messageCompletionFromToken(string(content.Completion))
+	}
+	return fields.metadata(content.Completion)
 }
 
 // ValidateMessageCompletion rejects an explicit token that the neutral vocabulary does not define.
@@ -72,7 +102,8 @@ func ValidateMessageCompletion(content MessageContent) error {
 	return nil
 }
 
-func assembledMessageKindFromToken(token string) leapmuxv1.AssembledMessageKind {
+// AssembledMessageKindFromToken parses the neutral assembled-message kind token.
+func AssembledMessageKindFromToken(token string) leapmuxv1.AssembledMessageKind {
 	switch token {
 	case contracts.AssembledMessageKindText:
 		return leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT

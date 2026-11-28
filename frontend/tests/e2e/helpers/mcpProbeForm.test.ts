@@ -13,6 +13,7 @@ import { accountStorageKey, flushStorageWrites, hydrateStorageAccount, localStor
 import { afterLineIndent } from '~/lib/regexp'
 import { requestInstanceId } from '~/stores/control.store'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { fakeLocator } from '~/test-support/fakeLocator'
@@ -196,39 +197,42 @@ describe('mcpProbeFormDraftSaved', () => {
 })
 
 describe('the saved answers of the probe form', () => {
-  const request: ControlRequest = {
-    requestId: 'probe-form',
-    agentId: 'agent-1',
-    agentProvider: AgentProvider.GOOSE,
-    payload: {
-      method: 'elicitation/create',
-      params: {
-        mode: 'form',
-        message: 'Choose the probe settings.',
-        requestedSchema: {
-          type: 'object',
-          required: ['count', 'enabled', 'color'],
-          properties: {
-            count: {
-              type: 'integer',
-              title: 'Count',
-              minimum: 0,
-              maximum: 3,
-            },
-            enabled: { type: 'boolean', title: 'Enabled' },
-            color: {
-              type: 'string',
-              title: 'Color',
-              oneOf: [
-                { const: 'b', title: 'Blue' },
-                { const: 'r', title: 'Red' },
-              ],
-            },
-          },
-        },
+  const schema = {
+    type: 'object',
+    required: ['count', 'enabled', 'color'],
+    properties: {
+      count: {
+        type: 'integer',
+        title: 'Count',
+        minimum: 0,
+        maximum: 3,
+      },
+      enabled: { type: 'boolean', title: 'Enabled' },
+      color: {
+        type: 'string',
+        title: 'Color',
+        oneOf: [
+          { const: 'b', title: 'Blue' },
+          { const: 'r', title: 'Red' },
+        ],
       },
     },
   }
+  const message = 'Choose the probe settings.'
+  // Goose's elicitation, with the prompt that the Worker reads from it.
+  const request: ControlRequest = testControlRequest({
+    requestId: 'probe-form',
+    agentId: 'agent-1',
+    agentProvider: AgentProvider.GOOSE,
+    prompt: {
+      kind: 'elicitation',
+      elicitation: { mode: 'form', message, schema },
+    },
+    payload: {
+      method: 'elicitation/create',
+      params: { mode: 'form', message, requestedSchema: schema },
+    },
+  })
   const answerKey = `${PREFIX_CONTROL_STATE}${request.agentId}:${requestInstanceId(request)}` as const
 
   /**
@@ -243,7 +247,7 @@ describe('the saved answers of the probe form', () => {
         controlRequests: [request],
         onSendMessage: vi.fn(),
       }, answerState, () => undefined, vi.fn())
-      return createComponent(ControlRequestContent, { request, answerState, agentProvider: AgentProvider.GOOSE })
+      return createComponent(ControlRequestContent, { request, answerState })
     })
     await vi.waitFor(() => expect(answerState.ready()).toBe(true))
     return view
