@@ -10,7 +10,7 @@
 
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
@@ -139,7 +139,7 @@ export async function mintCLITokenForAdmin(
   // Hub settings and some admin procedures check the acting credential, so the issuer elevation does not transfer.
   // The required approval uses a browser ceremony. The fixture performs that ceremony for the CLI.
   if (options.elevate ?? true)
-    await elevateMintedCredential(hubURL, bearer, cookie)
+    await elevateCLICredential(hubURL, bearer, cookie)
 
   return {
     path: configDir,
@@ -160,12 +160,23 @@ async function mintStep<T>(step: string, operation: () => Promise<T>): Promise<T
 }
 
 /**
- * Elevate a newly issued CLI credential through the real approval endpoints.
+ * Read the saved `access_token` from a CLI credential directory for `hubURL`.
+ */
+export function readCLICredentialToken(configDir: string, hubURL: string): string {
+  const credPath = join(configDir, 'credentials', `${hubHostForURL(hubURL)}.json`)
+  const saved = JSON.parse(readFileSync(credPath, 'utf8')) as { access_token?: string }
+  if (!saved.access_token)
+    throw new Error(`readCLICredentialToken: saved credential at ${credPath} has no access_token`)
+  return saved.access_token
+}
+
+/**
+ * Elevate a CLI credential through the real approval endpoints.
  * Request a user code from /oauth/step-up, then approve it at /oauth/device with an elevated session.
  * Use fetch for both requests. Direct database changes would leave this approval path untested.
  * The caller elevates the approving session before issuance and supplies that cookie here.
  */
-async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
+export async function elevateCLICredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
   const started = await fetchHub(`${hubUrl}/oauth/step-up`, {
     method: 'POST',
     headers: {
@@ -203,11 +214,93 @@ export async function approveOAuthDeviceCode(hubUrl: string, cookie: string, use
   const approved = await fetchHub(`${hubUrl}/oauth/device`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
-    body: new URLSearchParams({ user_code: userCode, decision: 'allow' }).toString(),
+    body: new URLSearchParams({
+      user_code: userCode,
+      decision: 'allow',
+      admin_confirmed: '1',
+    }).toString(),
     redirect: 'manual',
   })
   if (approved.status !== 200) {
     throw new Error(`approveOAuthDeviceCode: /oauth/device returned ${approved.status}: ${await approved.text()}`)
+  }
+}
+
+/**
+ * Sign the real `leapmux` CLI in via interactive OAuth device-code flow
+ * (`leapmux auth login --device-code`) and optionally elevate the resulting
+ * credential. Unlike `mintCLITokenForAdmin` (which issues a service-account API
+ * token that Hub policy excludes from durable admin actions like `admin user`
+ * or `admin app`), this yields a full interactive OAuth CLI credential.
+ */
+export async function mintInteractiveOAuthCLI(
+  source: CLITokenSource,
+  options: {
+    scopes?: readonly string[]
+    elevate?: boolean
+    password?: string
+    deviceName?: string
+  } = {},
+): Promise<CLIConfigDir> {
+  const hubURL = source.hubUrl
+  const cookie = source.adminToken
+  const scopes = options.scopes ?? E2E_CLI_SCOPES
+  const password = options.password ?? TEST_ADMIN_PASSWORD
+  const user = await mintStep('read the signed-in user', () => getCurrentUser(hubURL, cookie))
+  if (!user.id)
+    throw new Error('mintInteractiveOAuthCLI: the session user has no ID.')
+  await mintStep('elevate the browser session', () => elevateSessionViaAPI(hubURL, cookie, password))
+
+  const configDir = createTestDirectory('leapmux-cli-oauth-')
+  const loginArgs = [
+    'auth',
+    'login',
+    '--hub',
+    hubURL,
+    '--device-code',
+    '--device-name',
+    options.deviceName ?? 'e2e-oauth-cli',
+    '--scope',
+    scopes.join(' '),
+  ]
+  const proc = spawnCLILive(null, loginArgs, {
+    env: { LEAPMUX_CONTROL_CONFIG_DIR: configDir },
+  })
+  try {
+    const deadline = Date.now() + 20_000
+    let userCode: string | null = null
+    while (Date.now() < deadline) {
+      const text = `${proc.stdout()}\n${proc.stderr()}`
+      const match = /user_code=([A-Z0-9-]+)/.exec(text) ?? /Enter the code:\s*([A-Z0-9-]+)/.exec(text)
+      if (match?.[1]) {
+        userCode = match[1]
+        break
+      }
+      if (proc.child.exitCode !== null)
+        throw new Error(`mintInteractiveOAuthCLI: auth login exited early (${proc.child.exitCode}):\n${proc.diagnostic()}`)
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    if (!userCode)
+      throw new Error(`mintInteractiveOAuthCLI: no device user code printed:\n${proc.diagnostic()}`)
+    await approveOAuthDeviceCode(hubURL, cookie, userCode)
+    const done = await proc.finished
+    if (done.code !== 0)
+      throw new Error(`mintInteractiveOAuthCLI: auth login failed (${done.code}):\n${proc.diagnostic()}`)
+  }
+  finally {
+    await proc.stop()
+  }
+
+  const bearer = readCLICredentialToken(configDir, hubURL)
+
+  if (options.elevate ?? true)
+    await elevateCLICredential(hubURL, bearer, cookie)
+
+  return {
+    path: configDir,
+    hubURL,
+    bearer,
+    userID: user.id,
   }
 }
 
@@ -384,7 +477,7 @@ export function spawnCLILive(
   options?: { json?: boolean, env?: Record<string, string>, cwd?: string },
 ): LiveCLIProcess {
   const { binaryPath } = getGlobalState()
-  const configDir = cfg?.path ?? createTestDirectory('leapmux-cli-live-')
+  const configDir = cfg?.path ?? options?.env?.LEAPMUX_CONTROL_CONFIG_DIR ?? createTestDirectory('leapmux-cli-live-')
   const env = scrubLeapMuxEnv({
     ...process.env,
     ...options?.env,
