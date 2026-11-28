@@ -415,13 +415,11 @@ func TestPrinterNotice_NilSafetyAndSanitization(t *testing.T) {
 func TestPrinterShortWritesReturnErrShortWrite(t *testing.T) {
 	t.Run("Result fails with io.ErrShortWrite across formats", func(t *testing.T) {
 		cases := []struct {
-			name    string
-			format  Format
-			oneLine bool
-			value   any
+			name   string
+			format Format
+			value  any
 		}{
 			{name: "text", format: FormatText, value: testRow{ID: "id-1", Title: "hello"}},
-			{name: "text one-line", format: FormatText, oneLine: true, value: testRow{ID: "id-1", Title: "hello"}},
 			{name: "json", format: FormatJSON, value: testRow{ID: "id-1", Title: "hello"}},
 			{name: "ndjson", format: FormatNDJSON, value: testRow{ID: "id-1", Title: "hello"}},
 			{name: "tsv", format: FormatTSV, value: testRow{ID: "id-1", Title: "hello"}},
@@ -431,10 +429,9 @@ func TestPrinterShortWritesReturnErrShortWrite(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				qw := &quotaWriter{remaining: 2, failErr: nil}
 				p := &Printer{
-					Out:           qw,
-					Err:           &bytes.Buffer{},
-					Format:        tc.format,
-					oneLineResult: tc.oneLine,
+					Out:    qw,
+					Err:    &bytes.Buffer{},
+					Format: tc.format,
 				}
 				err := p.Result(tc.value)
 				require.ErrorIs(t, err, io.ErrShortWrite)
@@ -626,19 +623,18 @@ func (o *optionsRenderedStub) RenderTextWithOptions(w io.Writer, opts TableOptio
 	return err
 }
 
-func TestRenderSingleLine_HonorsOptionsTextRenderer(t *testing.T) {
+func TestRenderText_HonorsOptionsTextRenderer(t *testing.T) {
 	stub := &optionsRenderedStub{}
 	var out bytes.Buffer
 	p := &Printer{
-		Out:           &out,
-		Err:           &bytes.Buffer{},
-		Format:        FormatText,
-		Wide:          true,
-		Color:         ColorAlways,
-		oneLineResult: true,
+		Out:    &out,
+		Err:    &bytes.Buffer{},
+		Format: FormatText,
+		Wide:   true,
+		Color:  ColorAlways,
 	}
 	require.NoError(t, p.Result(stub))
-	assert.True(t, stub.called, "oneLineResult must dispatch OptionsTextRenderer")
+	assert.True(t, stub.called, "FormatText must dispatch OptionsTextRenderer")
 	assert.Equal(t, "custom-options-output\n", out.String())
 	assert.True(t, stub.seenOpts.opts.wide)
 	assert.True(t, stub.seenOpts.opts.style.enabled)

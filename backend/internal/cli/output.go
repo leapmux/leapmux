@@ -61,8 +61,6 @@ type Printer struct {
 	// Commands inherit the classifier registered on their tree with
 	// SetStateClassifier; when nil, `,state` cells render without state color.
 	StateClassifier StateClassifier
-	// oneLineResult is the default text form for an ordinary mutation.
-	oneLineResult bool
 }
 
 // completeWriter turns a short write with a nil error into io.ErrShortWrite.
@@ -98,11 +96,7 @@ func (p *Printer) Result(v any) error {
 	case FormatTSV:
 		return renderTSV(out, v, p.tableOpts())
 	default:
-		opts := p.tableOpts()
-		if p.oneLineResult && len(p.Fields) == 0 {
-			return renderSingleLine(out, v, opts)
-		}
-		return renderTextOpts(out, v, opts)
+		return renderTextOpts(out, v, p.tableOpts())
 	}
 }
 

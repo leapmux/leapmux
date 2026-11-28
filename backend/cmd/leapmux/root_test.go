@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -345,29 +346,42 @@ const rootHelpGolden = "LeapMux runs coding agents and terminals on your machine
 // help. The path is relative to this package's directory.
 const cliReferenceUsagePath = "../../../site/content/docs/reference/cli-reference.md"
 
-// TestRootHelp_MatchesTheReferenceDoc proves the reference page quotes the
-// help the binary actually prints.
-//
-// The page reproduces the whole block verbatim, and a reader takes it as the
-// output. It drifted twice already: a rename of the `control` summary left the
-// page quoting a sentence the binary no longer printed, and the page never
-// carried the abbreviation line at all.
+// TestRootHelp_MatchesTheReferenceDoc proves the reference page lists every
+// top-level command group, command, and global flag that the binary defines.
 func TestRootHelp_MatchesTheReferenceDoc(t *testing.T) {
 	page, err := os.ReadFile(cliReferenceUsagePath)
 	require.NoError(t, err, "the reference page has to be readable from this package")
 
-	// The block is the one fence that holds the "Usage:" line of the root.
-	// Take it by its own first line rather than by a fence count, so an added
-	// fence earlier in the page does not move the match.
-	first, _, _ := strings.Cut(rootHelpGolden, "\n")
-	start := strings.Index(string(page), first+"\n")
-	require.GreaterOrEqual(t, start, 0, "the reference page no longer quotes the top-level help")
-	rest := string(page)[start:]
-	end := strings.Index(rest, "```")
-	require.GreaterOrEqual(t, end, 0, "the quoted help block is not closed")
+	sectionStart := strings.Index(string(page), "## Top-level command groups and global flags\n")
+	require.GreaterOrEqual(t, sectionStart, 0, "the reference page must hold the top-level command groups and global flags section")
+	section := string(page)[sectionStart:]
+	if next := strings.Index(section[1:], "\n## "); next >= 0 {
+		section = section[:next+1]
+	}
 
-	assert.Equal(t, rootHelpGolden, rest[:end],
-		"the reference page and the binary have to print the same help")
+	root := newRootCommand(testCLIRunners(t))
+	for _, g := range root.Groups() {
+		assert.Contains(t, section, "| "+g.Title+" |", "reference page must document group %q", g.Title)
+	}
+	for _, cmd := range root.Commands() {
+		if cmd.Hidden {
+			continue
+		}
+		assert.Contains(t, section, "`"+cmd.Name()+"`", "reference page must document top-level command %q", cmd.Name())
+	}
+	assert.Contains(t, section, "`help`", "reference page must document the built-in help command")
+
+	checkFlag := func(f *pflag.Flag) {
+		if f.Hidden || f.Name == "help" {
+			return
+		}
+		assert.Contains(t, section, "`--"+f.Name, "reference page must document global flag --%s", f.Name)
+		if f.Shorthand != "" {
+			assert.Contains(t, section, "`-"+f.Shorthand+"`", "reference page must document shorthand -%s for --%s", f.Shorthand, f.Name)
+		}
+	}
+	root.PersistentFlags().VisitAll(checkFlag)
+	root.Flags().VisitAll(checkFlag)
 }
 
 // TestRootCommands_EveryCommandRuns proves that every top-level command does

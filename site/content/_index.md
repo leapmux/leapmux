@@ -149,6 +149,10 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
       <p>Solo Desktop runs a local Hub and Worker inside the native app with one click, while Solo Daemon runs the same single-machine setup headlessly for browser and CLI access. Distributed mode pairs a central Hub with one or more remote Workers for multi-machine or team setups — see <a href="/docs/getting-started/concepts/">Concepts &amp; Topologies</a>.</p>
     </details>
     <details class="lm-home-faq-item">
+      <summary>What is the current status of LeapMux?</summary>
+      <p>LeapMux is pre-release software under active development. Expect breaking changes as we refine the CLI, APIs, and workflows for the best long-term design. We welcome your feedback and bug reports on <a href="https://github.com/leapmux/leapmux/issues">GitHub Issues</a>.</p>
+    </details>
+    <details class="lm-home-faq-item">
       <summary>What license does LeapMux use?</summary>
       <p>LeapMux is source-available under the Functional Source License, Version 1.1, Apache 2.0 Future License (FSL-1.1-ALv2), which converts to Apache 2.0 two years after each release. See <a href="/docs/reference/legal/">Legal</a> for full terms.</p>
     </details>

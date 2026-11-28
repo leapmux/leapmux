@@ -131,7 +131,7 @@ func TestNotifyOverIPC_PrintsTheNotificationAsText(t *testing.T) {
 
 	o := runControlText(t, "notify", "Tests passed", "--body", "All green")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Equal(t, "id: test-notification  worker_id: worker-A  title: \"Tests passed\"  body: \"All green\"\n", o.Stdout)
+	assert.Equal(t, "id:        test-notification\nworker_id: worker-A\ntitle:     Tests passed\nbody:      All green\n", o.Stdout)
 }
 
 func TestNotifyOverIPC_KeepsTheAddressApartFromTheSender(t *testing.T) {

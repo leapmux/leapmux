@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -42,16 +41,14 @@ func TestControlHonorsTheLastExplicitOutputFlagValue(t *testing.T) {
 	assert.NotContains(t, quietOutput.Stdout, "{\"data\"")
 }
 
-func TestWorkspaceCreatePrintsItsMutationResultOnOneLine(t *testing.T) {
+func TestWorkspaceCreatePrintsAlignedKeyValueLines(t *testing.T) {
 	hub := &rpcHub{answers: map[string]proto.Message{
 		leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure: &leapmuxv1.CreateWorkspaceResponse{WorkspaceId: "created-workspace"},
 	}}
 	startRPCIPC(t, hub, nil)
 	out := runControlText(t, "workspace", "create", "Nightly\nreview")
 	require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
-	require.Len(t, strings.Split(strings.TrimSuffix(out.Stdout, "\n"), "\n"), 1, out.Stdout)
-	assert.Contains(t, out.Stdout, "created-workspace")
-	assert.Contains(t, out.Stdout, `Nightly\nreview`)
+	assert.Equal(t, "id:    created-workspace\ntitle: Nightly\n       review\n", out.Stdout)
 }
 
 func TestFormatTimeAndWallTime(t *testing.T) {

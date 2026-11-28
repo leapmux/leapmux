@@ -139,7 +139,6 @@ func printerForValidated(cmd *cobra.Command) (*Printer, error) {
 		Out:             cmd.OutOrStdout(),
 		Err:             cmd.ErrOrStderr(),
 		StateClassifier: stateClassifierOf(cmd),
-		oneLineResult:   IsMutating(cmd),
 	}
 	jsonFlag := cmd.Flags().Lookup("json")
 	jsonSet := jsonFlag != nil && jsonFlag.Value.String() == "true"

@@ -315,7 +315,7 @@ func TestExecute_RunsALeafAndPrintsItsResult(t *testing.T) {
 	require.Equal(t, ExitOK, code, "stderr: %s", stderr)
 	require.Len(t, seen, 1)
 	assert.Equal(t, testInvocation{path: "tool workspace rename", args: []string{"w-1", "New title"}}, seen[0])
-	assert.Equal(t, "args: [w-1, \"New title\"]\n", stdout)
+	assert.Equal(t, "w-1\nNew title\n", stdout)
 
 	code, stdout, _ = execute(t, testTree(&seen), "workspace", "rename", "w-1", "x", "--json")
 	require.Equal(t, ExitOK, code)
@@ -486,7 +486,7 @@ func TestRun_ReturnsTheErrorUnprinted(t *testing.T) {
 		"Run expands an abbreviation as Execute does")
 	require.Len(t, seen, 1)
 	assert.Equal(t, "tool workspace rename", seen[0].path)
-	assert.Equal(t, "args: [w-1, x]\n", stdout.String())
+	assert.Equal(t, "w-1\nx\n", stdout.String())
 }
 
 // A leaf runs under a context that an interrupt ends, and it reports an
@@ -739,4 +739,125 @@ func TestIsDestructiveSuggestion_RequiresExplicitDestructiveFlag(t *testing.T) {
 	code, _, stderr := execute(t, root, "item", "delat")
 	assert.Equal(t, ExitUsage, code)
 	assert.Contains(t, stderr, "did you mean delete?")
+}
+
+func TestMutatingLeaf_UsesStandardTextRendering(t *testing.T) {
+	type sendResult struct {
+		ID          string `json:"id"`
+		InputID     string `json:"input_id"`
+		RequestID   string `json:"request_id,omitempty"`
+		ScheduledAt string `json:"scheduled_at,omitempty"`
+	}
+	type batchItem struct {
+		ID    string `json:"id" table:"ID"`
+		Title string `json:"title" table:"TITLE"`
+	}
+	type batchResult struct {
+		Items []batchItem `json:"items"`
+	}
+	newRoot := func() (*cobra.Command, *optionsRenderedStub) {
+		stub := &optionsRenderedStub{}
+		root := Group("tool", "Root",
+			NewLeaf(Leaf{
+				Use:     "send",
+				Short:   "Send a message",
+				Mutates: true,
+				Run: func(*Invocation) (any, error) {
+					return sendResult{ID: "agent-1", InputID: "input-2", RequestID: "req-3"}, nil
+				},
+			}),
+			NewLeaf(Leaf{
+				Use:     "send-minimal",
+				Short:   "Send a message without optional fields",
+				Mutates: true,
+				Run: func(*Invocation) (any, error) {
+					return sendResult{ID: "agent-1", InputID: "input-2"}, nil
+				},
+			}),
+			NewLeaf(Leaf{
+				Use:     "empty",
+				Short:   "Return nil result",
+				Mutates: true,
+				Run:     func(*Invocation) (any, error) { return nil, nil },
+			}),
+			NewLeaf(Leaf{
+				Use:     "batch",
+				Short:   "Batch update",
+				Mutates: true,
+				Run: func(*Invocation) (any, error) {
+					return batchResult{Items: []batchItem{{ID: "a-1", Title: "Alpha"}, {ID: "a-2", Title: "Beta"}}}, nil
+				},
+			}),
+			NewLeaf(Leaf{
+				Use:     "custom",
+				Short:   "Custom renderer mutation",
+				Mutates: true,
+				Run:     func(*Invocation) (any, error) { return stub, nil },
+			}),
+			NewLeaf(Leaf{
+				Use:     "plain-custom",
+				Short:   "Plain TextRenderer mutation",
+				Mutates: true,
+				Run:     func(*Invocation) (any, error) { return rendered("summary line\n"), nil },
+			}),
+		)
+		AddOutputFlags(root)
+		return root, stub
+	}
+
+	t.Run("object prints aligned key-value lines", func(t *testing.T) {
+		root, _ := newRoot()
+		code, stdout, stderr := execute(t, root, "send")
+		require.Equal(t, ExitOK, code, stderr)
+		assert.Equal(t, "id:         agent-1\ninput_id:   input-2\nrequest_id: req-3\n", stdout)
+	})
+
+	t.Run("omitted optional fields do not affect key alignment", func(t *testing.T) {
+		root, _ := newRoot()
+		code, stdout, stderr := execute(t, root, "send-minimal")
+		require.Equal(t, ExitOK, code, stderr)
+		assert.Equal(t, "id:       agent-1\ninput_id: input-2\n", stdout)
+	})
+
+	t.Run("fields flag projects aligned key-value lines", func(t *testing.T) {
+		root, _ := newRoot()
+		code, stdout, stderr := execute(t, root, "send", "--fields", "id,request_id")
+		require.Equal(t, ExitOK, code, stderr)
+		assert.Equal(t, "id:         agent-1\nrequest_id: req-3\n", stdout)
+	})
+
+	t.Run("nil mutation result prints nothing", func(t *testing.T) {
+		root, _ := newRoot()
+		code, stdout, stderr := execute(t, root, "empty")
+		require.Equal(t, ExitOK, code, stderr)
+		assert.Empty(t, stdout)
+	})
+
+	t.Run("single list wrapper prints a table", func(t *testing.T) {
+		root, _ := newRoot()
+		code, stdout, stderr := execute(t, root, "batch")
+		require.Equal(t, ExitOK, code, stderr)
+		assert.Contains(t, stdout, "ID")
+		assert.Contains(t, stdout, "TITLE")
+		assert.Contains(t, stdout, "a-1")
+		assert.Contains(t, stdout, "Alpha")
+		assert.NotContains(t, stdout, "items: [")
+	})
+
+	t.Run("OptionsTextRenderer still receives table options", func(t *testing.T) {
+		root, stub := newRoot()
+		code, stdout, stderr := execute(t, root, "custom", "--wide", "--color", "always")
+		require.Equal(t, ExitOK, code, stderr)
+		assert.True(t, stub.called)
+		assert.Equal(t, "custom-options-output\n", stdout)
+		assert.True(t, stub.seenOpts.opts.wide)
+		assert.True(t, stub.seenOpts.opts.style.enabled)
+	})
+
+	t.Run("TextRenderer still controls custom text output", func(t *testing.T) {
+		root, _ := newRoot()
+		code, stdout, stderr := execute(t, root, "plain-custom")
+		require.Equal(t, ExitOK, code, stderr)
+		assert.Equal(t, "summary line\n", stdout)
+	})
 }

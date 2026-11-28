@@ -397,3 +397,19 @@ func TestAgentSend_RefusesAMessageThatTheCLICanJudge(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentSendOverIPC_PrintsAlignedKeyValueLines(t *testing.T) {
+	id := fullTestID("ag-text")
+	w := newQueueWorker()
+	startAgentWorker(t, id, w)
+
+	wantInputID := requestScopedID("req-text-1", requestScopeAgentSend, id)
+	out := runControlText(t, "agent", "send", id, "Ship the release", "--request-id", "req-text-1")
+	require.Equal(t, cli.ExitOK, out.Code, "stderr: %s", out.Stderr)
+	assert.Equal(t, "id:         "+id+"\ninput_id:   "+wantInputID+"\nrequest_id: req-text-1\n", out.Stdout)
+
+	wantScheduledID := requestScopedID("req-text-2", requestScopeAgentSend, id)
+	scheduled := runControlText(t, "agent", "send", id, "Check metrics", "--request-id", "req-text-2", "--at", "2099-01-02T03:04:05Z")
+	require.Equal(t, cli.ExitOK, scheduled.Code, "stderr: %s", scheduled.Stderr)
+	assert.Equal(t, "id:           "+id+"\ninput_id:     "+wantScheduledID+"\nrequest_id:   req-text-2\nscheduled_at: 2099-01-02T03:04:05.000Z\n", scheduled.Stdout)
+}

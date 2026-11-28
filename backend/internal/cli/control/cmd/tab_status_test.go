@@ -131,7 +131,7 @@ func TestTabStatusSetOverIPC_PrintsTheStatusAsText(t *testing.T) {
 
 	o := runControlText(t, "tab", "status", "set", "agent-2", "Running the tests", "--progress", "75")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Equal(t, "id: agent-2  key: default  status: {text: \"Running the tests\", progress_percent: 75, tone: neutral}\n", o.Stdout)
+	assert.Equal(t, "id:  agent-2\nkey: default\nstatus:\n  text:             Running the tests\n  progress_percent: 75\n  tone:             neutral\n", o.Stdout)
 }
 
 func TestTabStatusKeysOverIPC_SetClearAndList(t *testing.T) {
