@@ -35,6 +35,7 @@ import { agentOpenOptions } from '../tests/e2e/agentSettings'
 import {
   closeTestChannels,
   createWorkspaceViaAPI,
+  deleteWorkspaceViaAPI,
   elevatedAdminSessionViaAPI,
   getTestChannel,
   listWorkersViaAPI,
@@ -62,6 +63,7 @@ import { readEntry, writeEntry } from '../tests/e2e/helpers/storage'
 import { startSuiteServer } from '../tests/e2e/helpers/suiteServer'
 import { waitForAgentStartupViaAPI } from '../tests/e2e/helpers/workerTabs'
 import { initGitRepo } from '../tests/e2e/helpers/worktree'
+import { SiteVideoRecorder } from './siteVideoRecorder'
 
 const execFileAsync = promisify(execFile)
 const require = createRequire(import.meta.url)
@@ -1337,13 +1339,7 @@ async function captureDialogsAndMenus(
   await prefsDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
 }
 
-async function captureInputQueueAndQuestionViews(
-  page: Page,
-  server: { hubUrl: string, adminToken: string, workerId: string },
-  wsMain: string,
-  wtRetryJitter: string,
-  recorded: Record<string, ClipRect>,
-): Promise<void> {
+async function prepareActiveInputQueue(page: Page): Promise<Locator> {
   await waitForTheme(page, 'light')
 
   // Close Tile 2 (zsh) and Tile 1 (backoff.go) so the agent pane returns to
@@ -1369,8 +1365,8 @@ async function captureInputQueueAndQuestionViews(
   const claudeTabAfterCollapse = page.locator('[data-testid="tab"]').filter({ hasText: 'Retry jitter' }).first()
   await claudeTabAfterCollapse.click()
 
-  // Trigger a held active turn (delayMs: 45_000) so the agent stays genuinely
-  // working while we stack immediate + scheduled items in the input queue.
+  // Trigger a held active turn so the agent stays genuinely working while we
+  // stack immediate + scheduled items in the input queue.
   await typeComposerAndSend(
     page,
     'Run the retry stress benchmark across 16 goroutines and report any allocations.',
@@ -1396,6 +1392,18 @@ async function captureInputQueueAndQuestionViews(
     const text = await queueRoot.textContent()
     return Boolean(text && text.includes('PRNG seed') && text.includes('README.md') && text.includes('Steer'))
   }, 15_000)
+  return claudeTabAfterCollapse
+}
+
+async function captureInputQueueAndQuestionViews(
+  page: Page,
+  server: { hubUrl: string, adminToken: string, workerId: string },
+  wsMain: string,
+  wtRetryJitter: string,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  const claudeTabAfterCollapse = await prepareActiveInputQueue(page)
+  const queueRoot = page.locator('[data-testid="agent-input-queue"]:visible').first()
 
   // Open the Schedule send popover, enter tomorrow 09:00, capture it in both
   // themes, then apply and queue a scheduled message.
@@ -1815,29 +1823,6 @@ async function captureSecurityAndLauncherViews(
   }
 }
 
-async function encodeWebmToMp4(webmPath: string, mp4Path: string): Promise<void> {
-  mkdirSync(dirname(mp4Path), { recursive: true })
-  await execFileAsync('ffmpeg', [
-    '-y',
-    '-i',
-    webmPath,
-    '-vf',
-    'scale=1280:-2',
-    '-c:v',
-    'libx264',
-    '-preset',
-    'medium',
-    '-crf',
-    '24',
-    '-pix_fmt',
-    'yuv420p',
-    '-movflags',
-    '+faststart',
-    '-an',
-    mp4Path,
-  ])
-}
-
 async function hasFfmpeg(): Promise<boolean> {
   try {
     await execFileAsync('ffmpeg', ['-version'])
@@ -1848,8 +1833,57 @@ async function hasFfmpeg(): Promise<boolean> {
   }
 }
 
+async function openVideoPage(
+  videoBrowser: Browser,
+  hubUrl: string,
+  adminToken: string,
+  theme: 'light' | 'dark',
+  clipViewport: { width: number, height: number },
+): Promise<{ ctx: BrowserContext, page: Page }> {
+  const adminCookie = parseSessionCookie(adminToken)
+  const ctx = await videoBrowser.newContext({
+    baseURL: hubUrl,
+    viewport: clipViewport,
+    deviceScaleFactor: 2,
+    colorScheme: theme,
+  })
+  await ctx.addCookies([
+    {
+      name: adminCookie.name,
+      value: adminCookie.value,
+      domain: E2E_BROWSER_HOST,
+      path: '/',
+      httpOnly: true,
+    },
+  ])
+  const page = await ctx.newPage()
+  return { ctx, page }
+}
+
+async function installRegisterWorkerRoutes(page: Page): Promise<void> {
+  await page.route('**/leapmux.v1.SystemService/GetSystemInfo', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json() as Record<string, unknown>
+    body.workerHubUrl = 'https://hub.example.com'
+    await route.fulfill({ response, json: body })
+  })
+  await page.route('**/leapmux.v1.WorkerManagementService/CreateRegistrationKey', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        registrationKey: 'lmx_reg_example_7f8a2c9e4b1d',
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      }),
+    })
+  })
+  await page.route('**/leapmux.v1.WorkerManagementService/RevokeRegistrationKey', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+  })
+}
+
 async function captureParallelWorktreesClip(
-  browser: Browser,
+  videoBrowser: Browser,
   hubUrl: string,
   adminToken: string,
   wsMain: string,
@@ -1859,29 +1893,11 @@ async function captureParallelWorktreesClip(
     console.log('Skipping workflow clips (ffmpeg not found on PATH).')
     return
   }
-  const adminCookie = parseSessionCookie(adminToken)
   const clipViewport = { width: 1280, height: 800 }
   for (const theme of ['light', 'dark'] as const) {
-    const videoDir = join(runDir, `clip-parallel-${theme}`)
-    mkdirSync(videoDir, { recursive: true })
-    const ctx = await browser.newContext({
-      baseURL: hubUrl,
-      viewport: clipViewport,
-      colorScheme: theme,
-      recordVideo: { dir: videoDir, size: clipViewport },
-    })
-    let videoPath: string | null = null
+    const workDir = join(runDir, `clip-parallel-${theme}`)
+    const { ctx, page: p } = await openVideoPage(videoBrowser, hubUrl, adminToken, theme, clipViewport)
     try {
-      await ctx.addCookies([
-        {
-          name: adminCookie.name,
-          value: adminCookie.value,
-          domain: E2E_BROWSER_HOST,
-          path: '/',
-          httpOnly: true,
-        },
-      ])
-      const p = await ctx.newPage()
       await p.goto('/', { waitUntil: 'domcontentloaded' })
       const mainRow = p.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
       await mainRow.waitFor({ state: 'visible', timeout: 25_000 })
@@ -1889,166 +1905,275 @@ async function captureParallelWorktreesClip(
         await mainRow.getByTestId('workspace-title').click()
       await p.locator('[data-testid="tile"]').nth(1).waitFor({ state: 'visible', timeout: 20_000 })
       await waitForTheme(p, theme)
-      await p.waitForTimeout(800)
+      await resetLeftSidebarScroll(p)
+      await p.waitForTimeout(300)
 
-      // Toggle Split diff mode in Tile 1, then back to Unified.
+      // Start recording only after the workspace, tiles, and theme have settled
+      // so frame 0 has no loading screen.
+      const recorder = await SiteVideoRecorder.start(p, {
+        workDir,
+        viewport: clipViewport,
+        scaleFactor: 2,
+      })
+      await recorder.wait(650)
+
+      // Zoom onto Tile 1's diff viewer and toggle Split -> Unified diff mode.
       const tile1 = p.locator('[data-testid="tile"]').nth(1)
       const diffToolbar = tile1.locator('[data-testid="diff-mode-toolbar"]:visible').first()
       if (await diffToolbar.isVisible().catch(() => false)) {
-        await diffToolbar.getByText('Split', { exact: true }).click()
-        await p.waitForTimeout(1000)
-        await diffToolbar.getByText('Unified', { exact: true }).click()
-        await p.waitForTimeout(600)
+        const tile1Box = await tile1.boundingBox()
+        if (tile1Box) {
+          await recorder.zoomToRect(
+            {
+              x: tile1Box.x,
+              y: tile1Box.y,
+              width: tile1Box.width,
+              height: Math.min(tile1Box.height, 420),
+            },
+            { padding: 36, maxZoom: 1.65, transitionMs: 450 },
+          )
+        }
+        await recorder.clickLocator(diffToolbar.getByText('Split', { exact: true }))
+        await recorder.wait(950)
+        await recorder.clickLocator(diffToolbar.getByText('Unified', { exact: true }))
+        await recorder.wait(550)
+        await recorder.zoomOut({ transitionMs: 420 })
       }
 
-      // Switch between isolated worktree agent tabs in the sidebar.
+      // Zoom onto the left sidebar worktree tree and switch between isolated worktree tabs.
       const wsChildren = p.locator(`[data-testid="workspace-children-${wsMain}"]:visible`).first()
+      const wsHeaderBox = await mainRow.boundingBox()
+      const wsChildrenBox = await wsChildren.boundingBox()
+      if (wsHeaderBox && wsChildrenBox) {
+        const treeFocus = unionRects(wsHeaderBox, wsChildrenBox)
+        await recorder.zoomToRect(
+          {
+            x: 0,
+            y: Math.max(0, treeFocus.y - 16),
+            width: Math.min(clipViewport.width, treeFocus.width + 260),
+            height: treeFocus.height + 120,
+          },
+          { padding: 32, maxZoom: 1.65, transitionMs: 450 },
+        )
+      }
       for (const label of ['Token refresh', 'Webhook HMAC', 'Retry jitter']) {
         const leaf = wsChildren.locator('[data-testid="tab-tree-leaf"]:visible').filter({ hasText: label }).first()
         if (await leaf.isVisible().catch(() => false)) {
-          await leaf.click()
-          await p.waitForTimeout(900)
+          await recorder.clickLocator(leaf)
+          await recorder.wait(750)
         }
       }
+      await recorder.zoomOut({ transitionMs: 450 })
+      await recorder.wait(300)
 
-      // Briefly reveal the Quake terminal and dismiss it.
+      // Reveal the Quake terminal across the full workspace, then dismiss it.
       await p.keyboard.press('Control+Backquote')
-      await p.waitForTimeout(1100)
+      await recorder.wait(1100)
       await p.keyboard.press('Control+Backquote')
-      await p.waitForTimeout(700)
+      await recorder.wait(650)
 
-      videoPath = await p.video()?.path() ?? null
+      const outPath = join(VIDEOS_OUT_DIR, `parallel-worktrees-${theme}.mp4`)
+      await recorder.finish(outPath)
+      console.log(`  wrote parallel-worktrees-${theme}.mp4`)
       await p.close()
     }
     finally {
       await ctx.close()
-    }
-    if (videoPath) {
-      const outPath = join(VIDEOS_OUT_DIR, `parallel-worktrees-${theme}.mp4`)
-      await encodeWebmToMp4(videoPath, outPath)
-      console.log(`  wrote parallel-worktrees-${theme}.mp4`)
     }
   }
 }
 
 async function captureTilingFloatingClip(
-  browser: Browser,
+  videoBrowser: Browser,
   hubUrl: string,
   adminToken: string,
-  wsMain: string,
+  workerId: string,
+  wtRetryJitter: string,
   runDir: string,
 ): Promise<void> {
   if (!await hasFfmpeg())
     return
-  const adminCookie = parseSessionCookie(adminToken)
   const clipViewport = { width: 1280, height: 800 }
+  const server = { hubUrl, adminToken, workerId }
+
   for (const theme of ['light', 'dark'] as const) {
-    const videoDir = join(runDir, `clip-tiling-${theme}`)
-    mkdirSync(videoDir, { recursive: true })
-    const ctx = await browser.newContext({
-      baseURL: hubUrl,
-      viewport: clipViewport,
-      colorScheme: theme,
-      recordVideo: { dir: videoDir, size: clipViewport },
-    })
-    let videoPath: string | null = null
+    // Create a clean single-tile, single-tab workspace per theme so both light
+    // and dark recordings start from an identical minimal layout.
+    const wsTiling = await createWorkspaceViaAPI(hubUrl, adminToken, 'Tiling & floating')
+    const agentTabId = await openAgentViaAPI(
+      server,
+      wsTiling,
+      deliberateWorkingDir(wtRetryJitter, 'documentation tiling and floating clip'),
+      {
+        ...agentOpenOptions(AgentProvider.CLAUDE_CODE, {
+          optionValues: { permissionMode: 'default' },
+        }),
+        title: 'Retry jitter',
+      },
+    )
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, wsTiling, 1, 30_000)
+
+    const workDir = join(runDir, `clip-tiling-${theme}`)
+    const { ctx, page: p } = await openVideoPage(videoBrowser, hubUrl, adminToken, theme, clipViewport)
     try {
-      await ctx.addCookies([
-        {
-          name: adminCookie.name,
-          value: adminCookie.value,
-          domain: E2E_BROWSER_HOST,
-          path: '/',
-          httpOnly: true,
-        },
-      ])
-      const p = await ctx.newPage()
       await p.goto('/', { waitUntil: 'domcontentloaded' })
-      const mainRow = p.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
-      await mainRow.waitFor({ state: 'visible', timeout: 25_000 })
-      if (await mainRow.getAttribute('data-active') !== 'true')
-        await mainRow.getByTestId('workspace-title').click()
-      await p.locator('[data-testid="tile"]').nth(2).waitFor({ state: 'visible', timeout: 20_000 })
+      const wsRow = p.locator(`[data-testid="workspace-item-${wsTiling}"]:visible`).first()
+      await wsRow.waitFor({ state: 'visible', timeout: 25_000 })
+      if (await wsRow.getAttribute('data-active') !== 'true')
+        await wsRow.getByTestId('workspace-title').click()
+      await p.locator(`[data-testid="tab"][data-tab-id="${agentTabId}"]:visible`).first().waitFor({ state: 'visible', timeout: 20_000 })
+
+      // Populate one quick turn so the single agent tab shows a real conversation.
+      await typeComposerAndSend(p, 'Summarize the retry backoff jitter update')
+      await waitFor('tiling demo summary rendered and turn settled', async () => {
+        const text = await p.locator('[data-testid="tile"]').first().textContent()
+        if (!text || !text.includes('full-jitter exponential backoff'))
+          return false
+        const interruptVisible = await p.getByRole('button', { name: 'Interrupt' }).first().isVisible().catch(() => false)
+        return !interruptVisible
+      }, 25_000)
+
+      // Collapse the right Files sidebar if visible so the 2-column split and
+      // 2x2 grid have generous width at 1280x800.
+      const filesTab = p.locator('[data-testid="files-filter-changed"]:visible').first()
+      if (await filesTab.isVisible().catch(() => false)) {
+        await p.keyboard.press(`${MOD_KEY}+Shift+BracketRight`)
+        await filesTab.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+      }
+
       await waitForTheme(p, theme)
-      await p.waitForTimeout(700)
+      await resetLeftSidebarScroll(p)
+      await p.waitForTimeout(450)
 
-      // Open the Make grid hover picker on Tile 0, preview 2x3 and 3x4, then dismiss.
+      // Start recording AFTER setup finishes -> frame 0 is a clean single tile
+      // holding a single settled agent tab (zero loading screen).
+      const recorder = await SiteVideoRecorder.start(p, {
+        workDir,
+        viewport: clipViewport,
+        scaleFactor: 2,
+      })
+      await recorder.wait(750)
+
+      // Step 1: Zoom to the tile header controls and split into two side-by-side tiles.
       const tile0 = p.locator('[data-testid="tile"]').nth(0)
-      const makeGridBtn = tile0.locator('[data-testid="make-grid"]:visible').first()
-      if (await makeGridBtn.isVisible().catch(() => false)) {
-        await makeGridBtn.click()
-        const gridPopover = p.locator('[data-testid="grid-size-popover"]:visible').first()
-        if (await gridPopover.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false)) {
-          await gridPopover.locator('[data-testid="grid-size-cell-1-2"]').hover()
-          await p.waitForTimeout(450)
-          await gridPopover.locator('[data-testid="grid-size-cell-2-3"]').hover()
-          await p.waitForTimeout(600)
-          await p.keyboard.press('Escape')
-          await gridPopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
-          await p.waitForTimeout(350)
-        }
+      const splitVerticalBtn = tile0.locator('[data-testid="split-vertical"]:visible').first()
+      await splitVerticalBtn.waitFor({ state: 'visible', timeout: 10_000 })
+      const splitBtnBox = await requireBox(splitVerticalBtn, 'split-vertical button')
+      await recorder.zoomToRect(
+        {
+          x: Math.max(0, splitBtnBox.x - 160),
+          y: Math.max(0, splitBtnBox.y - 24),
+          width: 280,
+          height: 180,
+        },
+        { padding: 48, maxZoom: 1.75, transitionMs: 450 },
+      )
+      const splitSaved = waitForLayoutSaved(p)
+      await recorder.clickLocator(splitVerticalBtn)
+      await waitFor('2 side-by-side tiles visible', async () => (await p.locator('[data-testid="tile"]').count()) === 2, 10_000)
+      await splitSaved
+      await recorder.wait(300)
+      await recorder.zoomOut({ transitionMs: 450 })
+      await recorder.wait(850)
+
+      // Step 2: Zoom to the right tile's Make grid button, pick 2x2, and click to create the grid.
+      const rightTile = p.locator('[data-testid="tile"]').nth(1)
+      const makeGridBtn = rightTile.locator('[data-testid="make-grid"]:visible').first()
+      await makeGridBtn.waitFor({ state: 'visible', timeout: 10_000 })
+      const gridBtnBox = await requireBox(makeGridBtn, 'right tile make-grid button')
+      await recorder.zoomToRect(
+        {
+          x: Math.max(0, gridBtnBox.x - 220),
+          y: Math.max(0, gridBtnBox.y - 20),
+          width: 300,
+          height: 280,
+        },
+        { padding: 40, maxZoom: 1.75, transitionMs: 450 },
+      )
+      await recorder.clickLocator(makeGridBtn)
+      const gridPopover = p.locator('[data-testid="grid-size-popover"]:visible').first()
+      await gridPopover.waitFor({ state: 'visible', timeout: 8_000 })
+      await recorder.hoverLocator(gridPopover.locator('[data-testid="grid-size-cell-0-0"]'), 160)
+      await recorder.wait(180)
+      await recorder.hoverLocator(gridPopover.locator('[data-testid="grid-size-cell-0-1"]'), 160)
+      await recorder.wait(180)
+      const cell2x2 = gridPopover.locator('[data-testid="grid-size-cell-1-1"]')
+      await recorder.hoverLocator(cell2x2, 180)
+      await recorder.wait(500)
+
+      const gridSaved = waitForLayoutSaved(p)
+      await recorder.clickLocator(cell2x2, 100)
+      await gridPopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+      await waitFor('left tile plus 2x2 right grid (5 tiles total)', async () => (await p.locator('[data-testid="tile"]').count()) === 5, 10_000)
+      await gridSaved
+      await recorder.wait(300)
+      await recorder.zoomOut({ transitionMs: 480 })
+      await recorder.wait(950)
+
+      // Step 3: Zoom to the left agent tile's Pop out button and pop the agent tab out.
+      const agentTile = p.locator('[data-testid="tile"]').filter({
+        has: p.locator(`[data-testid="tab"][data-tab-id="${agentTabId}"]`),
+      }).first()
+      const popOutBtn = agentTile.locator('[data-testid="pop-out-button"]:visible').first()
+      await popOutBtn.waitFor({ state: 'visible', timeout: 10_000 })
+      const popBtnBox = await requireBox(popOutBtn, 'agent tile pop-out button')
+      await recorder.zoomToRect(
+        {
+          x: Math.max(0, popBtnBox.x - 160),
+          y: Math.max(0, popBtnBox.y - 24),
+          width: 280,
+          height: 180,
+        },
+        { padding: 48, maxZoom: 1.7, transitionMs: 450 },
+      )
+      const popSaved = waitForLayoutSaved(p)
+      await recorder.clickLocator(popOutBtn)
+      const floatWin = p.locator('[data-testid="floating-window"]').first()
+      await floatWin.waitFor({ state: 'visible', timeout: 10_000 })
+      await popSaved
+      await recorder.wait(250)
+      await recorder.zoomOut({ transitionMs: 450 })
+      await recorder.wait(450)
+
+      // Drag the floating agent window slightly over the 2x2 grid and lower its
+      // opacity via titlebar wheel scroll so the grid remains visible behind it.
+      const titleBar = floatWin.locator('[data-testid="floating-window-titlebar"]').first()
+      const titleBox = await requireBox(titleBar, 'floating agent titlebar')
+      const moveSaved = waitForLayoutSaved(p)
+      await recorder.drag(
+        titleBox.x + titleBox.width / 2,
+        titleBox.y + titleBox.height / 2,
+        Math.min(clipViewport.width - 180, titleBox.x + titleBox.width / 2 + 130),
+        Math.min(clipViewport.height - 160, titleBox.y + titleBox.height / 2 + 65),
+        420,
+      )
+      await moveSaved
+      await recorder.wait(300)
+
+      const movedTitleBox = await requireBox(titleBar, 'moved floating agent titlebar')
+      await recorder.movePointer(movedTitleBox.x + movedTitleBox.width / 2, movedTitleBox.y + movedTitleBox.height / 2, 8, 150)
+      const opacitySaved = waitForLayoutSaved(p)
+      for (let i = 0; i < 3; i++) {
+        await p.mouse.wheel(0, 120)
+        await recorder.wait(160)
       }
+      await opacitySaved
+      await recorder.wait(1100)
 
-      // Pop out one tab from Tile 0 (which holds multiple tabs, keeping all 3
-      // tiles intact across light/dark runs), drag it, lower opacity, and dock it back.
-      const popOutBtn = tile0.locator('[data-testid="pop-out-button"]:visible').first()
-      if (await popOutBtn.isVisible().catch(() => false)) {
-        const popSaved = waitForLayoutSaved(p)
-        await popOutBtn.click()
-        const floatWin = p.locator('[data-testid="floating-window"]').first()
-        await floatWin.waitFor({ state: 'visible', timeout: 10_000 })
-        await popSaved
-        await p.waitForTimeout(550)
-
-        const titleBar = floatWin.locator('[data-testid="floating-window-titlebar"]').first()
-        const titleBox = await requireBox(titleBar, 'floating window titlebar')
-        const moveSaved = waitForLayoutSaved(p)
-        await dragPointer(
-          p,
-          titleBox.x + titleBox.width / 2,
-          titleBox.y + titleBox.height / 2,
-          Math.min(clipViewport.width - 140, titleBox.x + titleBox.width / 2 + 120),
-          Math.min(clipViewport.height - 160, titleBox.y + titleBox.height / 2 + 80),
-        )
-        await moveSaved
-        await p.waitForTimeout(350)
-
-        const movedTitleBox = await requireBox(titleBar, 'moved floating window titlebar')
-        await p.mouse.move(movedTitleBox.x + movedTitleBox.width / 2, movedTitleBox.y + movedTitleBox.height / 2)
-        const opacitySaved = waitForLayoutSaved(p)
-        for (let i = 0; i < 3; i++) {
-          await p.mouse.wheel(0, 120)
-          await p.waitForTimeout(120)
-        }
-        await opacitySaved
-        await p.waitForTimeout(900)
-
-        const popInBtn = floatWin.locator('[data-testid="pop-in-button"]:visible').first()
-        if (await popInBtn.isVisible().catch(() => false)) {
-          const dockSaved = waitForLayoutSaved(p)
-          await popInBtn.click()
-          await floatWin.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {})
-          await dockSaved
-          await p.waitForTimeout(700)
-        }
-      }
-
-      videoPath = await p.video()?.path() ?? null
+      const outPath = join(VIDEOS_OUT_DIR, `tiling-floating-layout-${theme}.mp4`)
+      await recorder.finish(outPath)
+      console.log(`  wrote tiling-floating-layout-${theme}.mp4`)
       await p.close()
     }
     finally {
       await ctx.close()
-    }
-    if (videoPath) {
-      const outPath = join(VIDEOS_OUT_DIR, `tiling-floating-layout-${theme}.mp4`)
-      await encodeWebmToMp4(videoPath, outPath)
-      console.log(`  wrote tiling-floating-layout-${theme}.mp4`)
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsTiling)
     }
   }
 }
 
 async function captureRemoteWorkersClip(
-  browser: Browser,
+  videoBrowser: Browser,
   hubUrl: string,
   adminToken: string,
   wsMain: string,
@@ -2056,29 +2181,12 @@ async function captureRemoteWorkersClip(
 ): Promise<void> {
   if (!await hasFfmpeg())
     return
-  const adminCookie = parseSessionCookie(adminToken)
   const clipViewport = { width: 1280, height: 800 }
   for (const theme of ['light', 'dark'] as const) {
-    const videoDir = join(runDir, `clip-workers-${theme}`)
-    mkdirSync(videoDir, { recursive: true })
-    const ctx = await browser.newContext({
-      baseURL: hubUrl,
-      viewport: clipViewport,
-      colorScheme: theme,
-      recordVideo: { dir: videoDir, size: clipViewport },
-    })
-    let videoPath: string | null = null
+    const workDir = join(runDir, `clip-workers-${theme}`)
+    const { ctx, page: p } = await openVideoPage(videoBrowser, hubUrl, adminToken, theme, clipViewport)
     try {
-      await ctx.addCookies([
-        {
-          name: adminCookie.name,
-          value: adminCookie.value,
-          domain: E2E_BROWSER_HOST,
-          path: '/',
-          httpOnly: true,
-        },
-      ])
-      const p = await ctx.newPage()
+      await installRegisterWorkerRoutes(p)
       await p.goto('/', { waitUntil: 'domcontentloaded' })
       const mainRow = p.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
       await mainRow.waitFor({ state: 'visible', timeout: 25_000 })
@@ -2087,54 +2195,71 @@ async function captureRemoteWorkersClip(
       const gpuRow = p.locator('[data-testid="worker-row"]:visible').filter({ hasText: 'gpu-devbox' }).first()
       await gpuRow.waitFor({ state: 'visible', timeout: 20_000 })
       await waitForTheme(p, theme)
-      await p.waitForTimeout(700)
+      await resetLeftSidebarScroll(p)
+      await p.waitForTimeout(300)
 
-      // Open the gpu-devbox Worker context menu to inspect live version, OS, and controls.
-      await gpuRow.hover()
-      await gpuRow.locator('[aria-expanded]').first().click()
+      const recorder = await SiteVideoRecorder.start(p, {
+        workDir,
+        viewport: clipViewport,
+        scaleFactor: 2,
+      })
+      await recorder.wait(600)
+
+      // Zoom onto the Workers sidebar and open the gpu-devbox context menu.
+      const gpuBox = await requireBox(gpuRow, 'gpu-devbox row')
+      await recorder.zoomToRect(
+        {
+          x: 0,
+          y: Math.max(0, gpuBox.y - 90),
+          width: Math.max(360, gpuBox.width + 140),
+          height: 300,
+        },
+        { padding: 36, maxZoom: 1.75, transitionMs: 450 },
+      )
+      await recorder.hoverLocator(gpuRow)
+      await recorder.clickLocator(gpuRow.locator('[aria-expanded]').first())
       await p.getByRole('menuitem', { name: 'Deregister...', exact: true }).first().waitFor({ state: 'visible', timeout: 10_000 })
-      await p.waitForTimeout(1100)
+      await recorder.wait(1000)
       await p.keyboard.press('Escape')
-      await p.waitForTimeout(450)
+      await recorder.wait(400)
 
-      // Open the Register worker dialog, show POSIX commands, switch to PowerShell, then close.
-      await p.locator('[data-testid="sidebar-register-worker"]:visible').first().click()
+      // Open the Register worker dialog and smoothly reframe onto the dialog.
+      await recorder.clickLocator(p.locator('[data-testid="sidebar-register-worker"]:visible').first())
       const regDialog = p.getByRole('dialog', { name: 'Register worker' })
       await regDialog.waitFor({ state: 'visible', timeout: 10_000 })
       await regDialog.getByTestId('registration-command').waitFor({ state: 'visible', timeout: 10_000 })
-      await p.waitForTimeout(1100)
+      await recorder.zoomToLocator(regDialog, { padding: 56, maxZoom: 1.45, transitionMs: 480 })
+      await recorder.wait(900)
 
       const psTab = regDialog.getByRole('radio', { name: 'PowerShell' })
       if (await psTab.isVisible().catch(() => false)) {
-        await psTab.click()
-        await p.waitForTimeout(1000)
+        await recorder.clickLocator(psTab)
+        await recorder.wait(950)
       }
       const posixTab = regDialog.getByRole('radio', { name: 'POSIX' })
       if (await posixTab.isVisible().catch(() => false)) {
-        await posixTab.click()
-        await p.waitForTimeout(700)
+        await recorder.clickLocator(posixTab)
+        await recorder.wait(650)
       }
 
-      await regDialog.getByRole('button', { name: 'Close', exact: true }).click()
+      await recorder.clickLocator(regDialog.getByRole('button', { name: 'Close', exact: true }))
       await regDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
-      await p.waitForTimeout(600)
+      await recorder.zoomOut({ transitionMs: 450 })
+      await recorder.wait(550)
 
-      videoPath = await p.video()?.path() ?? null
+      const outPath = join(VIDEOS_OUT_DIR, `remote-workers-tunnels-${theme}.mp4`)
+      await recorder.finish(outPath)
+      console.log(`  wrote remote-workers-tunnels-${theme}.mp4`)
       await p.close()
     }
     finally {
       await ctx.close()
     }
-    if (videoPath) {
-      const outPath = join(VIDEOS_OUT_DIR, `remote-workers-tunnels-${theme}.mp4`)
-      await encodeWebmToMp4(videoPath, outPath)
-      console.log(`  wrote remote-workers-tunnels-${theme}.mp4`)
-    }
   }
 }
 
 async function captureInputQueueClip(
-  browser: Browser,
+  videoBrowser: Browser,
   hubUrl: string,
   adminToken: string,
   wsMain: string,
@@ -2143,74 +2268,98 @@ async function captureInputQueueClip(
 ): Promise<void> {
   if (!await hasFfmpeg())
     return
-  const adminCookie = parseSessionCookie(adminToken)
   const clipViewport = { width: 1280, height: 800 }
   for (const theme of ['light', 'dark'] as const) {
-    const videoDir = join(runDir, `clip-queue-${theme}`)
-    mkdirSync(videoDir, { recursive: true })
-    const ctx = await browser.newContext({
-      baseURL: hubUrl,
-      viewport: clipViewport,
-      colorScheme: theme,
-      recordVideo: { dir: videoDir, size: clipViewport },
-    })
-    let videoPath: string | null = null
+    const workDir = join(runDir, `clip-queue-${theme}`)
+    const { ctx, page: p } = await openVideoPage(videoBrowser, hubUrl, adminToken, theme, clipViewport)
     try {
-      await ctx.addCookies([
-        {
-          name: adminCookie.name,
-          value: adminCookie.value,
-          domain: E2E_BROWSER_HOST,
-          path: '/',
-          httpOnly: true,
-        },
-      ])
-      const p = await ctx.newPage()
       await p.goto('/', { waitUntil: 'domcontentloaded' })
+      const mainRow = p.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
+      await mainRow.waitFor({ state: 'visible', timeout: 25_000 })
+      if (await mainRow.getAttribute('data-active') !== 'true')
+        await mainRow.getByTestId('workspace-title').click()
       const tab = p.locator(`[data-testid="tab"][data-tab-id="${claudeId}"]:visible`).first()
       await tab.waitFor({ state: 'visible', timeout: 25_000 })
       await tab.click()
-      await waitForTheme(p, theme)
-      await p.waitForTimeout(700)
-
       const queueRoot = p.locator('[data-testid="agent-input-queue"]:visible').first()
-      if (await queueRoot.isVisible().catch(() => false)) {
-        const pauseBtn = p.locator('[data-testid="queue-pause-button"]:visible').first()
-        if (await pauseBtn.isVisible().catch(() => false)) {
-          await pauseBtn.click()
-          await p.waitForTimeout(900)
-          await pauseBtn.click()
-          await p.waitForTimeout(700)
-        }
-        const scheduleTrigger = p.locator('[data-testid="schedule-send-trigger"]:visible').first()
-        if (await scheduleTrigger.isVisible().catch(() => false)) {
-          await scheduleTrigger.click()
-          await p.waitForTimeout(1200)
-          await p.keyboard.press('Escape')
-          await p.waitForTimeout(600)
-        }
-        const editor = p.locator('[data-testid="composer-editor"]:visible .ProseMirror[contenteditable="true"]').first()
-        if (await editor.isVisible().catch(() => false)) {
-          await editor.click()
-          await p.keyboard.type('Verify zero allocations under -race before merging.', { delay: 22 })
-          await p.waitForTimeout(600)
-          await p.keyboard.press(`${MOD_KEY}+Enter`)
-          await p.waitForTimeout(1000)
+      await queueRoot.waitFor({ state: 'visible', timeout: 15_000 })
+      await waitForTheme(p, theme)
+      await resetLeftSidebarScroll(p)
+      await p.waitForTimeout(300)
+
+      const recorder = await SiteVideoRecorder.start(p, {
+        workDir,
+        viewport: clipViewport,
+        scaleFactor: 2,
+      })
+      await recorder.wait(600)
+
+      // Smoothly zoom onto the input queue and composer area at the bottom of the agent pane.
+      const editor = p.locator('[data-testid="composer-editor"]:visible .ProseMirror[contenteditable="true"]').first()
+      const queueBox = await queueRoot.boundingBox()
+      const editorBox = await editor.boundingBox()
+      if (queueBox && editorBox) {
+        const focusRect = unionRects(queueBox, editorBox)
+        await recorder.zoomToRect(
+          {
+            x: focusRect.x,
+            y: Math.max(0, focusRect.y - 60),
+            width: focusRect.width,
+            height: focusRect.height + 80,
+          },
+          { padding: 48, maxZoom: 1.55, transitionMs: 450 },
+        )
+      }
+
+      const pauseBtn = p.locator('[data-testid="queue-pause-button"]:visible').first()
+      if (await pauseBtn.isVisible().catch(() => false)) {
+        await recorder.clickLocator(pauseBtn)
+        await recorder.wait(850)
+        await recorder.clickLocator(pauseBtn)
+        await recorder.wait(650)
+      }
+      const scheduleTrigger = p.locator('[data-testid="schedule-send-trigger"]:visible').first()
+      if (await scheduleTrigger.isVisible().catch(() => false)) {
+        await recorder.clickLocator(scheduleTrigger)
+        await recorder.wait(1050)
+        await p.keyboard.press('Escape')
+        await recorder.wait(500)
+      }
+      if (await editor.isVisible().catch(() => false)) {
+        await recorder.clickLocator(editor)
+        await p.keyboard.type('Verify zero allocations under -race before merging.', { delay: 22 })
+        await recorder.wait(550)
+        await p.keyboard.press(`${MOD_KEY}+Enter`)
+        await recorder.wait(900)
+      }
+
+      await recorder.zoomOut({ transitionMs: 450 })
+      await recorder.wait(550)
+
+      const outPath = join(VIDEOS_OUT_DIR, `input-queue-steering-${theme}.mp4`)
+      await recorder.finish(outPath)
+      console.log(`  wrote input-queue-steering-${theme}.mp4`)
+
+      // Remove the item added during the light recording so the dark recording
+      // starts from the exact same 3-item queue state.
+      if (theme === 'light') {
+        const addedRow = queueRoot.locator('> *').filter({ hasText: 'Verify zero allocations under -race' }).first()
+        const deleteBtn = addedRow.getByRole('button', { name: 'Delete' }).first()
+        if (await deleteBtn.isVisible().catch(() => false)) {
+          await deleteBtn.click()
+          const confirmBtn = addedRow.getByRole('button', { name: 'Confirm delete?' }).first()
+          if (await confirmBtn.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)) {
+            await confirmBtn.click()
+            await addedRow.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+          }
         }
       }
-      videoPath = await p.video()?.path() ?? null
       await p.close()
     }
     finally {
       await ctx.close()
     }
-    if (videoPath) {
-      const outPath = join(VIDEOS_OUT_DIR, `input-queue-steering-${theme}.mp4`)
-      await encodeWebmToMp4(videoPath, outPath)
-      console.log(`  wrote input-queue-steering-${theme}.mp4`)
-    }
   }
-  void wsMain
 }
 
 async function main(): Promise<void> {
@@ -2271,13 +2420,32 @@ async function main(): Promise<void> {
           },
         },
         {
+          name: 'tiling-demo-summary',
+          priority: 'high',
+          when: { user: 'Summarize the retry backoff jitter update' },
+          respond: {
+            text: [
+              'Updated `CalculateBackoff` in `internal/retry/backoff.go` to use **full-jitter exponential backoff** capped at `30s`:',
+              '',
+              '```go',
+              'ceiling := min(baseBackoff<<min(attempt, 10), maxBackoff)',
+              'return rand.N(ceiling + 1)',
+              '```',
+              '',
+              '- Prevents synchronized retry storms after downstream outages.',
+              '- Keeps `attempt <= 0` deterministic at `150ms` and enforces the `30s` ceiling.',
+              '- All retry package tests pass with `go test -race ./internal/retry/...`.',
+            ].join('\n'),
+          },
+        },
+        {
           name: 'input-queue-hold',
           priority: 'high',
           once: true,
           when: { user: 'Run the retry stress benchmark' },
           respond: {
             text: 'Completed the 16-goroutine retry stress benchmark with zero heap allocations.',
-            delayMs: 90_000,
+            delayMs: 120_000,
           },
         },
         {
@@ -2422,6 +2590,12 @@ async function main(): Promise<void> {
     const browser = await chromium.launch({
       args: ['--disable-webgl', '--disable-webgl2'],
     })
+    // Dedicated 2x Retina browser for CDP lossless PNG screencasts: Chromium's
+    // Page.startScreencast emits 2560x1600 frames when launched with
+    // --force-device-scale-factor=2.
+    const videoBrowser = await chromium.launch({
+      args: ['--disable-webgl', '--disable-webgl2', '--force-device-scale-factor=2'],
+    })
     try {
       const context = await browser.newContext({
         baseURL: state.hubUrl,
@@ -2446,25 +2620,7 @@ async function main(): Promise<void> {
       // Advertise a clean example Hub URL for RegisterWorkerDialog (the only
       // consumer of workerHubUrl) and supply a deterministic registration key
       // when that dialog opens during screenshot capture.
-      await page.route('**/leapmux.v1.SystemService/GetSystemInfo', async (route) => {
-        const response = await route.fetch()
-        const body = await response.json() as Record<string, unknown>
-        body.workerHubUrl = 'https://hub.example.com'
-        await route.fulfill({ response, json: body })
-      })
-      await page.route('**/leapmux.v1.WorkerManagementService/CreateRegistrationKey', async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            registrationKey: 'lmx_reg_example_7f8a2c9e4b1d',
-            expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-          }),
-        })
-      })
-      await page.route('**/leapmux.v1.WorkerManagementService/RevokeRegistrationKey', async (route) => {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
-      })
+      await installRegisterWorkerRoutes(page)
 
       await page.goto('/', { waitUntil: 'domcontentloaded' })
       const mainRow = page.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
@@ -2525,7 +2681,7 @@ async function main(): Promise<void> {
         return Boolean(text && text.includes('go test'))
       }, 45_000)
 
-      if (process.env.DOCS_NEW_CLIPS_ONLY !== '1') {
+      if (process.env.DOCS_CLIPS_ONLY !== '1' && process.env.DOCS_NEW_CLIPS_ONLY !== '1') {
         console.log('Capturing coding-agent-chat screenshots (light & dark) ...')
         const chatClip = await centerCanvasClip(page)
         await waitForTheme(page, 'light')
@@ -2710,8 +2866,34 @@ async function main(): Promise<void> {
 
       if (process.env.DOCS_NEW_CLIPS_ONLY === '1') {
         console.log('DOCS_NEW_CLIPS_ONLY=1: capturing tiling/floating and remote-worker clips (light & dark) ...')
-        await captureTilingFloatingClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
-        await captureRemoteWorkersClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+        await captureTilingFloatingClip(videoBrowser, state.hubUrl, state.adminToken, state.workerId, repos.wtRetryJitter, runDir)
+        await captureRemoteWorkersClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
+        await context.close()
+        return
+      }
+
+      if (process.env.DOCS_CLIPS_ONLY === '1') {
+        console.log('DOCS_CLIPS_ONLY=1: capturing all 4 workflow clips (light & dark) at 2x Retina ...')
+        await captureParallelWorktreesClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
+        await captureTilingFloatingClip(videoBrowser, state.hubUrl, state.adminToken, state.workerId, repos.wtRetryJitter, runDir)
+        await captureRemoteWorkersClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
+        await prepareActiveInputQueue(page)
+        const scheduleTrigger = page.locator('[data-testid="schedule-send-trigger"]:visible').first()
+        await scheduleTrigger.click()
+        const schedulePopover = page.locator('[data-testid="schedule-send-popover"]:visible').first()
+        await schedulePopover.waitFor({ state: 'visible', timeout: 10_000 })
+        await schedulePopover.locator('[data-testid="schedule-send-field"]').fill(futureLocalDateTime())
+        await schedulePopover.locator('[data-testid="schedule-send-apply"]').click()
+        await schedulePopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+        await typeComposerAndSend(
+          page,
+          'Run the full integration test suite before opening the pull request.',
+        )
+        await waitFor('scheduled item visible in input queue', async () => {
+          const text = await page.locator('[data-testid="agent-input-queue"]:visible').first().textContent()
+          return Boolean(text && text.includes('Scheduled for'))
+        }, 15_000)
+        await captureInputQueueClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, claudeId, runDir)
         await context.close()
         return
       }
@@ -2754,10 +2936,10 @@ async function main(): Promise<void> {
       )
 
       console.log('Capturing parallel worktrees workflow clips (light & dark) ...')
-      await captureParallelWorktreesClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+      await captureParallelWorktreesClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
       console.log('Capturing tiling/floating and remote-worker workflow clips (light & dark) ...')
-      await captureTilingFloatingClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
-      await captureRemoteWorkersClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+      await captureTilingFloatingClip(videoBrowser, state.hubUrl, state.adminToken, state.workerId, repos.wtRetryJitter, runDir)
+      await captureRemoteWorkersClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
 
       console.log('Capturing light mode dialogs, menus, popovers & Preferences ...')
       await captureDialogsAndMenus(page, 'light', wsMain, recordedClips)
@@ -2771,7 +2953,7 @@ async function main(): Promise<void> {
       await captureInputQueueAndQuestionViews(page, server, wsMain, repos.wtRetryJitter, recordedClips)
 
       console.log('Capturing input queue steering workflow clips (light & dark) ...')
-      await captureInputQueueClip(browser, state.hubUrl, state.adminToken, wsMain, claudeId, runDir)
+      await captureInputQueueClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, claudeId, runDir)
 
       console.log('Capturing OAuth consent, Worker key mismatch, and Desktop Launcher views (light & dark) ...')
       await captureSecurityAndLauncherViews(
@@ -2791,6 +2973,7 @@ async function main(): Promise<void> {
       await context.close()
     }
     finally {
+      await videoBrowser.close()
       await browser.close()
     }
   }

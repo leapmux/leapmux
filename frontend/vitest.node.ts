@@ -336,6 +336,7 @@ export const NODE_TEST_FILES = [
   'scripts/resolve-task-bin.test.ts',
   'scripts/run-e2e.integration.test.ts',
   'scripts/run-e2e.test.ts',
+  'scripts/siteVideoRecorder.test.ts',
   'scripts/windowsCommandJob.integration.test.ts',
   'scripts/windowsCommandJob.test.ts',
   'scripts/run-vitest.test.mjs',
