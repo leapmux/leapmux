@@ -35,13 +35,11 @@ _Mutates state._
 leapmux tile split <tile> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--direction string` | the divider: "vertical" puts the new tile on the right, "horizontal" puts it below (one of: vertical, horizontal; default: vertical) |
+
+_Common: `<tile>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Split the tile of this tab, with the new tile on the right.
@@ -61,16 +59,13 @@ _Aliases: `rm` · Mutates state._
 leapmux tile close <tile> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--with-tabs string` | what happens to the tabs on the tile: "close" closes them, or "move" moves them to the neighbouring tile (required when the tile has tabs) (one of: close, move) |
 | `--recursive` | close a split or a grid with every tile in it |
-| `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | close the tile even when this tab sits on it, which ends this command's own process |
+
+_Common: `<tile>`, `--allow-busy` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tile close ab12cd34
@@ -89,14 +84,12 @@ _Mutates state._
 leapmux tile make-grid <tile> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--rows int` | rows of the grid, from 1 to 20 (required) |
 | `--cols int` | columns of the grid, from 1 to 20 (required) |
+
+_Common: `<tile>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tile make-grid ab12cd34 --rows 2 --cols 2
@@ -112,15 +105,12 @@ _Mutates state._
 leapmux tile remove-grid <tile> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--with-tabs string` | what happens to the tabs in the grid: "close" closes them, or "move" turns the grid into one tile that holds them (required when the grid has tabs) (one of: close, move) |
-| `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | remove the grid even when this tab sits in it, which ends this command's own process |
+
+_Common: `<tile>`, `--allow-busy` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Turn a grid back into one tile that keeps its tabs.
@@ -137,13 +127,11 @@ _Mutates state._
 leapmux tile set-ratios <tile> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--ratios string` | the size of each part, separated by commas; the CLI scales them to sum to 1 (required) |
+
+_Common: `<tile>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tile set-ratios ab12cd34 --ratios 0.3,0.7
@@ -159,14 +147,12 @@ _Mutates state._
 leapmux tile set-grid-ratios <tile> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--row-ratios string` | the size of each row, separated by commas |
 | `--col-ratios string` | the size of each column, separated by commas |
+
+_Common: `<tile>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tile set-grid-ratios ab12cd34 --row-ratios 0.6,0.4
@@ -182,13 +168,11 @@ _Mutates state._
 leapmux tile resize <tile> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--ratio number` | new share of the parent split for this tile, between 0 and 1 (exclusive) (required) |
+
+_Common: `<tile>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tile resize self --ratio 0.65
@@ -231,9 +215,7 @@ _Aliases: `ls`._
 leapmux window list [workspace] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[workspace]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux window list
@@ -250,10 +232,6 @@ _Mutates state._
 leapmux window create <workspace> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--x number` | horizontal position in pixels (default: 100) |
@@ -261,6 +239,8 @@ leapmux window create <workspace> [flags]
 | `--width number` | width in pixels (must be &gt; 0) (default: 640) |
 | `--height number` | height in pixels (must be &gt; 0) (default: 420) |
 | `--opacity number` | window opacity from 0.0 to 1.0 (default: 1) |
+
+_Common: `<workspace>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux window create self --x 120 --y 80 --width 640 --height 420
@@ -332,8 +312,9 @@ leapmux window close <window> [flags]
 
 | Flag | Description |
 |---|---|
-| `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | close the window even when this tab lives in it |
+
+_Common: `--allow-busy` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux window close 7aB1c2d3
@@ -351,9 +332,7 @@ Print the tile tree of a workspace with its tabs (default: the workspace of this
 leapmux layout get [workspace] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[workspace]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Save a layout, and restore it later.
@@ -362,7 +341,7 @@ leapmux layout get --json > layout.json
 
 ### `leapmux layout set`
 
-Replace the main tile tree of a workspace. Main-tree tabs move to the new first tile, and tabs inside floating windows stay in place. The file is "-" or absent for stdin. It holds a tree as "layout get" prints it: the whole --json envelope, its data, or the tree alone.
+Replace the main tile tree of a workspace. Main-tree tabs move to the new first tile, and tabs inside floating windows stay in place. The file is "-" or absent for stdin. It holds a tree as "layout get" prints it: the whole `--json` envelope, its data, or the tree alone.
 
 _Mutates state._
 
@@ -370,9 +349,7 @@ _Mutates state._
 leapmux layout set <workspace> [file] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<workspace>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux layout set self layout.json
@@ -389,9 +366,7 @@ _Does not support `-q` / `--quiet`._
 leapmux layout watch [workspace] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[workspace]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux layout watch --json

@@ -1,0 +1,42 @@
+{{- /*
+  changelog-strip renders the latest N milestones from data/changelog.yaml
+  (default 3) as a compact horizontal grid for the landing page.
+
+      {{< changelog-strip count="3" >}}
+*/ -}}
+{{- $count := int (.Get "count" | default 3) -}}
+{{- if lt $count 1 -}}
+  {{- $count = 3 -}}
+{{- end -}}
+{{- $data := index hugo.Data "changelog" -}}
+{{- $entries := slice -}}
+{{- if and $data $data.entries -}}
+  {{- $entries = first $count $data.entries -}}
+{{- end -}}
+{{- if gt (len $entries) 0 -}}
+<section class="lm-changelog-strip" aria-labelledby="lm-changelog-strip-heading">
+  <div class="lm-changelog-strip-header">
+    <div>
+      <div class="lm-showcase-eyebrow">Recent Milestones</div>
+      <h2 id="lm-changelog-strip-heading" class="lm-changelog-strip-title">Latest updates</h2>
+    </div>
+    <div class="lm-changelog-strip-links">
+      <a class="lm-showcase-link" href="/changelog/">View full changelog &rarr;</a>
+      <a class="lm-showcase-link" href="https://github.com/leapmux/leapmux/releases">GitHub Releases</a>
+    </div>
+  </div>
+  <div class="lm-changelog-strip-grid">
+    {{- range $entries -}}
+    <article class="lm-changelog-card">
+      <time class="lm-changelog-date" datetime="{{ .date }}">{{ .label | default .date }}</time>
+      <h3 class="lm-changelog-card-title">
+        <a href="/changelog/#release-{{ .date }}">{{ .title }}</a>
+      </h3>
+      {{- with .summary -}}
+      <p class="lm-changelog-card-summary">{{ . | $.Page.RenderString }}</p>
+      {{- end -}}
+    </article>
+    {{- end -}}
+  </div>
+</section>
+{{- end -}}

@@ -14,12 +14,19 @@
   {{- $kw = slice "LeapMux" "coding agents" -}}
   {{- if not .IsHome -}}
     {{- $kw = $kw | append .Title -}}
-    {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
+    {{- $trimmed := strings.TrimPrefix "/" .RelPermalink -}}
+    {{- if hasPrefix $trimmed "docs/" -}}
+      {{- $trimmed = strings.TrimPrefix "docs/" $trimmed -}}
+    {{- end -}}
+    {{- $seg := index (split $trimmed "/") 0 -}}
     {{- $labels := dict
           "getting-started" "Getting Started"
+          "recipes" "Workflow Recipes"
           "using" "Using LeapMux"
-          "operating" "Operating"
-          "reference" "Reference" -}}
+          "admin" "Administration"
+          "reference" "Reference"
+          "download" "Downloads"
+          "changelog" "Changelog" -}}
     {{- with index $labels $seg -}}{{- $kw = $kw | append . -}}{{- end -}}
   {{- end -}}
   {{- $kw = $kw | uniq -}}

@@ -15,6 +15,8 @@
 - For CLI flags and subcommands, open the specific group page under `/docs/reference/commands/` (or run `leapmux <cmd> --help` locally) instead of loading every command group.
 - Use [`/agent-guide.md`]({{ "agent-guide.md" | absURL }}) when helping a human choose a deployment mode, install LeapMux, run their first parallel agent session, or diagnose issues.
 - Use [`/llms-small.txt`]({{ "llms-small.txt" | absURL }}) for a compact index of the core documentation pages and Agent Skills.
+- Use [`/llms-full.txt`]({{ "llms-full.txt" | absURL }}) for a guide-focused full bundle of the core documentation pages in one Markdown file (excludes per-command CLI tables under `/docs/reference/commands/`).
+- Use [`/config-reference.json`]({{ "config-reference.json" | absURL }}) for machine-readable Hub and Worker configuration keys, storage backends, and all 21 Prometheus metrics (`jq`-queryable JSON).
 {{- range where site.Sections "Params.llms" "ne" false }}
 {{- template "llms-section-tree" dict "context" . "level" 2 }}
 {{- end }}

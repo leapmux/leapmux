@@ -1,3 +1,7 @@
+{{- $providerCount := 0 -}}
+{{- range (index hugo.Data "feature_matrix" "checklist").providerGroups -}}
+  {{- $providerCount = add $providerCount (len .) -}}
+{{- end -}}
 // Pagefind search adapter for Hextra's native search command palette.
 // Implements `window.hextraSearch` so Hextra's search-dialog.js owns keyboard
 // navigation, ARIA, and animations while Pagefind serves chunked binary search
@@ -16,7 +20,7 @@
     },
     {
       title: 'Supported Agents & Feature Matrix',
-      subtitle: 'Compare all 31 coding agent providers across capabilities',
+      subtitle: 'Compare all {{ $providerCount }} coding agent providers across capabilities',
       route: '{{ "/docs/reference/supported-agents/" | relURL }}',
       breadcrumbs: ['Reference'],
     },
@@ -103,6 +107,7 @@
       commands: 'Commands',
       troubleshooting: 'Troubleshooting',
       download: 'Downloads',
+      changelog: 'Changelog',
     };
     return parts.slice(0, -1).map((seg) => labels[seg] || seg.replace(/-/g, ' '));
   }

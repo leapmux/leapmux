@@ -89,7 +89,7 @@ leapmux tunnel forward 8888:127.0.0.1:8888 --worker name:gpu-box
 ```
 
 {{< callout type="warning" >}}
-Always run `leapmux tunnel forward` from a **local shell outside any LeapMux tab**. Running it inside a remote LeapMux terminal opens the listening port on the remote Worker instead of your laptop.
+Always run `leapmux tunnel forward` from a **local shell outside any LeapMux tab**. Running it inside a LeapMux tab fails over the tab's local inter-process communication (IPC) socket with a `usage` error (exit `2`).
 {{< /callout >}}
 
 In **LeapMux Desktop**, you can also create port-forward or SOCKS5 tunnels from the Worker's right-click menu in the sidebar.

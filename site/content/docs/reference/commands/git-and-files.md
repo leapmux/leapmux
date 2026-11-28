@@ -19,6 +19,7 @@ These selectors and flags repeat across commands on this page.
 |---|---|
 | `--dir string` | a directory inside the git working tree (default: $LEAPMUX_CONTROL_WORKING_DIR) |
 | `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+| `--limit int` | the most bytes to read (0 reads the default of 256 KiB) |
 
 ## `leapmux git`
 
@@ -34,10 +35,7 @@ _Does not support `-q` / `--quiet`._
 leapmux git status [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git status
@@ -57,8 +55,8 @@ leapmux git read <path> [flags]
 | Flag | Description |
 |---|---|
 | `--ref string` | the version to read (one of: head, staged; default: head) |
-| `--limit int` | the most bytes to read (0 reads the default of 256 KiB) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--limit`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git read ~/src/app/main.go
@@ -75,10 +73,7 @@ _Mutates state · Does not support `-q` / `--quiet`._
 leapmux git checkout <branch> [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git checkout main
@@ -101,10 +96,7 @@ _Aliases: `ls`._
 leapmux git branch list [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git branch list
@@ -122,9 +114,9 @@ leapmux git branch create <name> [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--base string` | the branch to start from (default: the current branch) |
+
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git branch create fix-login --base main
@@ -142,9 +134,9 @@ leapmux git branch delete <name> [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--switch-to string` | the branch to check out before deleting the current branch (default: keep HEAD if deleting another branch, else main/master) |
+
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git branch delete fix-login
@@ -163,10 +155,7 @@ _Does not support `-q` / `--quiet`._
 leapmux git branch inspect [branch] [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git branch inspect
@@ -183,10 +172,7 @@ _Mutates state · Does not support `-q` / `--quiet`._
 leapmux git push [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git push
@@ -204,11 +190,10 @@ leapmux git diff [path]... [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--staged` | show staged changes (--cached) |
+| `--staged` | show staged changes (`--cached`) |
 | `--base string` | diff against this base ref (such as main or HEAD~1) |
-| `--limit int` | the most bytes to read (0 reads the default of 256 KiB) |
+
+_Common: `--dir`, `--worker`, `--limit` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git diff
@@ -226,10 +211,10 @@ leapmux git log [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `-n, --limit int` | maximum number of commits to show (max 200) (default: 20) |
 | `--ref string` | starting ref (default: HEAD) |
+
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git log
@@ -248,10 +233,10 @@ leapmux git commit [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `-m, --message string` | commit message (required) |
 | `-a, --all` | stage all modified and untracked files (git add -A) before committing |
+
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux git commit -m "Fix timeout handling"
@@ -274,10 +259,7 @@ _Aliases: `ls`._
 leapmux worktree list [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worktree list
@@ -285,7 +267,7 @@ leapmux worktree list
 
 ### `leapmux worktree get`
 
-Use a bare path, path:&lt;path&gt;, branch:&lt;branch&gt;, or self (the default). The worker matches the attached branch in the repository selected by --dir. A local tab can supply the repository directory for a branch on the same worker. An explicit path can select its own repository. Use self to find the calling local tab's checkout.
+Use a bare path, path:&lt;path&gt;, branch:&lt;branch&gt;, or self (the default). The worker matches the attached branch in the repository selected by `--dir`. A local tab can supply the repository directory for a branch on the same worker. An explicit path can select its own repository. Use self to find the calling local tab's checkout.
 
 ```text
 leapmux worktree get [selector] [flags]
@@ -294,7 +276,8 @@ leapmux worktree get [selector] [flags]
 | Flag | Description |
 |---|---|
 | `--dir string` | repository directory on the selected worker (default: $LEAPMUX_CONTROL_WORKING_DIR) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worktree get
@@ -317,7 +300,8 @@ leapmux worktree create <branch> [flags]
 | `--dir string` | repository directory on the worker (default: $LEAPMUX_CONTROL_WORKING_DIR) |
 | `--base string` | base branch or commit to branch from (default: current branch) |
 | `--path string` | explicit filesystem path for the new worktree (default: worker managed location) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worktree create feat/cli-v2
@@ -339,7 +323,8 @@ leapmux worktree remove <path> [flags]
 | `--force` | remove even if the worktree contains modified or untracked files |
 | `--delete-branch` | also delete the local branch checked out in the removed worktree |
 | `--dir string` | repository directory when resolving a branch:&lt;branch&gt; selector (default: $LEAPMUX_CONTROL_WORKING_DIR) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worktree remove ~/wt/cli-v2
@@ -356,10 +341,7 @@ _Does not support `-q` / `--quiet`._
 leapmux worktree inspect [path] [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--dir`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worktree inspect
@@ -385,7 +367,8 @@ leapmux file list [path] [flags]
 | `--max-depth int` | merge a chain of directories that each hold one directory, up to this depth |
 | `--dirs-only` | list only directories |
 | `--from-root string` | also list every directory from this ancestor down to &lt;path&gt; |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux file list
@@ -408,8 +391,8 @@ leapmux file read <path> [flags]
 | Flag | Description |
 |---|---|
 | `--offset int` | the byte to start at |
-| `--limit int` | the most bytes to read (0 reads the default of 256 KiB) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--limit`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux file read ~/src/app/go.mod
@@ -426,9 +409,7 @@ Show a file's size, time and permissions.
 leapmux file stat <path> [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux file stat ~/src/app/go.mod
@@ -442,9 +423,7 @@ List the filesystem roots of a worker.
 leapmux file roots [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux file roots
@@ -466,15 +445,16 @@ leapmux file open <path> [flags]
 | `--view-mode string` | which version of the file shows at first (one of: working, head, staged, unified_diff, split_diff) |
 | `--diff-base string` | base git ref or revision for diff view modes |
 | `--dir string` | the git context of the tab; outside a LeapMux tab, the directory of the file (default: $LEAPMUX_CONTROL_WORKING_DIR) |
-| `--workspace string` | workspace of the new tab (default: the workspace of this tab); the tab lands on its first tile unless --tile says otherwise |
+| `--workspace string` | workspace of the new tab (default: the workspace of this tab); the tab lands on its first tile unless `--tile` says otherwise |
 | `--tile string` | tile of the new tab (default: the tile of this tab) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--first` | put the new tab first on the destination tile |
 | `--last` | put the new tab last on the destination tile (default) |
 | `--before string` | put the new tab right before this tab |
 | `--after string` | put the new tab right after this tab |
 | `--focus` | reveal and focus the new tab in open LeapMux windows |
 | `--no-focus` | keep the new tab in the background without focusing it |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux file open ~/src/app/README.md
@@ -525,7 +505,8 @@ leapmux file search <pattern> [path] [flags]
 | `--regex` | treat &lt;pattern&gt; as an RE2 regular expression |
 | `-i, --ignore-case` | match case-insensitively |
 | `-n, --limit int` | maximum number of matching lines to return (max 1000) (default: 100) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux file search "NewLeaf" /path/to/repo/backend/internal/cli
@@ -545,7 +526,8 @@ leapmux file glob <pattern> [path] [flags]
 | Flag | Description |
 |---|---|
 | `-n, --limit int` | maximum number of paths to return (max 2000) (default: 200) |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux file glob "**/*.go"

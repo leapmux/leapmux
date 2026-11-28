@@ -59,7 +59,7 @@ These settings control chat display, composer behavior, and Worker-installed Age
 | --- | --- | --- | --- | --- |
 | **Expand agent thoughts** | This device | On | Tab bar **+** → **Advanced** | Starts agent thinking blocks expanded. |
 | **Show hidden messages** | This device | Off | Tab bar **+** → **Advanced** | Reveals hidden developer/bookkeeping chat rows. |
-| **Enter key behavior** | This device | `⌘⏎` / `Ctrl+⏎` sends | Composer **[+]** menu | Switches between `⌘⏎` / `Ctrl+⏎` sends and plain `Enter` sends. |
+| **Enter key behavior** | This device | `⌘Enter` / `Ctrl+Enter` sends | Composer **[+]** menu | Switches between `⌘Enter` / `Ctrl+Enter` sends and plain `Enter` sends. |
 | **Composer status bar** | This device | On | Composer **[+]** menu | Shows or hides the branch, model, effort, and mode chips below the composer. |
 | **Agent skills** | Account (per Worker) | None enabled | `leapmux skill` CLI | Installs and optionally auto-syncs curated LeapMux skills on each connected Worker across `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.cursor/skills`, and `~/.gemini/skills`. See [Agent Skills](/docs/using/agent-skills/). |
 

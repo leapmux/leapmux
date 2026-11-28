@@ -46,7 +46,7 @@ The LeapMux window has four areas: the **titlebar** at the top, the **left sideb
 
 1. Open the **`⋯` actions menu** on **In progress** in the left sidebar and choose **New workspace...**.
 2. Keep the pre-filled random workspace title or type your own.
-3. Confirm the **Worker** (your local Worker is preselected), pick an **Agent Provider**, and choose a git repository as the **Directory**.
+3. Confirm the **Worker** (your local Worker is preselected), pick an **Agent Provider**, and choose a git repository as the **Working Directory**.
 4. Under **Git options**, select **Create new worktree** and enter a branch name (for example `feat/refactor-parser`).
 5. Click **Create**. LeapMux creates the workspace, creates the linked git worktree, and automatically opens its first agent inside it.
 

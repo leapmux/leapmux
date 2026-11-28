@@ -1931,6 +1931,208 @@ async function captureParallelWorktreesClip(
   }
 }
 
+async function captureTilingFloatingClip(
+  browser: Browser,
+  hubUrl: string,
+  adminToken: string,
+  wsMain: string,
+  runDir: string,
+): Promise<void> {
+  if (!await hasFfmpeg())
+    return
+  const adminCookie = parseSessionCookie(adminToken)
+  const clipViewport = { width: 1280, height: 800 }
+  for (const theme of ['light', 'dark'] as const) {
+    const videoDir = join(runDir, `clip-tiling-${theme}`)
+    mkdirSync(videoDir, { recursive: true })
+    const ctx = await browser.newContext({
+      baseURL: hubUrl,
+      viewport: clipViewport,
+      colorScheme: theme,
+      recordVideo: { dir: videoDir, size: clipViewport },
+    })
+    let videoPath: string | null = null
+    try {
+      await ctx.addCookies([
+        {
+          name: adminCookie.name,
+          value: adminCookie.value,
+          domain: E2E_BROWSER_HOST,
+          path: '/',
+          httpOnly: true,
+        },
+      ])
+      const p = await ctx.newPage()
+      await p.goto('/', { waitUntil: 'domcontentloaded' })
+      const mainRow = p.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
+      await mainRow.waitFor({ state: 'visible', timeout: 25_000 })
+      if (await mainRow.getAttribute('data-active') !== 'true')
+        await mainRow.getByTestId('workspace-title').click()
+      await p.locator('[data-testid="tile"]').nth(2).waitFor({ state: 'visible', timeout: 20_000 })
+      await waitForTheme(p, theme)
+      await p.waitForTimeout(700)
+
+      // Open the Make grid hover picker on Tile 0, preview 2x3 and 3x4, then dismiss.
+      const tile0 = p.locator('[data-testid="tile"]').nth(0)
+      const makeGridBtn = tile0.locator('[data-testid="make-grid"]:visible').first()
+      if (await makeGridBtn.isVisible().catch(() => false)) {
+        await makeGridBtn.click()
+        const gridPopover = p.locator('[data-testid="grid-size-popover"]:visible').first()
+        if (await gridPopover.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false)) {
+          await gridPopover.locator('[data-testid="grid-size-cell-1-2"]').hover()
+          await p.waitForTimeout(450)
+          await gridPopover.locator('[data-testid="grid-size-cell-2-3"]').hover()
+          await p.waitForTimeout(600)
+          await p.keyboard.press('Escape')
+          await gridPopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+          await p.waitForTimeout(350)
+        }
+      }
+
+      // Pop out one tab from Tile 0 (which holds multiple tabs, keeping all 3
+      // tiles intact across light/dark runs), drag it, lower opacity, and dock it back.
+      const popOutBtn = tile0.locator('[data-testid="pop-out-button"]:visible').first()
+      if (await popOutBtn.isVisible().catch(() => false)) {
+        const popSaved = waitForLayoutSaved(p)
+        await popOutBtn.click()
+        const floatWin = p.locator('[data-testid="floating-window"]').first()
+        await floatWin.waitFor({ state: 'visible', timeout: 10_000 })
+        await popSaved
+        await p.waitForTimeout(550)
+
+        const titleBar = floatWin.locator('[data-testid="floating-window-titlebar"]').first()
+        const titleBox = await requireBox(titleBar, 'floating window titlebar')
+        const moveSaved = waitForLayoutSaved(p)
+        await dragPointer(
+          p,
+          titleBox.x + titleBox.width / 2,
+          titleBox.y + titleBox.height / 2,
+          Math.min(clipViewport.width - 140, titleBox.x + titleBox.width / 2 + 120),
+          Math.min(clipViewport.height - 160, titleBox.y + titleBox.height / 2 + 80),
+        )
+        await moveSaved
+        await p.waitForTimeout(350)
+
+        const movedTitleBox = await requireBox(titleBar, 'moved floating window titlebar')
+        await p.mouse.move(movedTitleBox.x + movedTitleBox.width / 2, movedTitleBox.y + movedTitleBox.height / 2)
+        const opacitySaved = waitForLayoutSaved(p)
+        for (let i = 0; i < 3; i++) {
+          await p.mouse.wheel(0, 120)
+          await p.waitForTimeout(120)
+        }
+        await opacitySaved
+        await p.waitForTimeout(900)
+
+        const popInBtn = floatWin.locator('[data-testid="pop-in-button"]:visible').first()
+        if (await popInBtn.isVisible().catch(() => false)) {
+          const dockSaved = waitForLayoutSaved(p)
+          await popInBtn.click()
+          await floatWin.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {})
+          await dockSaved
+          await p.waitForTimeout(700)
+        }
+      }
+
+      videoPath = await p.video()?.path() ?? null
+      await p.close()
+    }
+    finally {
+      await ctx.close()
+    }
+    if (videoPath) {
+      const outPath = join(VIDEOS_OUT_DIR, `tiling-floating-layout-${theme}.mp4`)
+      await encodeWebmToMp4(videoPath, outPath)
+      console.log(`  wrote tiling-floating-layout-${theme}.mp4`)
+    }
+  }
+}
+
+async function captureRemoteWorkersClip(
+  browser: Browser,
+  hubUrl: string,
+  adminToken: string,
+  wsMain: string,
+  runDir: string,
+): Promise<void> {
+  if (!await hasFfmpeg())
+    return
+  const adminCookie = parseSessionCookie(adminToken)
+  const clipViewport = { width: 1280, height: 800 }
+  for (const theme of ['light', 'dark'] as const) {
+    const videoDir = join(runDir, `clip-workers-${theme}`)
+    mkdirSync(videoDir, { recursive: true })
+    const ctx = await browser.newContext({
+      baseURL: hubUrl,
+      viewport: clipViewport,
+      colorScheme: theme,
+      recordVideo: { dir: videoDir, size: clipViewport },
+    })
+    let videoPath: string | null = null
+    try {
+      await ctx.addCookies([
+        {
+          name: adminCookie.name,
+          value: adminCookie.value,
+          domain: E2E_BROWSER_HOST,
+          path: '/',
+          httpOnly: true,
+        },
+      ])
+      const p = await ctx.newPage()
+      await p.goto('/', { waitUntil: 'domcontentloaded' })
+      const mainRow = p.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
+      await mainRow.waitFor({ state: 'visible', timeout: 25_000 })
+      if (await mainRow.getAttribute('data-active') !== 'true')
+        await mainRow.getByTestId('workspace-title').click()
+      const gpuRow = p.locator('[data-testid="worker-row"]:visible').filter({ hasText: 'gpu-devbox' }).first()
+      await gpuRow.waitFor({ state: 'visible', timeout: 20_000 })
+      await waitForTheme(p, theme)
+      await p.waitForTimeout(700)
+
+      // Open the gpu-devbox Worker context menu to inspect live version, OS, and controls.
+      await gpuRow.hover()
+      await gpuRow.locator('[aria-expanded]').first().click()
+      await p.getByRole('menuitem', { name: 'Deregister...', exact: true }).first().waitFor({ state: 'visible', timeout: 10_000 })
+      await p.waitForTimeout(1100)
+      await p.keyboard.press('Escape')
+      await p.waitForTimeout(450)
+
+      // Open the Register worker dialog, show POSIX commands, switch to PowerShell, then close.
+      await p.locator('[data-testid="sidebar-register-worker"]:visible').first().click()
+      const regDialog = p.getByRole('dialog', { name: 'Register worker' })
+      await regDialog.waitFor({ state: 'visible', timeout: 10_000 })
+      await regDialog.getByTestId('registration-command').waitFor({ state: 'visible', timeout: 10_000 })
+      await p.waitForTimeout(1100)
+
+      const psTab = regDialog.getByRole('radio', { name: 'PowerShell' })
+      if (await psTab.isVisible().catch(() => false)) {
+        await psTab.click()
+        await p.waitForTimeout(1000)
+      }
+      const posixTab = regDialog.getByRole('radio', { name: 'POSIX' })
+      if (await posixTab.isVisible().catch(() => false)) {
+        await posixTab.click()
+        await p.waitForTimeout(700)
+      }
+
+      await regDialog.getByRole('button', { name: 'Close', exact: true }).click()
+      await regDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+      await p.waitForTimeout(600)
+
+      videoPath = await p.video()?.path() ?? null
+      await p.close()
+    }
+    finally {
+      await ctx.close()
+    }
+    if (videoPath) {
+      const outPath = join(VIDEOS_OUT_DIR, `remote-workers-tunnels-${theme}.mp4`)
+      await encodeWebmToMp4(videoPath, outPath)
+      console.log(`  wrote remote-workers-tunnels-${theme}.mp4`)
+    }
+  }
+}
+
 async function captureInputQueueClip(
   browser: Browser,
   hubUrl: string,
@@ -2323,13 +2525,15 @@ async function main(): Promise<void> {
         return Boolean(text && text.includes('go test'))
       }, 45_000)
 
-      console.log('Capturing coding-agent-chat screenshots (light & dark) ...')
-      const chatClip = await centerCanvasClip(page)
-      await waitForTheme(page, 'light')
-      await snap(page, 'coding-agent-chat', 'light', chatClip, recordedClips)
-      await waitForTheme(page, 'dark')
-      await snap(page, 'coding-agent-chat', 'dark', chatClip, recordedClips)
-      await waitForTheme(page, 'light')
+      if (process.env.DOCS_NEW_CLIPS_ONLY !== '1') {
+        console.log('Capturing coding-agent-chat screenshots (light & dark) ...')
+        const chatClip = await centerCanvasClip(page)
+        await waitForTheme(page, 'light')
+        await snap(page, 'coding-agent-chat', 'light', chatClip, recordedClips)
+        await waitForTheme(page, 'dark')
+        await snap(page, 'coding-agent-chat', 'dark', chatClip, recordedClips)
+        await waitForTheme(page, 'light')
+      }
 
       // Approve the Bash command so Turn 1 completes cleanly.
       const bashAllowBtn = await waitForControlAllowButton(page, 15_000)
@@ -2504,6 +2708,14 @@ async function main(): Promise<void> {
       await resetLeftSidebarScroll(page)
       await page.waitForTimeout(250)
 
+      if (process.env.DOCS_NEW_CLIPS_ONLY === '1') {
+        console.log('DOCS_NEW_CLIPS_ONLY=1: capturing tiling/floating and remote-worker clips (light & dark) ...')
+        await captureTilingFloatingClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+        await captureRemoteWorkersClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+        await context.close()
+        return
+      }
+
       console.log('Capturing clean 3-pane workspace views (light & dark) ...')
       await captureCleanWorkspaceViews(page, 'light', wsOAuth, recordedClips)
       await captureCleanWorkspaceViews(page, 'dark', wsOAuth, recordedClips)
@@ -2543,6 +2755,9 @@ async function main(): Promise<void> {
 
       console.log('Capturing parallel worktrees workflow clips (light & dark) ...')
       await captureParallelWorktreesClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+      console.log('Capturing tiling/floating and remote-worker workflow clips (light & dark) ...')
+      await captureTilingFloatingClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+      await captureRemoteWorkersClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
 
       console.log('Capturing light mode dialogs, menus, popovers & Preferences ...')
       await captureDialogsAndMenus(page, 'light', wsMain, recordedClips)

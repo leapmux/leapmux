@@ -91,14 +91,17 @@ flowchart TD
     Caller["Caller"] --> SoloIPC["Solo Local IPC\n(OS-account verified)"]
     Caller --> Browser["Browser Session\n(Password / Passkey / IdP)"]
     Caller --> CLILoop["CLI Loopback Credential\n(leapmux auth login)"]
-    Caller --> DeviceTok["Device-Code or Service Token\n(--device-code / api-token issue)"]
+    Caller --> CLIDevice["CLI Device-Code Credential\n(leapmux auth login --device-code)"]
+    Caller --> SvcTok["Service Token or 3rd-Party App\n(api-token issue / OAuth app)"]
     Caller --> Deleg["Delegation Token\n(Agent / Terminal Tab)"]
 
     SoloIPC -->|"Unrestricted solo admin"| Allowed["Authorized Action"]
     Browser -->|"Verify factor (elevation window)"| Allowed
     CLILoop -->|"Admin scope + loopback browser\nstep-up via /oauth/step-up"| Allowed
-    DeviceTok -->|"Admin scope + browser approval\nat /oauth/step-up"| Allowed
-    Deleg -->|"Never elevated;\nadmin commands refused"| Denied["Denied"]
+    CLIDevice -->|"Admin scope + browser approval\nat /oauth/step-up"| Allowed
+    SvcTok -->|"Most admin actions:\nadmin scope + /oauth/step-up"| Allowed
+    SvcTok -->|"5 durable-authority user actions\nrefused"| Denied["Denied"]
+    Deleg -->|"Never elevated;\nadmin commands refused"| Denied
 ```
 
 ## Session elevation
@@ -139,7 +142,7 @@ CLI credentials cannot prove a factor in the terminal. When an admin or sensitiv
 Key security rules:
 
 - **A credential cannot approve its own step-up.** Only an elevated browser session can approve `/oauth/step-up`, so a stolen CLI credential file cannot self-elevate.
-- **All `leapmux admin` commands work over CLI once elevated**, including `admin user create`, `reset-password`, `grant-admin`, `revoke-admin`, and `update --email`/`--email-verified` when the credential holds `admin:users` scope and a live step-up window.
+- **Durable-authority user actions require an elevated browser session or interactive CLI credential.** `admin user create`, `reset-password`, `grant-admin`, `revoke-admin`, and `update --email`/`--email-verified` work from an elevated `leapmux auth login` credential (loopback or `--device-code`) that holds `admin:users` scope. Service-account tokens (`api-token issue`) and third-party OAuth apps can elevate for other admin actions, but the Hub refuses them for these five user actions.
 - **Desktop remote-Hub mode** uses the same browser step-up flow through your system browser.
 
 ### Additional account-change safeguards

@@ -7,6 +7,10 @@ weight: 5
 
 This page is the complete key-by-key reference for the LeapMux **Hub** and **Worker** daemons. For configuration precedence, deployment profiles, listen-address rules, and operational behavior, see [Configuration Guide](/docs/admin/configuration/).
 
+For `jq` queries and scripts, a machine-readable JSON copy is published at [`/config-reference.json`](/config-reference.json).
+
+{{< table-filter placeholder="Filter config keys, CLI flags, env vars, or metrics..." >}}
+
 ## Hub configuration
 
 Environment variable prefix: `LEAPMUX_HUB_` (used by `hub`, `solo`, and `dev`). Each flat key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `log_level` → `--log-level`).

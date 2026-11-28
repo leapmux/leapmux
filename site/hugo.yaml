@@ -24,9 +24,9 @@ disableKinds: ["taxonomy", "term"]
 # CI must check out full history (fetch-depth: 0) for accurate per-file dates.
 enableGitInfo: true
 
-# Emit /llms.txt and /llms-small.txt on the home page and a clean Markdown
-# companion (`/docs/.../index.md`) for every documentation page so coding agents
-# and LLM clients can read plain Markdown instead of HTML chrome.
+# Emit /llms.txt, /llms-small.txt, and /llms-full.txt on the home page and a
+# clean Markdown companion (`/docs/.../index.md`) for every documentation page
+# so coding agents and LLM clients can read plain Markdown instead of HTML chrome.
 mediaTypes:
   text/markdown:
     suffixes:
@@ -43,9 +43,14 @@ outputFormats:
     baseName: llms-small
     isPlainText: true
     notAlternative: true
+  llms-full:
+    mediaType: text/plain
+    baseName: llms-full
+    isPlainText: true
+    notAlternative: true
 
 outputs:
-  home: [HTML, RSS, llms, llms-small]
+  home: [HTML, RSS, llms, llms-small, llms-full]
   section: [HTML, RSS, markdown]
   page: [HTML, markdown]
 
@@ -64,6 +69,8 @@ module:
       target: assets
     - source: content
       target: content
+    - source: data
+      target: data
     - source: i18n
       target: i18n
     - source: layouts
@@ -96,12 +103,15 @@ menu:
     - name: Downloads
       pageRef: /download
       weight: 2
-    - name: Search
+    - name: Changelog
+      pageRef: /changelog
       weight: 3
+    - name: Search
+      weight: 4
       params:
         type: search
     - name: GitHub
-      weight: 4
+      weight: 5
       url: "https://github.com/leapmux/leapmux"
       params:
         icon: github
@@ -109,7 +119,7 @@ menu:
     # No `label` param -> the partial hides the text and shows just the icon,
     # sized to the navbar icon height (matching the GitHub icon).
     - name: Theme
-      weight: 5
+      weight: 6
       params:
         type: theme-toggle
 

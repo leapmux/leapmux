@@ -59,9 +59,7 @@ Show one workspace (default: the workspace of this tab).
 leapmux workspace get [workspace] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[workspace]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux workspace get
@@ -93,9 +91,7 @@ _Mutates state._
 leapmux workspace rename <workspace> <title> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<workspace>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux workspace rename self "Release 1.5"
@@ -111,9 +107,7 @@ _Mutates state._
 leapmux workspace archive <workspace> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<workspace>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux workspace archive 9f3kQ2aB
@@ -129,13 +123,11 @@ _Mutates state._
 leapmux workspace unarchive <workspace> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--section string` | destination active section (default: "In progress") |
+
+_Common: `<workspace>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux workspace unarchive 9f3kQ2aB
@@ -152,10 +144,6 @@ _Aliases: `mv` · Mutates state._
 leapmux workspace move <workspace> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--section string` | destination sidebar section (id, prefix, or name; default: current section) |
@@ -163,6 +151,8 @@ leapmux workspace move <workspace> [flags]
 | `--last` | put the workspace last in the section |
 | `--before string` | put the workspace before this workspace in the section |
 | `--after string` | put the workspace after this workspace in the section |
+
+_Common: `<workspace>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux workspace move 9f3kQ2aB --section "Client Work" --last
@@ -179,14 +169,12 @@ _Aliases: `rm` · Mutates state._
 leapmux workspace delete <workspace> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
 | `--allow-self` | delete the workspace even when this tab lives in it, which ends this tab's process too |
+
+_Common: `<workspace>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux workspace delete 9f3kQ2aB
@@ -202,14 +190,12 @@ _Does not support `-q` / `--quiet`._
 leapmux workspace export [workspace] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `-o, --output string` | write the exported template to this file instead of stdout |
-| `--style string` | text serialization format when --json is not set (one of: yaml, json; default: yaml) |
+| `--style string` | text serialization format when `--json` is not set (one of: yaml, json; default: yaml) |
+
+_Common: `[workspace]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux workspace export self > workspace.yaml
@@ -221,7 +207,7 @@ leapmux workspace export 9f3kQ2aB --style json
 
 Apply a declarative workspace template produced by "workspace export" (or written by hand). Reads YAML or JSON from &lt;file&gt; ("-" reads stdin).
 
-Creates a new workspace unless --workspace targets an existing one, applies the main tile layout and any floating windows, and opens each declared agent, terminal, and file tab in its mapped tile.
+Creates a new workspace unless `--workspace` targets an existing one, applies the main tile layout and any floating windows, and opens each declared agent, terminal, and file tab in its mapped tile.
 
 _Mutates state._
 
@@ -367,13 +353,7 @@ Show one tab (default: this tab).
 leapmux tab get [tab] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[tab]` | See [common arguments and flags](#common-arguments-and-flags). |
-
-| Flag | Description |
-|---|---|
-| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[tab]`, `--workspace` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tab get
@@ -390,16 +370,13 @@ _Aliases: `rm` · Mutates state._
 leapmux tab close <tab>... [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tab>...` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--worktree string` | what happens to the git worktree when this is its last tab; required in that case (one of: keep, push, discard) |
 | `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
 | `--allow-self` | close the tab even when it is this tab, which ends this command's own process |
-| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `<tab>...`, `--workspace` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tab close 87a19d5f
@@ -418,13 +395,7 @@ _Mutates state._
 leapmux tab rename <tab> <title> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
-
-| Flag | Description |
-|---|---|
-| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<tab>`, `--workspace` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tab rename self "Release notes"
@@ -440,18 +411,16 @@ _Aliases: `mv` · Mutates state._
 leapmux tab move <tab> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--tile string` | destination tile |
-| `--workspace string` | destination workspace; without --tile, the tab lands on its first tile |
+| `--workspace string` | destination workspace; without `--tile`, the tab lands on its first tile |
 | `--first` | put the tab first on the destination tile |
 | `--last` | put the tab last on the destination tile (default) |
 | `--before string` | put the tab right before this tab |
 | `--after string` | put the tab right after this tab |
+
+_Common: `<tab>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Move a tab to the first tile of another workspace.
@@ -473,13 +442,7 @@ _Mutates state._
 leapmux tab reveal <tab> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
-
-| Flag | Description |
-|---|---|
-| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<tab>`, `--workspace` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tab reveal 87a19d5f
@@ -500,7 +463,7 @@ leapmux tab open-image <agent> <seq> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or `--name` slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command. |
 | `<seq>` | Positive message sequence number in the agent's transcript. |
 
 | Flag | Description |
@@ -508,7 +471,7 @@ leapmux tab open-image <agent> <seq> [flags]
 | `--index int` | 0-based image index within the message |
 | `--title string` | tab title (default: Image #&lt;seq&gt;) |
 | `--dir string` | working directory context of the tab (default: $LEAPMUX_CONTROL_WORKING_DIR) |
-| `--workspace string` | workspace of the new tab (default: the workspace of this tab); the tab lands on its first tile unless --tile says otherwise |
+| `--workspace string` | workspace of the new tab (default: the workspace of this tab); the tab lands on its first tile unless `--tile` says otherwise |
 | `--tile string` | tile of the new tab (default: the tile of this tab) |
 | `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
 | `--first` | put the new tab first on the destination tile |
@@ -531,9 +494,9 @@ Report and inspect status entries on a tab.
 
 Show a short status beside a tab's title, in the tab bar and in the sidebar of every LeapMux window that you have open. A window that you open later shows it too. The most recently set status is visible.
 
-Give each reporter a --key to keep its status separate. Setting a key again replaces its previous status. Without --key, the command uses "default".
+Give each reporter a `--key` to keep its status separate. Setting a key again replaces its previous status. Without `--key`, the command uses "default".
 
---progress adds a progress ring, from 0 to 100. Without it, the status shows no progress. --tone colors the status: neutral (the default), success, warning or error.
+`--progress` adds a progress ring, from 0 to 100. Without it, the status shows no progress. `--tone` colors the status: neutral (the default), success, warning or error.
 
 The status stays until "tab status clear" removes its key, the tab closes, or the tab's Worker stops. Use "tab status list" to see all keys. The Worker reports its limits on the status text and keys when it refuses a request.
 
@@ -545,7 +508,6 @@ leapmux tab status set <tab> <text> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
 | `<text>` | A short text, such as "Running the tests", or "-" to read it from standard input. |
 
 | Flag | Description |
@@ -553,7 +515,8 @@ leapmux tab status set <tab> <text> [flags]
 | `--key string` | which status entry to change (default: default) |
 | `--progress int` | how far the work is, from 0 to 100 (default: no progress) |
 | `--tone string` | the color of the status (one of: neutral, success, warning, error; default: neutral) |
-| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `<tab>`, `--workspace` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tab status set self "Running the tests"
@@ -577,14 +540,14 @@ leapmux tab status clear <tab> [key]... [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
-| `[key]...` | One or more status keys to clear (default: the default key, or --all for every key). |
+| `[key]...` | One or more status keys to clear (default: the default key, or `--all` for every key). |
 
 | Flag | Description |
 |---|---|
 | `--key string` | which status entry to change (default: default) |
 | `--all` | remove every status entry on the tab |
-| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `<tab>`, `--workspace` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tab status clear self
@@ -604,13 +567,7 @@ _Aliases: `ls`._
 leapmux tab status list [tab] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[tab]` | See [common arguments and flags](#common-arguments-and-flags). |
-
-| Flag | Description |
-|---|---|
-| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[tab]`, `--workspace` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux tab status list

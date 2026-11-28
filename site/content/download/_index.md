@@ -103,16 +103,27 @@ cd .\leapmux\leapmux_<version>_windows_amd64
 
 Open `http://127.0.0.1:4327` in your browser, and run `.\leapmux.exe down` to stop.
 {{< /tab >}}
+{{< tab name="GitHub CLI (gh)" >}}
+Download the latest release archive directly with the GitHub CLI (`gh`):
+
+```sh
+gh release download --repo leapmux/leapmux --pattern 'leapmux_*_linux_amd64.tar.gz'
+```
+
+Replace `linux_amd64.tar.gz` with `darwin_arm64.tar.gz`, `linux_arm64.tar.gz`, or `windows_amd64.zip` for your platform. While LeapMux is in pre-release, pass a tag from `gh release list --repo leapmux/leapmux` before `--pattern`.
+{{< /tab >}}
 {{< tab name="Docker" >}}
-Run a single-container solo instance (Hub + Worker) with persistent storage:
+Run a single-container instance (Hub + Worker) with persistent storage:
 
 ```sh
 docker run -d --name leapmux \
   -p 127.0.0.1:4327:4327 \
   -v leapmux-data:/data \
-  -e LEAPMUX_MODE=solo \
+  -e LEAPMUX_MODE=dev \
   ghcr.io/leapmux/leapmux:latest
 ```
+
+Use `LEAPMUX_MODE=dev` here because `dev` binds `:4327` inside the container, making `-p 127.0.0.1:4327:4327` reachable from your host. In contrast, `solo` binds `127.0.0.1:4327` loopback-only inside the container.
 
 See [Installation](/docs/getting-started/installation/) and [Production Deployment Checklist](/docs/admin/production-checklist/) for reverse-proxy TLS and multi-user Hub deployments.
 {{< /tab >}}

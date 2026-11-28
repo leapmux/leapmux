@@ -114,12 +114,13 @@ leapmux agent send "$A" "Review the diff and report findings" \
   --timeout 15m
 ```
 
-- **`agent wait`** accepts `--until idle|working|waiting_for_user|settled` (repeatable; default `settled`) and `--any` to return when the first listed agent matches. Calling `agent wait` on `self` fails with `usage`.
+- **`agent wait` and `agent tree`:** `agent wait` accepts `--until idle|working|waiting_for_user|settled` (repeatable; default `settled`) and `--any` to return when the first listed agent matches. Calling `agent wait` on `self` fails with `usage`. Run `leapmux agent tree` to inspect parent-child agent and subagent hierarchies and find subagent IDs.
+- **Created agent IDs with `--wait`:** `agent open --wait -q` and `agent fork --wait -q` print the created agent ID on stdout (in text mode, they print a short ID notice on stderr before waiting).
 - **Turn correlation:** Providers that emit native turn IDs correlate `agent send --wait` replies directly to the submitted input; other providers correlate by turn boundaries. Unmet waits print current state and exit `6`.
 - **JSON Schema (`--output-schema`):** Accepts a file path, inline JSON, or `-` (stdin) alongside `--wait`. If a reply fails validation, the CLI automatically asks the agent to fix the schema errors up to `--schema-retries` times (default `2`, max `10`).
 - **Idempotent retries (`--request-id`):** Supported by `agent send`, `agent open`, `agent fork`, and `terminal run`. Repeating the same request ID with identical arguments returns the original result instead of duplicating work (and fails with `conflict` if arguments change). Inspect status with `leapmux agent request-status <agent> <request-id>`. With scheduled `--at`, use an absolute RFC 3339 timestamp with `--request-id` rather than a relative offset like `+10m`.
 - **Forking agents (`agent fork`):** By default, `leapmux agent fork <agent>` performs a native conversation-history fork when the provider supports it, cloning both the provider session history and the Worker transcript so the forked tab preserves context and prompt cache. Pass `--fresh` to clone only provider, model, options, and working directory into a clean empty session without copying history.
-- **Repo-local scratch files (`.leapmux/tmp`):** Store repository-local briefs, JSON schemas, and event checkpoints under `<git toplevel>/.leapmux/tmp/` (part of the `.leapmux/<category>` layout, with `.leapmux/conf` reserved for future repository settings). LeapMux adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating worktrees or writing checkpoints and exports.
+- **Repo-local scratch files (`.leapmux/tmp`):** Store repository-local briefs, JSON schemas, and event checkpoints under `<git toplevel>/.leapmux/tmp/` (part of the `.leapmux/<category>` layout, with `.leapmux/conf` reserved for future repository settings). LeapMux adds `.leapmux/tmp/` to `.git/info/exclude` automatically on worktree creation, `--file` and `--output-schema` reads, checkpoints, and exports.
 - **Answering prompts:** Inspect pending permissions, plans, questions, and forms with `leapmux agent requests` and respond with `agent approve`, `agent deny --message`, or `agent answer --option / --field`. An agent cannot answer its own prompts (`usage`).
 
 ### Terminal waits
@@ -163,7 +164,7 @@ Whenever remote control is enabled on a Worker, every spawned agent and terminal
 Workers with remote control disabled omit these variables, and Linux `.AppImage` builds do not bundle a linked CLI binary for `LEAPMUX_CONTROL_CLI`. Inside any managed tab, `leapmux admin ...` is refused to prevent agents from performing Hub administration.
 {{< /callout >}}
 
-The Worker prepends its linked `leapmux`/`lmx` directory onto `PATH`, and newer `leapmux` binaries automatically hand off control commands to `$LEAPMUX_CONTROL_CLI` so commands match the Worker's protocol version. Workspace and tile IDs are resolved dynamically from `LEAPMUX_CONTROL_TAB_ID` so moving a tab never breaks scripts.
+The Worker prepends its linked `leapmux`/`lmx` directory onto `PATH`, and newer `leapmux` binaries automatically hand off control commands to `$LEAPMUX_CONTROL_CLI` so commands match the Worker's protocol version. Local-only commands skip hand-off (`context`, `guide`, `skill` without `--worker`, and `auth list|use`); set `LEAPMUX_NO_CONTROL_HANDOFF=1` to disable CLI hand-off explicitly. Workspace and tile IDs resolve dynamically from `LEAPMUX_CONTROL_TAB_ID`, so moving a tab never breaks scripts.
 
 ## Worker connections, key pins, and tunnels
 

@@ -38,7 +38,7 @@ layout: hextra-home
 </script>
 
 <div class="hx:mb-8">
-{{< screenshot src="hero-workspace" alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees" caption="Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live PTY terminal running side by side in isolated git worktrees." width="1440" height="900" eager="true" >}}
+{{< hero-showcase >}}
 </div>
 
 <div class="lm-proof-strip">
@@ -101,7 +101,7 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
       <a class="lm-showcase-link" href="/docs/recipes/remote-devbox/">Connect a remote devbox &rarr;</a>
     </div>
     <div class="lm-showcase-media">
-      {{< screenshot src="register-worker-dialog" alt="Register Worker dialog generating a one-time registration command for a remote machine" caption="Register remote Workers behind NAT with a single one-time key command." width="640" height="460" >}}
+      {{< video-clip src="remote-workers-tunnels" poster="register-worker-dialog" alt="Animated walkthrough of inspecting the online gpu-devbox Worker menu and minting POSIX or PowerShell registration commands" caption="Inspect connected remote Workers and register new machines behind NAT with a single one-time key." width="1280" height="800" >}}
     </div>
   </section>
 
@@ -121,8 +121,8 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
     <div class="lm-showcase-media">
       {{< highlight sh >}}
 # Open two agents on isolated worktrees and wait for the first to finish
-A1=$(leapmux agent open --provider claude --worktree feat/api --base main --dir . -q)
-A2=$(leapmux agent open --provider codex  --worktree feat/cli --base main --dir . -q)
+A1=$(leapmux agent open --provider claude --worktree feat/api --base main -q)
+A2=$(leapmux agent open --provider codex  --worktree feat/cli --base main -q)
 
 leapmux agent send "$A1" "Implement the /health endpoint with tests."
 leapmux agent send "$A2" "Add the health subcommand and JSON output."
@@ -132,6 +132,37 @@ leapmux agent wait "$A1" "$A2" --any --json
     </div>
   </section>
 </div>
+
+{{< changelog-strip count="3" >}}
+
+<section class="lm-home-faq" aria-labelledby="lm-home-faq-heading">
+  <div class="lm-home-faq-header">
+    <div class="lm-showcase-eyebrow">FAQ</div>
+    <h2 id="lm-home-faq-heading" class="lm-home-faq-title">Common questions</h2>
+  </div>
+  <div class="lm-home-faq-list">
+    <details class="lm-home-faq-item">
+      <summary>Do I need separate API keys or a LeapMux subscription?</summary>
+      <p>No. Bring your existing coding-agent CLI subscriptions or API keys across all {{< agent-provider-count >}} supported providers. LeapMux drives the agent CLIs you already authenticate on your laptop or remote Workers.</p>
+    </details>
+    <details class="lm-home-faq-item">
+      <summary>Can the Hub read my code, chats, or terminal output?</summary>
+      <p>No. Clients and Workers establish hybrid post-quantum end-to-end encrypted (E2EE) channels directly. The Hub relays ciphertext only and cannot read agent chats, terminal output, or files.</p>
+    </details>
+    <details class="lm-home-faq-item">
+      <summary>Do my remote devboxes need inbound firewall ports open?</summary>
+      <p>No. Workers dial out to the Hub over HTTPS and WebSockets, so remote servers, cloud VMs, and GPU boxes stay behind NAT with zero inbound firewall ports open.</p>
+    </details>
+    <details class="lm-home-faq-item">
+      <summary>What is the difference between Solo Desktop, Solo Daemon, and Distributed mode?</summary>
+      <p>Solo Desktop runs a local Hub and Worker inside the native app with one click, while Solo Daemon runs the same single-machine setup headlessly for browser and CLI access. Distributed mode pairs a central Hub with one or more remote Workers for multi-machine or team setups — see <a href="/docs/getting-started/concepts/">Concepts &amp; Topologies</a>.</p>
+    </details>
+    <details class="lm-home-faq-item">
+      <summary>What license does LeapMux use?</summary>
+      <p>LeapMux is source-available under the Functional Source License, Version 1.1, Apache 2.0 Future License (FSL-1.1-ALv2), which converts to Apache 2.0 two years after each release. See <a href="/docs/reference/legal/">Legal</a> for full terms.</p>
+    </details>
+  </div>
+</section>
 
 <section class="lm-closing-cta">
   <h2>Ready to run your fleet?</h2>

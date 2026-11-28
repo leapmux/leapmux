@@ -72,6 +72,8 @@ Moving the active tab promotes another tab in the source tile. Dragging the last
 
 ## Tiling: splits and grids
 
+{{< video-clip src="tiling-floating-layout" poster="floating-window" alt="Animated walkthrough of previewing a tile grid, popping a terminal tab out into a semi-transparent floating window, dragging it, and docking it back" caption="Preview grid sizes, pop any tab out into a draggable semi-transparent floating window, and dock it back into the tiling canvas." width="1280" height="800" >}}
+
 Divide any tile into a two-pane **split** or an **R × C grid**. Splits and grids can nest up to a depth of **3** in the main layout (split and grid buttons disappear once a pane reaches depth 3; floating windows have no depth limit).
 
 ### Tile action controls

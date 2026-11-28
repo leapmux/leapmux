@@ -130,8 +130,7 @@ type commonEntrySet struct {
 
 const (
 	commonMinOccurrences = 3
-	commonMinHelpLen     = 60
-	commonSeeRef         = "See [common arguments and flags](#common-arguments-and-flags)."
+	commonMinHelpLen     = 45
 )
 
 // collectCommonEntries lifts long argument and flag descriptions that repeat
@@ -280,32 +279,41 @@ func (rw *referenceWriter) leaf(c CommandInfo, globalNames map[string]bool) {
 		rw.printf("_%s._\n\n", strings.Join(meta, " · "))
 	}
 	rw.printf("```text\n%s\n```\n\n", c.Usage)
-	var described []ArgSpec
+	var ownArgs []ArgSpec
+	var commonLabels []string
 	for _, a := range c.Args {
-		if a.Help != "" {
-			described = append(described, a)
+		if a.Help == "" {
+			continue
 		}
-	}
-	if len(described) > 0 {
-		rw.printf("| Argument | Description |\n|---|---|\n")
-		for _, a := range described {
-			desc := escapeCell(a.Help)
-			if rw.common["arg:"+a.Name] == a.Help {
-				desc = commonSeeRef
-			}
-			rw.printf("| `%s` | %s |\n", a.Usage(), desc)
+		if rw.isCommonArg(a) {
+			commonLabels = append(commonLabels, a.Usage())
+			continue
 		}
-		rw.printf("\n")
+		ownArgs = append(ownArgs, a)
 	}
-	var own []FlagInfo
+	var ownFlags []FlagInfo
 	for _, f := range c.Flags {
 		if f.Global && globalNames[f.Name] {
 			continue
 		}
-		own = append(own, f)
+		if rw.isCommonFlag(f) {
+			commonLabels = append(commonLabels, formatFlagLabel(f))
+			continue
+		}
+		ownFlags = append(ownFlags, f)
 	}
-	if len(own) > 0 {
-		rw.flagTable(own)
+	if len(ownArgs) > 0 {
+		rw.printf("| Argument | Description |\n|---|---|\n")
+		for _, a := range ownArgs {
+			rw.printf("| `%s` | %s |\n", a.Usage(), escapeCell(a.Help))
+		}
+		rw.printf("\n")
+	}
+	if len(ownFlags) > 0 {
+		rw.flagTable(ownFlags)
+	}
+	if len(commonLabels) > 0 {
+		rw.printf("_Common: %s (see [common arguments and flags](#common-arguments-and-flags))._\n\n", formatCodeList(commonLabels))
 	}
 	if len(c.Examples) > 0 {
 		rw.printf("```sh\n")
@@ -340,16 +348,27 @@ func (rw *referenceWriter) commands(cmds []CommandInfo, globalNames map[string]b
 	}
 }
 
+func (rw *referenceWriter) isCommonArg(a ArgSpec) bool {
+	help, ok := rw.common["arg:"+a.Name]
+	return ok && help == a.Help
+}
+
+func (rw *referenceWriter) isCommonFlag(f FlagInfo) bool {
+	help, ok := rw.common["flag:"+f.Names()]
+	return ok && help == f.Text()
+}
+
+func formatFlagLabel(f FlagInfo) string {
+	if f.Shorthand != "" {
+		return "-" + f.Shorthand + ", --" + f.Name
+	}
+	return "--" + f.Name
+}
+
 func (rw *referenceWriter) flagTable(flags []FlagInfo) {
 	rw.printf("| Flag | Description |\n|---|---|\n")
 	for _, f := range flags {
-		names := f.Names()
-		text := f.Text()
-		desc := escapeCell(text)
-		if rw.common["flag:"+names] == text {
-			desc = commonSeeRef
-		}
-		rw.printf("| `%s` | %s |\n", names, desc)
+		rw.printf("| `%s` | %s |\n", f.Names(), escapeCell(f.Text()))
 	}
 	rw.printf("\n")
 }
@@ -408,7 +427,7 @@ func formatProse(s string) string {
 		}
 	}
 	flush()
-	return escapeProse(strings.Join(blocks, "\n\n"))
+	return backtickFlags(escapeProse(strings.Join(blocks, "\n\n")))
 }
 
 var (
@@ -426,5 +445,96 @@ func escapeProse(s string) string {
 // escapeCell escapes text for one cell of a Markdown table, where a pipe
 // ends the cell and a line break ends the row.
 func escapeCell(s string) string {
-	return cellEscaper.Replace(proseEscaper.Replace(s))
+	return backtickFlags(cellEscaper.Replace(proseEscaper.Replace(s)))
+}
+
+// backtickFlags wraps bare long CLI flag tokens (such as --wait or
+// --output-schema) in Markdown inline code spans while leaving existing
+// backtick code spans, URLs, paths, standalone --, and flag=value forms intact.
+func backtickFlags(s string) string {
+	if !strings.Contains(s, "--") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	i := 0
+	for i < len(s) {
+		if s[i] == '`' {
+			ticks := 1
+			for i+ticks < len(s) && s[i+ticks] == '`' {
+				ticks++
+			}
+			if closeEnd := findClosingBackticks(s, i+ticks, ticks); closeEnd > 0 {
+				b.WriteString(s[i:closeEnd])
+				i = closeEnd
+				continue
+			}
+			b.WriteString(s[i : i+ticks])
+			i += ticks
+			continue
+		}
+		if end := matchBareFlag(s, i); end > i {
+			b.WriteByte('`')
+			b.WriteString(s[i:end])
+			b.WriteByte('`')
+			i = end
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func findClosingBackticks(s string, start, ticks int) int {
+	for j := start; j < len(s); {
+		if s[j] != '`' {
+			j++
+			continue
+		}
+		k := j
+		for k < len(s) && s[k] == '`' {
+			k++
+		}
+		if k-j == ticks {
+			return k
+		}
+		j = k
+	}
+	return -1
+}
+
+func matchBareFlag(s string, start int) int {
+	if start+2 >= len(s) || s[start] != '-' || s[start+1] != '-' {
+		return start
+	}
+	if start > 0 && isFlagBoundaryDisallowed(s[start-1]) {
+		return start
+	}
+	if s[start+2] < 'a' || s[start+2] > 'z' {
+		return start
+	}
+	end := start + 3
+	for end < len(s) {
+		c := s[end]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			end++
+			continue
+		}
+		break
+	}
+	if s[end-1] == '-' || strings.Contains(s[start+2:end], "--") {
+		return start
+	}
+	if end < len(s) && isFlagBoundaryDisallowed(s[end]) {
+		return start
+	}
+	return end
+}
+
+func isFlagBoundaryDisallowed(c byte) bool {
+	return (c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_' || c == '/' || c == '`' || c == '-' || c == '='
 }

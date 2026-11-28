@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
-import { codingAgentMatrixDimensions, verifyBuiltSiteArtifacts, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker } from './verify-coding-agent-site.mjs'
+import { codingAgentMatrixDimensions, findOrphanH2Headings, verifyBuiltSiteArtifacts, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker } from './verify-coding-agent-site.mjs'
 
 const SUPPORT_STATES = [
   { id: 'supported', symbol: '✅', label: 'Supported' },
@@ -610,23 +610,193 @@ describe('verifyCodingAgentTicker', () => {
   })
 })
 
+describe('findOrphanH2Headings', () => {
+  it('flags an H2 heading followed directly by another H2 heading or EOF', () => {
+    const md = [
+      '# Title',
+      '',
+      '## Empty section',
+      '',
+      '## Populated section',
+      '',
+      'Some text.',
+      '',
+      '## Trailing empty',
+    ].join('\n')
+
+    expect(findOrphanH2Headings(md)).toEqual([
+      { line: 3, heading: '## Empty section' },
+      { line: 9, heading: '## Trailing empty' },
+    ])
+  })
+
+  it('allows an H2 heading followed by an H3 subsection and ignores headings inside fenced code blocks', () => {
+    const md = [
+      '## Run your first parallel session',
+      '',
+      '### Launch LeapMux in solo mode',
+      '',
+      '```bash',
+      '## comment line one',
+      '## comment line two',
+      '```',
+    ].join('\n')
+
+    expect(findOrphanH2Headings(md)).toEqual([])
+  })
+})
+
 describe('verifyBuiltSiteArtifacts', () => {
+  function createMockConfigReference() {
+    const metrics = Array.from({ length: 21 }, (_, index) => ({
+      name: `leapmux_metric_${index + 1}`,
+      type: 'Counter',
+      labels: [],
+      meaning: `Metric ${index + 1}.`,
+      group: 'HTTP and RPC metrics',
+    }))
+    return {
+      schema_version: 1,
+      source: '/docs/admin/configuration-reference/',
+      sections: [
+        {
+          id: 'hub-configuration',
+          title: 'Hub configuration',
+          groups: [
+            {
+              id: 'server-options',
+              title: 'Server options',
+              columns: ['config_key'],
+              entries: [
+                { config_key: 'listen' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'worker-configuration',
+          title: 'Worker configuration',
+          groups: [
+            {
+              id: 'worker-options',
+              title: 'Worker options',
+              columns: ['config_key'],
+              entries: [
+                { config_key: 'name' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'storage-backends',
+          title: 'Storage backends',
+          groups: [
+            {
+              id: 'sqlite-default',
+              title: 'SQLite (default)',
+              columns: ['config_key'],
+              entries: [
+                { config_key: 'storage.sqlite.path' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'prometheus-metrics',
+          title: 'Prometheus metrics',
+          groups: [
+            {
+              id: 'http-and-rpc-metrics',
+              title: 'HTTP and RPC metrics',
+              columns: ['metric'],
+              entries: [
+                { metric: 'leapmux_metric_1' },
+              ],
+            },
+          ],
+        },
+      ],
+      metrics,
+    }
+  }
+
   function createMockPublicDir() {
     const dir = mkdtempSync(join(tmpdir(), 'leapmux-site-artifacts-'))
-    mkdirSync(join(dir, 'docs/reference/faq'), { recursive: true })
-    mkdirSync(join(dir, 'docs/reference/supported-agents'), { recursive: true })
-    mkdirSync(join(dir, 'docs/reference/commands'), { recursive: true })
-    mkdirSync(join(dir, 'pagefind'), { recursive: true })
+    const dirs = [
+      'docs/getting-started/quick-start',
+      'docs/admin/configuration',
+      'docs/admin/encryption-and-data',
+      'docs/admin/reverse-proxy',
+      'docs/admin/starting-and-stopping',
+      'docs/recipes/parallel-agents',
+      'docs/reference/faq',
+      'docs/reference/supported-agents',
+      'docs/reference/commands',
+      'pagefind',
+    ]
+    for (const relDir of dirs)
+      mkdirSync(join(dir, relDir), { recursive: true })
+
+    writeFileSync(join(dir, 'docs/getting-started/quick-start/index.md'), [
+      '# Quick Start',
+      '',
+      '## Run your first parallel session',
+      '',
+      '### Launch LeapMux in solo mode',
+      '### Create a workspace and start your first agent',
+      '### Open a second agent and a shell terminal side by side',
+      '### Send prompts, tune settings, and inspect diffs',
+      '',
+      'Done.',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/encryption-and-data/index.md'), [
+      '# Encryption & Data',
+      '',
+      '### Generate a new active key version',
+      '### Restart the Hub',
+      '### Re-encrypt existing persistent rows',
+      '### Remove the retired key version (optional)',
+      '### Stop the Hub and affected Workers',
+      '### Restore the database and matching `encryption.key`',
+      '### Start the Hub and verify Workers',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/reverse-proxy/index.md'), [
+      '# Reverse Proxy',
+      '',
+      '### Bind the Hub to loopback',
+      '### Set the public URL, secure cookies, and trusted proxies',
+      '### Register Workers against the external HTTPS URL',
+      '### Verify HTTPS, HTTP/2, and `/metrics` protection',
+      '### Register and start a Worker through the proxy',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/starting-and-stopping/index.md'), [
+      '# Starting and Stopping',
+      '',
+      '### Stop and disable the old service',
+      '### Move or restore the directory',
+      '### Start the instance at the new path',
+    ].join('\n'))
     writeFileSync(join(dir, 'docs/reference/faq/index.md'), '# FAQ\n\nSupported: Pi\n')
     writeFileSync(join(dir, 'docs/reference/supported-agents/index.md'), '# Supported Agents\n\n### Coding agent feature matrix\n')
     writeFileSync(join(dir, 'docs/reference/commands/index.md'), '# Commands\n\nUse <workspace>.\n')
     writeFileSync(join(dir, 'llms.txt'), '# LeapMux\n- [Command Reference](https://leapmux.dev/docs/reference/commands/index.md)\n')
+    writeFileSync(join(dir, 'llms-full.txt'), [
+      '# LeapMux — Full Documentation Guides',
+      '# Quick Start',
+      '# Configuration Guide',
+      '# Configuration Reference',
+      '# Security & Authentication',
+      '# Troubleshooting',
+    ].join('\n\n'))
+    writeFileSync(join(dir, 'config-reference.json'), JSON.stringify(createMockConfigReference()))
     writeFileSync(join(dir, 'index.html'), '<meta property="og:image:alt" content="LeapMux">')
+    writeFileSync(join(dir, 'docs/admin/configuration/index.html'), '<meta property="article:section" content="Administration">')
+    writeFileSync(join(dir, 'docs/recipes/parallel-agents/index.html'), '<meta property="article:section" content="Workflow Recipes">')
     writeFileSync(join(dir, 'pagefind/pagefind.js'), '// pagefind')
     return dir
   }
 
-  it('accepts clean Markdown companions, llms.txt, OG alt, and Pagefind output', () => {
+  it('accepts clean Markdown companions, llms.txt, llms-full.txt, config-reference.json, OG metadata, and pruned Pagefind output', () => {
     const dir = createMockPublicDir()
     try {
       expect(verifyBuiltSiteArtifacts(dir, checklist)).toEqual([])
@@ -648,6 +818,41 @@ describe('verifyBuiltSiteArtifacts', () => {
       expect(errors).toContain('docs/reference/commands/index.md: contains unescaped HTML angle-bracket entities')
       expect(errors).toContain('index.html: og:image:alt duplicates site title')
       expect(errors).toContain('site/public/en.search-data.json: monolithic FlexSearch JSON should not be emitted when Pagefind is enabled')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects erased step headings and orphan empty H2 headings', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'docs/getting-started/quick-start/index.md'), '# Quick Start\n\n## Run your first parallel session\n\n## Where to go next\n\nDone.\n')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('docs/getting-started/quick-start/index.md: orphan empty heading "## Run your first parallel session" at line 3')
+      expect(errors).toContain('docs/getting-started/quick-start/index.md: missing expected step heading "### Launch LeapMux in solo mode"')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects invalid llms-full.txt, malformed config-reference.json, unpruned Pagefind UI assets, and wrong article:section metadata', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'llms-full.txt'), '# Quick Start\n{{% steps %}}\n')
+      writeFileSync(join(dir, 'config-reference.json'), JSON.stringify({ schema_version: 1, sections: [], metrics: [] }))
+      writeFileSync(join(dir, 'pagefind/pagefind-ui.js'), '// unused stock UI')
+      writeFileSync(join(dir, 'docs/admin/configuration/index.html'), '<meta property="article:section" content="Documentation">')
+      writeFileSync(join(dir, 'docs/recipes/parallel-agents/index.html'), '<meta property="article:section" content="Documentation">')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('llms-full.txt: contains unexpanded Hugo shortcode')
+      expect(errors).toContain('llms-full.txt: missing core guide heading "# Troubleshooting"')
+      expect(errors).toContain('config-reference.json: missing populated section "hub-configuration"')
+      expect(errors).toContain('config-reference.json: found 0 unique leapmux_ metrics (0 total), expected 21')
+      expect(errors).toContain('site/public/pagefind/pagefind-ui.js: unused Pagefind stock UI asset should be pruned')
+      expect(errors).toContain('docs/admin/configuration/index.html: article:section is "Documentation", expected "Administration"')
+      expect(errors).toContain('docs/recipes/parallel-agents/index.html: article:section is "Documentation", expected "Workflow Recipes"')
     }
     finally {
       rmSync(dir, { recursive: true, force: true })

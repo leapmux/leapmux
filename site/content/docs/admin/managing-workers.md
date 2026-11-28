@@ -50,6 +50,8 @@ sequenceDiagram
 
 ## Register a Worker
 
+{{< video-clip src="remote-workers-tunnels" poster="register-worker-dialog" alt="Animated walkthrough of inspecting the online gpu-devbox Worker menu and opening the Register worker dialog with POSIX and PowerShell registration commands" caption="Inspect connected remote Workers in the sidebar and mint copy-ready POSIX or PowerShell registration commands in one dialog." width="1280" height="800" >}}
+
 {{% steps %}}
 
 ### Mint a registration key
@@ -143,6 +145,8 @@ During a graceful Hub shutdown, the Hub sends a suggested reconnect delay that t
 ## Deregistering a Worker
 
 Deregistering tells the Hub to forget the Worker and terminate every active workspace tab and terminal running on it.
+
+{{< screenshot src="worker-context-menu" alt="LeapMux Workers sidebar context menu for gpu-devbox displaying Name, Version, Built at, OS, and the Deregister action" caption="Open a Worker's context menu in the left sidebar to inspect its version, build time, and OS, or to deregister it (LeapMux Desktop also exposes tunnel controls here)." width="557" height="250" >}}
 
 - **From the Hub UI:** open the Worker's context menu and select **Deregister...**.
 - **As an administrator over RPC:**

@@ -28,12 +28,19 @@
   {{- $graph = slice $website $orgHome -}}
 {{- else -}}
   {{- /* Section label for articleSection. */ -}}
-  {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
+  {{- $trimmed := strings.TrimPrefix "/" .RelPermalink -}}
+  {{- if hasPrefix .RelPermalink "/docs/" -}}
+    {{- $trimmed = strings.TrimPrefix "/docs/" .RelPermalink -}}
+  {{- end -}}
+  {{- $seg := index (split $trimmed "/") 0 -}}
   {{- $labels := dict
         "getting-started" "Getting Started"
+        "recipes" "Workflow Recipes"
         "using" "Using LeapMux"
-        "operating" "Operating"
-        "reference" "Reference" -}}
+        "admin" "Administration"
+        "reference" "Reference"
+        "download" "Downloads"
+        "changelog" "Changelog" -}}
   {{- $section := index $labels $seg | default "Documentation" -}}
 
   {{- $article := dict

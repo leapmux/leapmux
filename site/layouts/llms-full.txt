@@ -1,0 +1,64 @@
+{{- /*
+  Bundled guide-focused documentation export (/llms-full.txt) for LLM clients
+  that prefer loading the core LeapMux guides in a single request. Excludes the
+  generated per-command CLI reference tree under /docs/reference/commands/ so
+  context stays focused on concepts, workflows, administration, and reference
+  guides. Uses the shared clean-markdown-body.html partial so shortcode
+  conversion stays in sync with /docs/.../index.md.
+*/ -}}
+# {{ .Site.Title }} — Full Documentation Guides
+
+> {{ .Site.Params.description | default "" }}
+
+This file bundles the core LeapMux documentation guides (Getting Started, Workflow Recipes, Using LeapMux, Administration, and Reference) in a single plain-Markdown document.
+
+- For generated per-command CLI flag tables and examples, open the individual pages under [`/docs/reference/commands/`]({{ "docs/reference/commands/index.md" | absURL }}) or run `leapmux <cmd> --help` locally.
+- For machine-readable Hub and Worker configuration keys, storage backends, and all 21 Prometheus metrics (`jq`-queryable JSON), fetch [`/config-reference.json`]({{ "config-reference.json" | absURL }}).
+- For the compact or full page index with links to individual Markdown files and Agent Skills, see [`/llms-small.txt`]({{ "llms-small.txt" | absURL }}) or [`/llms.txt`]({{ "llms.txt" | absURL }}).
+{{- $docs := site.GetPage "/docs" -}}
+{{- if not $docs -}}
+  {{- errorf "llms-full.txt: /docs section not found" -}}
+{{- end -}}
+{{- range $docs.Sections.ByWeight -}}
+  {{- template "llms-full-section" . -}}
+{{- end }}
+
+---
+Site: {{ .Site.BaseURL }}
+{{- "\n" -}}
+
+{{- define "llms-full-section" -}}
+  {{- if or (eq .Params.llms false) (eq .RelPermalink "/docs/reference/commands/") -}}
+    {{- /* Excluded from the guide-focused bundle. */ -}}
+  {{- else -}}
+    {{- $sectionBody := partial "clean-markdown-body.html" . -}}
+    {{- if or (strings.Contains $sectionBody "\n## ") (hasPrefix $sectionBody "## ") -}}
+      {{- template "llms-full-entry" (dict "page" . "body" $sectionBody) -}}
+    {{- end -}}
+    {{- range .Pages.ByWeight -}}
+      {{- if ne .Params.llms false -}}
+        {{- if .IsSection -}}
+          {{- template "llms-full-section" . -}}
+        {{- else -}}
+          {{- template "llms-full-entry" (dict "page" . "body" (partial "clean-markdown-body.html" .)) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "llms-full-entry" -}}
+{{- $page := .page -}}
+{{- $body := .body -}}
+{{- $url := $page.Permalink -}}{{- with $page.OutputFormats.Get "markdown" -}}{{- $url = .Permalink -}}{{- end }}
+
+---
+
+# {{ $page.Title }}
+{{ with $page.Description }}
+> {{ . }}
+{{ end }}
+Source: {{ $url }}
+
+{{ $body }}
+{{- end -}}

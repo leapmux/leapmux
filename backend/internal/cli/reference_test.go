@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -101,13 +102,63 @@ func TestSharedGlobalFlags_SkipsFlagsDisallowedEverywhere(t *testing.T) {
 func TestEscapeCell(t *testing.T) {
 	assert.Equal(t, `one of: keep\|push, &lt;tab&gt; &amp; more`, escapeCell("one of: keep|push, <tab> & more"))
 	assert.Equal(t, "two lines", escapeCell("two\nlines"))
+	assert.Equal(t, "requires `--wait` and `--output-schema`, keeps `--no-focus`", escapeCell("requires --wait and --output-schema, keeps `--no-focus`"))
 }
 
 func TestFormatProse(t *testing.T) {
-	wrapped := "First line wrapped at\r\ncolumn 78 for terminal.\r\n\r\n- bullet one\r\n  continued\r\n* bullet two\r\nParagraph right after bullet with <tag> & >."
+	wrapped := "First line wrapped at\r\ncolumn 78 for terminal.\r\n\r\n- bullet one\r\n  continued\r\n* bullet two\r\nParagraph right after bullet with <tag> & > and --request-id."
 	got := formatProse(wrapped)
-	assert.Equal(t, "First line wrapped at column 78 for terminal.\n\n- bullet one continued\n* bullet two\n\nParagraph right after bullet with &lt;tag&gt; &amp; &gt;.", got)
+	assert.Equal(t, "First line wrapped at column 78 for terminal.\n\n- bullet one continued\n* bullet two\n\nParagraph right after bullet with &lt;tag&gt; &amp; &gt; and `--request-id`.", got)
 	assert.Empty(t, formatProse("   \r\n\t  "))
+}
+
+func TestBacktickFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "bare flags in prose",
+			in:   "--resume with --wait, --output-schema, and (--no-focus).",
+			want: "`--resume` with `--wait`, `--output-schema`, and (`--no-focus`).",
+		},
+		{
+			name: "already backticked single and multi tick spans",
+			in:   "keep `--wait`, ``--output-schema``, and `leapmux agent send --request-id abc` untouched; wrap --all",
+			want: "keep `--wait`, ``--output-schema``, and `leapmux agent send --request-id abc` untouched; wrap `--all`",
+		},
+		{
+			name: "standalone separator and dashes",
+			in:   `pass -- or "--" before text; ignore --- and --foo- and --foo--bar and foo--bar`,
+			want: `pass -- or "--" before text; ignore --- and --foo- and --foo--bar and foo--bar`,
+		},
+		{
+			name: "urls paths and flag equals values",
+			in:   `see https://example.com/--wait, /tmp/--bar, https://example.com/?q=--baz, --format=json, and --title="hi"`,
+			want: `see https://example.com/--wait, /tmp/--bar, https://example.com/?q=--baz, --format=json, and --title="hi"`,
+		},
+		{
+			name: "unmatched backtick does not block later flag",
+			in:   "stray ` tick then --wait",
+			want: "stray ` tick then `--wait`",
+		},
+		{
+			name: "escaped angle brackets stay intact",
+			in:   "pass --worker &lt;worker&gt; with --auto-sync",
+			want: "pass `--worker` &lt;worker&gt; with `--auto-sync`",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, backtickFlags(tc.in))
+		})
+	}
 }
 
 func TestSharedGlobalFlags_LocalOverrideAndHiddenSubcommands(t *testing.T) {
@@ -192,9 +243,13 @@ func TestWriteReferenceForGroups_DeepHeadingsLiftedFlagsAndErrors(t *testing.T) 
 	assert.Contains(t, page, "# Inspect by id.\ntool grp sub nested inspect t1\ntool grp sub nested inspect t2\n\n# Inspect as JSON.\ntool grp sub nested inspect t3 --json\n")
 
 	// Mixed <target> and [target] lifts under fallback label <target>, and repeated long flag lifts too.
+	// Because every command has only common args and flags, per-command tables are omitted in favor of the compact strip.
 	assert.Contains(t, page, "| `<target>` | "+longMixedArgHelp+" |\n")
 	assert.Contains(t, page, "| `--worker string` | "+longFlagHelp+" |\n")
-	assert.Contains(t, page, "| `--worker string` | "+commonSeeRef+" |\n")
+	assert.NotContains(t, page, "| Argument | Description |")
+	assert.NotContains(t, page, "| Flag | Description |")
+	assert.Contains(t, page, "_Common: `<target>`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._\n\n```sh\n")
+	assert.Contains(t, page, "_Common: `[target]`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._\n")
 
 	// Writer errors propagate from both WriteSharedFlags and WriteReferenceForGroups.
 	writeErr := errors.New("write failed")
@@ -223,6 +278,78 @@ func TestWriteReferenceForGroups_LiftedOptionalAndVariadicArgs(t *testing.T) {
 	page := out.String()
 	assert.Contains(t, page, "| `[request]` | "+longOptionalHelp+" |\n")
 	assert.Contains(t, page, "| `<file>...` | "+longVariadicHelp+" |\n")
-	assert.Contains(t, page, "| `[request]` | "+commonSeeRef+" |\n")
-	assert.Contains(t, page, "| `<file>...` | "+commonSeeRef+" |\n")
+	assert.NotContains(t, page, "| Argument | Description |")
+	assert.Contains(t, page, "_Common: `[request]` (see [common arguments and flags](#common-arguments-and-flags))._\n")
+	assert.Contains(t, page, "_Common: `<file>...` (see [common arguments and flags](#common-arguments-and-flags))._\n")
+}
+
+func TestWriteReferenceForGroups_CommonMinHelpLenAndMixedOwnAndCommon(t *testing.T) {
+	// 58 chars (like admin's <user> selector) lifts under the 45-char threshold;
+	// 44 chars stays inline per command.
+	const userHelp58 = "A username, id:<id>, username:<name>, or a user ID prefix."
+	const shortHelp44 = "Exactly forty-four characters stay inline!!."
+	const workspaceFlagHelp = "Narrow target lookup to this workspace (id, prefix, or self)"
+	require.Equal(t, 58, len(userHelp58))
+	require.Equal(t, 44, len(shortHelp44))
+
+	noop := func(*Invocation) (any, error) { return nil, nil }
+	addCommonFlag := func(fs *pflag.FlagSet) {
+		fs.StringP("workspace", "w", "", workspaceFlagHelp)
+	}
+	addMixedFlags := func(fs *pflag.FlagSet) {
+		addCommonFlag(fs)
+		fs.Bool("force", false, "skip confirmation prompt")
+	}
+
+	root := Group("tool", "Tool",
+		Group("admin", "Admin",
+			NewLeaf(Leaf{
+				Use:      "grant <user> <role>",
+				Short:    "Grant role",
+				Args:     map[string]string{"user": userHelp58, "role": shortHelp44},
+				Flags:    addMixedFlags,
+				Examples: []Example{{Command: "tool admin grant alice editor"}},
+				Run:      noop,
+			}),
+			NewLeaf(Leaf{
+				Use:   "revoke <user> <role>",
+				Short: "Revoke role",
+				Args:  map[string]string{"user": userHelp58, "role": shortHelp44},
+				Flags: addCommonFlag,
+				Run:   noop,
+			}),
+			NewLeaf(Leaf{
+				Use:   "show <user> <role>",
+				Short: "Show user",
+				Args:  map[string]string{"user": userHelp58, "role": shortHelp44},
+				Flags: addCommonFlag,
+				Run:   noop,
+			}),
+		),
+	)
+	prepare(root)
+
+	var out bytes.Buffer
+	require.NoError(t, WriteReferenceForGroups(&out, Describe(root), []string{"admin"}, nil))
+	page := out.String()
+
+	// Top common table lifts <user> (58 chars) and -w, --workspace string, but NOT <role> (44 chars).
+	commonSection, _, ok := strings.Cut(page, "## `tool admin`")
+	require.True(t, ok)
+	assert.Contains(t, commonSection, "| `<user>` | A username, id:&lt;id&gt;, username:&lt;name&gt;, or a user ID prefix. |\n")
+	assert.Contains(t, commonSection, "| `-w, --workspace string` | "+workspaceFlagHelp+" |\n")
+	assert.NotContains(t, commonSection, "`<role>`")
+
+	// Mixed command ("grant"): prints own <role> table, own --force table, then compact _Common:_ strip before examples.
+	assert.Contains(t, page,
+		"| Argument | Description |\n|---|---|\n| `<role>` | "+shortHelp44+" |\n\n"+
+			"| Flag | Description |\n|---|---|\n| `--force` | skip confirmation prompt |\n\n"+
+			"_Common: `<user>`, `-w, --workspace` (see [common arguments and flags](#common-arguments-and-flags))._\n\n"+
+			"```sh\ntool admin grant alice editor\n```")
+
+	// Command with only own arg and common flag ("revoke"): no Flag table, compact strip lists both common arg and shorthand flag without type.
+	assert.Contains(t, page,
+		"### `tool admin revoke`\n\nRevoke role.\n\n```text\ntool admin revoke <user> <role> [flags]\n```\n\n"+
+			"| Argument | Description |\n|---|---|\n| `<role>` | "+shortHelp44+" |\n\n"+
+			"_Common: `<user>`, `-w, --workspace` (see [common arguments and flags](#common-arguments-and-flags))._\n")
 }

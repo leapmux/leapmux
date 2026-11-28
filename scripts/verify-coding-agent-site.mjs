@@ -448,7 +448,131 @@ function walkMarkdownFiles(dir) {
   return out
 }
 
-/** Verify built Markdown companions, llms.txt, homepage OG metadata, and Pagefind output. */
+/** Step-bearing docs pages whose H3 step headings must survive Markdown export. */
+const REQUIRED_STEP_HEADINGS = [
+  {
+    file: 'docs/getting-started/quick-start/index.md',
+    headings: [
+      '### Launch LeapMux in solo mode',
+      '### Create a workspace and start your first agent',
+      '### Open a second agent and a shell terminal side by side',
+      '### Send prompts, tune settings, and inspect diffs',
+    ],
+  },
+  {
+    file: 'docs/admin/encryption-and-data/index.md',
+    headings: [
+      '### Generate a new active key version',
+      '### Restart the Hub',
+      '### Re-encrypt existing persistent rows',
+      '### Remove the retired key version (optional)',
+      '### Stop the Hub and affected Workers',
+      '### Restore the database and matching `encryption.key`',
+      '### Start the Hub and verify Workers',
+    ],
+  },
+  {
+    file: 'docs/admin/reverse-proxy/index.md',
+    headings: [
+      '### Bind the Hub to loopback',
+      '### Set the public URL, secure cookies, and trusted proxies',
+      '### Register Workers against the external HTTPS URL',
+      '### Verify HTTPS, HTTP/2, and `/metrics` protection',
+      '### Register and start a Worker through the proxy',
+    ],
+  },
+  {
+    file: 'docs/admin/starting-and-stopping/index.md',
+    headings: [
+      '### Stop and disable the old service',
+      '### Move or restore the directory',
+      '### Start the instance at the new path',
+    ],
+  },
+]
+
+const REQUIRED_LLMS_FULL_HEADINGS = [
+  '# Quick Start',
+  '# Configuration Guide',
+  '# Configuration Reference',
+  '# Security & Authentication',
+  '# Troubleshooting',
+]
+
+const REQUIRED_CONFIG_SECTIONS = [
+  'hub-configuration',
+  'worker-configuration',
+  'storage-backends',
+  'prometheus-metrics',
+]
+
+const EXPECTED_METRIC_COUNT = 21
+
+const PRUNED_PAGEFIND_ASSETS = [
+  'pagefind/pagefind-ui.js',
+  'pagefind/pagefind-ui.css',
+  'pagefind/pagefind-component-ui.js',
+  'pagefind/pagefind-component-ui.css',
+  'pagefind/pagefind-modular-ui.js',
+  'pagefind/pagefind-modular-ui.css',
+  'pagefind/pagefind-highlight.js',
+]
+
+const EXPECTED_ARTICLE_SECTIONS = [
+  { file: 'docs/admin/configuration/index.html', expected: 'Administration' },
+  { file: 'docs/recipes/parallel-agents/index.html', expected: 'Workflow Recipes' },
+]
+
+/** Find H2 headings immediately followed by another H1/H2 heading or EOF (ignoring fenced code blocks). */
+export function findOrphanH2Headings(markdown) {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  const orphans = []
+  let fence = null
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/)
+    if (fenceMatch) {
+      const marker = fenceMatch[1]
+      if (!fence) {
+        fence = { char: marker[0], length: marker.length }
+      }
+      else if (marker[0] === fence.char && marker.length >= fence.length) {
+        fence = null
+      }
+      continue
+    }
+    if (fence)
+      continue
+
+    if (!/^##\s+\S/.test(line))
+      continue
+
+    let nextIndex = i + 1
+    while (nextIndex < lines.length && lines[nextIndex].trim() === '')
+      nextIndex++
+
+    if (nextIndex >= lines.length || /^#{1,2}\s+\S/.test(lines[nextIndex])) {
+      orphans.push({
+        line: i + 1,
+        heading: line.trim(),
+      })
+    }
+  }
+  return orphans
+}
+
+function readMetaProperty(html, property) {
+  const dom = new JSDOM(html)
+  try {
+    return dom.window.document.querySelector(`meta[property="${property}"]`)?.getAttribute('content') ?? null
+  }
+  finally {
+    dom.window.close()
+  }
+}
+
+/** Verify built Markdown companions, llms.txt, llms-full.txt, config-reference.json, OG metadata, and Pagefind output. */
 export function verifyBuiltSiteArtifacts(publicDir, checklist) {
   const errors = []
   const docsDir = resolve(publicDir, 'docs')
@@ -457,7 +581,7 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
     errors.push('no generated Markdown companions found under site/public/docs/')
 
   for (const file of mdFiles) {
-    const rel = relative(publicDir, file)
+    const rel = relative(publicDir, file).replace(/\\/g, '/')
     const text = readFileSync(file, 'utf8')
     if (text.includes('{{<') || text.includes('{{%'))
       errors.push(`${rel}: contains unexpanded Hugo shortcode`)
@@ -465,6 +589,21 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
       errors.push(`${rel}: leaks internal generated-file HTML comment`)
     if (rel.startsWith('docs/reference/commands/') && (text.includes('&lt;') || text.includes('&gt;')))
       errors.push(`${rel}: contains unescaped HTML angle-bracket entities`)
+    for (const orphan of findOrphanH2Headings(text))
+      errors.push(`${rel}: orphan empty heading ${JSON.stringify(orphan.heading)} at line ${orphan.line}`)
+  }
+
+  for (const { file, headings } of REQUIRED_STEP_HEADINGS) {
+    const fullPath = resolve(publicDir, file)
+    if (!existsSync(fullPath)) {
+      errors.push(`${file}: missing generated Markdown companion`)
+      continue
+    }
+    const content = readFileSync(fullPath, 'utf8')
+    for (const heading of headings) {
+      if (!content.includes(heading))
+        errors.push(`${file}: missing expected step heading ${JSON.stringify(heading)}`)
+    }
   }
 
   const faqMd = readFileSync(resolve(publicDir, 'docs/reference/faq/index.md'), 'utf8')
@@ -480,12 +619,76 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
   if (!llmsTxt.includes('/docs/reference/commands/index.md'))
     errors.push('llms.txt: missing /docs/reference/commands/index.md overview entry')
 
+  const llmsFullPath = resolve(publicDir, 'llms-full.txt')
+  if (!existsSync(llmsFullPath)) {
+    errors.push('site/public/llms-full.txt: missing bundled Markdown guide export')
+  }
+  else {
+    const llmsFull = readFileSync(llmsFullPath, 'utf8')
+    if (llmsFull.includes('{{<') || llmsFull.includes('{{%'))
+      errors.push('llms-full.txt: contains unexpanded Hugo shortcode')
+    for (const heading of REQUIRED_LLMS_FULL_HEADINGS) {
+      if (!llmsFull.includes(heading))
+        errors.push(`llms-full.txt: missing core guide heading ${JSON.stringify(heading)}`)
+    }
+  }
+
+  const configRefPath = resolve(publicDir, 'config-reference.json')
+  if (!existsSync(configRefPath)) {
+    errors.push('site/public/config-reference.json: missing generated configuration reference JSON')
+  }
+  else {
+    let configRef = null
+    try {
+      configRef = JSON.parse(readFileSync(configRefPath, 'utf8'))
+    }
+    catch (err) {
+      errors.push(`config-reference.json: invalid JSON (${err.message})`)
+    }
+    if (configRef) {
+      if (configRef.schema_version !== 1)
+        errors.push(`config-reference.json: schema_version is ${JSON.stringify(configRef.schema_version)}, expected 1`)
+      const sections = Array.isArray(configRef.sections)
+        ? configRef.sections
+        : []
+      for (const sectionId of REQUIRED_CONFIG_SECTIONS) {
+        const section = sections.find(candidate => candidate?.id === sectionId)
+        if (!section || !Array.isArray(section.groups) || section.groups.length === 0)
+          errors.push(`config-reference.json: missing populated section ${JSON.stringify(sectionId)}`)
+      }
+      const metrics = Array.isArray(configRef.metrics)
+        ? configRef.metrics
+        : []
+      const uniqueMetricNames = new Set(metrics.map(metric => metric?.name).filter(name => typeof name === 'string' && name.startsWith('leapmux_')))
+      if (metrics.length !== EXPECTED_METRIC_COUNT || uniqueMetricNames.size !== EXPECTED_METRIC_COUNT) {
+        errors.push(
+          `config-reference.json: found ${uniqueMetricNames.size} unique leapmux_ metrics (${metrics.length} total), expected ${EXPECTED_METRIC_COUNT}`,
+        )
+      }
+    }
+  }
+
   const homeHTML = readFileSync(resolve(publicDir, 'index.html'), 'utf8')
   if (homeHTML.includes('og:image:alt" content="LeapMux — LeapMux"'))
     errors.push('index.html: og:image:alt duplicates site title')
 
+  for (const { file, expected } of EXPECTED_ARTICLE_SECTIONS) {
+    const fullPath = resolve(publicDir, file)
+    if (!existsSync(fullPath)) {
+      errors.push(`${file}: missing built HTML page`)
+      continue
+    }
+    const actual = readMetaProperty(readFileSync(fullPath, 'utf8'), 'article:section')
+    if (actual !== expected)
+      errors.push(`${file}: article:section is ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`)
+  }
+
   if (!existsSync(resolve(publicDir, 'pagefind/pagefind.js')))
     errors.push('site/public/pagefind/pagefind.js: missing Pagefind search index')
+  for (const asset of PRUNED_PAGEFIND_ASSETS) {
+    if (existsSync(resolve(publicDir, asset)))
+      errors.push(`site/public/${asset}: unused Pagefind stock UI asset should be pruned`)
+  }
   if (existsSync(resolve(publicDir, 'en.search-data.json')))
     errors.push('site/public/en.search-data.json: monolithic FlexSearch JSON should not be emitted when Pagefind is enabled')
 

@@ -13,7 +13,9 @@ Tooltips and dropdown menus always display your active binding automatically (fo
 
 ## Default keyboard shortcuts
 
-On macOS, modifiers use Apple symbols: `⌘` (Command), `⌃` (Control), `⌥` (Option), `⇧` (Shift), `⏎` (Enter), and `Esc` (Escape). On Windows and Linux, modifiers use `Ctrl`, `Alt`, and `Shift` joined with `+`.
+{{< table-filter placeholder="Filter shortcuts by action, key, or section..." >}}
+
+On macOS, modifiers use Apple symbols: `⌘` (Command), `⌃` (Control), `⌥` (Option), `⇧` (Shift), and `Esc` (Escape), with `Enter` for the Return key. On Windows and Linux, modifiers use `Ctrl`, `Alt`, and `Shift` joined with `+`.
 
 ### App & workspaces
 
@@ -59,10 +61,10 @@ On macOS, modifiers use Apple symbols: `⌘` (Command), `⌃` (Control), `⌥` (
 
 | Action | macOS | Windows / Linux | Notes |
 | --- | --- | --- | --- |
-| Resume Queue and Steer or Preempt | `⌘⏎` | `Ctrl+⏎` | Active in an agent tab when the composer is empty and no dialog or terminal is focused. |
+| Resume Queue and Steer or Preempt | `⌘Enter` | `Ctrl+Enter` | Active in an agent tab when the composer is empty and no dialog or terminal is focused. |
 | Send Message | Unbound | Unbound | Active only while the chat composer input is focused; bind a custom chord in Preferences if desired. |
 
-When a turn is running and the composer is empty, `⌘⏎` / `Ctrl+⏎` acts on the input queue in one step: it resumes a paused queue (or opens **Recover login** when paused for authentication recovery) and triggers **Steer** or **Preempt** on the first waiting item. When the composer has text, an attachment, or a pending prompt, `⌘⏎` / `Ctrl+⏎` submits the composer instead. See [Coding Agents](/docs/using/coding-agents/#input-queue-scheduling-and-steering).
+When a turn is running and the composer is empty, `⌘Enter` / `Ctrl+Enter` acts on the input queue in one step: it resumes a paused queue (or opens **Recover login** when paused for authentication recovery) and triggers **Steer** or **Preempt** on the first waiting item. When the composer has text, an attachment, or a pending prompt, `⌘Enter` / `Ctrl+Enter` submits the composer instead. See [Coding Agents](/docs/using/coding-agents/#input-queue-scheduling-and-steering).
 
 ### Terminal
 
@@ -102,7 +104,7 @@ Inside the chat composer, Enter behavior follows your **Enter key behavior** set
 
 | Mode | Send message | Insert newline |
 | --- | --- | --- |
-| **`⌘⏎` / `Ctrl+⏎` sends** (default) | `⌘⏎` / `Ctrl+⏎` | `Enter` |
+| **`⌘Enter` / `Ctrl+Enter` sends** (default) | `⌘Enter` / `Ctrl+Enter` | `Enter` |
 | **Enter sends** | `Enter` | `Shift+Enter` |
 
 Built-in Markdown editor keys stay fixed: `Tab` and `Shift+Tab` indent or outdent lists and headings, `Backspace` lifts blockquotes and code blocks, `⌘E` / `Ctrl+E` toggles inline code, and `Shift+Tab` toggles plan mode on supported providers.

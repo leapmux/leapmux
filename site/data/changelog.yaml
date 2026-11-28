@@ -1,0 +1,52 @@
+# Curated LeapMux release and development milestones (most recent first).
+# Rendered by /changelog/ (changelog-list shortcode) and / (changelog-strip shortcode).
+entries:
+  - date: "2026-11-28"
+    label: "2026-11-28"
+    title: "Native Session Forking, Agent Lineage & CLI Polish"
+    summary: "Fork coding-agent conversations natively across providers, trace parent-child agent lineage across Workers, and run cleaner CLI commands with fewer required flags."
+    highlights:
+      - "Native conversation-history forking across 10 providers in 7 protocol groups, plus `--fresh` to start a clean session."
+      - "Cross-Worker `spawned_by_agent_id` lineage for `leapmux agent wait children` and `leapmux agent tree`."
+      - "Automatic `.leapmux/tmp/` exclusion from git status, plus optional `--dir`, `--switch-to`, and `--section` flags."
+      - "New `leapmux skill diff` command and automatic Claude provider detection."
+
+  - date: "2026-11-26"
+    label: "2026-11-26"
+    title: "Documentation Overhaul, Pagefind Search & Apple Sign-In"
+    summary: "Launched redesigned documentation with chunked Pagefind search, dual-theme visuals, Sign in with Apple authentication, and stronger admin controls."
+    highlights:
+      - "Chunked Pagefind search with Popular Searches, 42 dual-theme screenshots, workflow MP4 clips, and a dedicated `/download/` page."
+      - "Sign in with Apple `form_post` authentication and `leapmux admin idp rotate-secret` credential rotation."
+      - "Elevated CLI `admin user` management support."
+      - "Hardened `/metrics` reverse-proxy guidance and deployment defaults."
+
+  - date: "2026-11-24"
+    label: "2026-11-24"
+    title: "Agent Skills Catalog, Structured Waits & Output Schemas"
+    summary: "Added built-in offline Agent Skills, JSON schema validation for structured replies, idempotent request receipts, and resumable event streams."
+    highlights:
+      - "Six bundled offline Agent Skills with `*os.Root` filesystem confinement and automatic Worker sync."
+      - "JSON `--output-schema` validation with automatic corrective retries when replies fail validation."
+      - "Durable `--request-id` receipts for idempotent CLI automation."
+      - "Resumable `leapmux events --checkpoint` streaming without missed updates."
+
+  - date: "2026-11-20"
+    label: "2026-11-20"
+    title: "Hybrid Post-Quantum E2EE & Remote Worker Tunnels"
+    summary: "Secured client-to-Worker channels with hybrid post-quantum encryption, outbound NAT-friendly Worker connections, and encrypted port forwarding."
+    highlights:
+      - "Hybrid post-quantum `Noise_NK` channels directly between clients and Workers."
+      - "Trust-on-first-use (TOFU) Worker key pinning in desktop and browser clients."
+      - "Outbound Worker WebSockets so remote devboxes behind NAT require zero inbound firewall ports."
+      - "Encrypted TCP and SOCKS5 port forwarding from the CLI and Desktop app."
+
+  - date: "2026-11-15"
+    label: "2026-11-15"
+    title: "31 Coding-Agent Providers, Worktree Isolation & Input Queues"
+    summary: "Delivered a unified multi-provider workspace with isolated git worktrees, mid-turn input steering, and integrated Quake terminals."
+    highlights:
+      - "Unified chat, diffs, and permission controls across 31 coding-agent providers."
+      - "Linked git worktree isolation with dirty-worktree close guards."
+      - "Worker-backed input queue with Steer, Preempt, and Schedule send modes."
+      - "Integrated Quake terminals alongside tiled and floating agent layouts."

@@ -77,7 +77,7 @@ leapmux auth list
 
 ### `leapmux auth use`
 
-Choose the hub that a command uses without --hub.
+Choose the hub that a command uses without `--hub`.
 
 _Mutates state · Does not support `-q` / `--quiet`._
 
@@ -117,7 +117,7 @@ leapmux auth credentials
 
 ### `leapmux auth change-password`
 
-Change your account password on the hub (prompts securely when --password is omitted).
+Change your account password on the hub (prompts securely when `--password` is omitted).
 
 _Mutates state._
 
@@ -179,7 +179,7 @@ leapmux context use --hub https://hub.example.com --provider claude
 
 ### `leapmux context clear`
 
-Remove saved CLI defaults (all by default, or specific fields with --field).
+Remove saved CLI defaults (all by default, or specific fields with `--field`).
 
 _Mutates state · Does not support `-q` / `--quiet`._
 
@@ -310,9 +310,9 @@ leapmux skill list [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | local target directory: auto (default; local only, rejected with --worker), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
-| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--target string` | local target directory: auto (default; local only, rejected with `--worker`), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
+
+_Common: `--scope`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux skill list
@@ -362,9 +362,9 @@ leapmux skill status [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | local target directory: auto (default; local only, rejected with --worker), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
-| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--target string` | local target directory: auto (default; local only, rejected with `--worker`), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
+
+_Common: `--scope`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux skill status
@@ -386,8 +386,9 @@ leapmux skill diff [skill]... [flags]
 | Flag | Description |
 |---|---|
 | `--target string` | local target directory: auto (default; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
-| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | include every bundled skill, including uninstalled skills |
+
+_Common: `--scope` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Show local edits or outdated files for installed skills.
@@ -404,11 +405,11 @@ leapmux skill diff --all --scope project
 
 Install bundled LeapMux SKILL.md playbooks (plus companion references and Codex metadata) into standard coding-agent skill directories so agents (Claude Code, Codex, OpenCode, Gemini CLI, Antigravity, Cursor, and others) can invoke them directly.
 
-By default, local installs use --target auto, which targets ~/.agents/skills (universal user scope discovered by Codex, OpenCode, Gemini CLI, Antigravity, and Cursor) plus ~/.claude/skills when ~/.claude exists and any existing tool-specific skills directories (codex, cursor, gemini). Pass --target auto|agents|claude|codex|cursor|gemini|dir:&lt;path&gt; or --scope project to target another location (auto and dir:&lt;path&gt; apply to local installation only). Pass --worker &lt;worker&gt; to enable and sync skills on a remote Worker over E2EE (with optional --auto-sync to keep them updated on Worker startup).
+By default, local installs use `--target` auto, which targets ~/.agents/skills (universal user scope discovered by Codex, OpenCode, Gemini CLI, Antigravity, and Cursor) plus ~/.claude/skills when ~/.claude exists and any existing tool-specific skills directories (codex, cursor, gemini). Pass `--target` auto|agents|claude|codex|cursor|gemini|dir:&lt;path&gt; or `--scope` project to target another location (auto and dir:&lt;path&gt; apply to local installation only). Pass `--worker` &lt;worker&gt; to enable and sync skills on a remote Worker over E2EE (with optional `--auto-sync` to keep them updated on Worker startup).
 
 Installing via the leapmux CLI always matches the installed binary offline; installing via "npx skills add leapmux/leapmux" tracks the main branch.
 
-Locally edited or unmanaged skill files are never overwritten unless --force is passed.
+Locally edited or unmanaged skill files are never overwritten unless `--force` is passed.
 
 _Aliases: `add` · Mutates state._
 
@@ -418,17 +419,17 @@ leapmux skill install [skill]... [flags]
 
 | Argument | Description |
 |---|---|
-| `[skill]...` | bundled skill names to install (or pass --all) |
+| `[skill]...` | bundled skill names to install (or pass `--all`) |
 
 | Flag | Description |
 |---|---|
 | `--target string` | target directory: auto (default locally; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt; (local only); repeat for multiple (repeatable) |
-| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | select every bundled skill |
 | `--force` | overwrite locally modified or unmanaged skill files |
-| `--auto-sync` | with --worker, keep enabled skills refreshed automatically on Worker startup |
-| `--no-auto-sync` | with --worker, disable automatic skill refresh on Worker startup |
+| `--auto-sync` | with `--worker`, keep enabled skills refreshed automatically on Worker startup |
+| `--no-auto-sync` | with `--worker`, disable automatic skill refresh on Worker startup |
+
+_Common: `--scope`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Install all bundled skills into auto-detected targets.
@@ -453,16 +454,16 @@ leapmux skill uninstall [skill]... [flags]
 
 | Argument | Description |
 |---|---|
-| `[skill]...` | bundled skill names to remove (or pass --all) |
+| `[skill]...` | bundled skill names to remove (or pass `--all`) |
 
 | Flag | Description |
 |---|---|
 | `--target string` | target directory: auto (default locally; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt; (local only); repeat for multiple (repeatable) |
-| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | select every bundled skill |
 | `--force` | also remove locally modified or unmanaged skill files |
-| `--no-auto-sync` | with --worker, disable automatic skill refresh on Worker startup |
+| `--no-auto-sync` | with `--worker`, disable automatic skill refresh on Worker startup |
+
+_Common: `--scope`, `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux skill uninstall leapmux-council
@@ -482,7 +483,7 @@ leapmux guide [topic] [flags]
 
 | Argument | Description |
 |---|---|
-| `[topic]` | a topic ID from --topics |
+| `[topic]` | a topic ID from `--topics` |
 
 | Flag | Description |
 |---|---|
@@ -513,11 +514,11 @@ leapmux version --hub https://hub.example.com
 
 Call one procedure of the hub or of a Worker, and print its response. Use it for a call that no other command makes.
 
-The request is protobuf JSON: the second argument, "-" to read it from standard input, or {} when the command line omits it. The command refuses a field that the request type does not declare, before it sends anything. The response prints as protobuf JSON with the field names of the .proto files, indented. --json prints it as the data of one envelope instead. A field that holds its default value does not print, as protobuf JSON states.
+The request is protobuf JSON: the second argument, "-" to read it from standard input, or {} when the command line omits it. The command refuses a field that the request type does not declare, before it sends anything. The response prints as protobuf JSON with the field names of the .proto files, indented. `--json` prints it as the data of one envelope instead. A field that holds its default value does not print, as protobuf JSON states.
 
 The command passes the request directly to the Hub or Worker. The receiving service applies its own authorization and validation. Check what the procedure does before calling one that changes state.
 
-The procedures are the methods of the services in proto/leapmux/v1. A procedure of a hub service runs on the hub. A procedure of a Worker service needs --worker, the Worker that serves the call. A procedure that streams does not run here. "leapmux events" prints the events of agents and terminals, and "leapmux agent messages --follow" prints the messages of an agent.
+The procedures are the methods of the services in proto/leapmux/v1. A procedure of a hub service runs on the hub. A procedure of a Worker service needs `--worker`, the Worker that serves the call. A procedure that streams does not run here. "leapmux events" prints the events of agents and terminals, and "leapmux agent messages `--follow`" prints the messages of an agent.
 
 Inside a LeapMux tab, the socket of the tab relays these hub procedures alone:
 
@@ -544,7 +545,7 @@ Inside a LeapMux tab, the socket of the tab relays these hub procedures alone:
 - leapmux.v1.WorkspaceService/ReadLayoutEvents
 - leapmux.v1.WorkspaceService/RenameWorkspace
 
-Pass --hub &lt;url&gt; to call another hub procedure with your own login.
+Pass `--hub` &lt;url&gt; to call another hub procedure with your own login.
 
 _Mutates state · Does not support `-q` / `--quiet`._
 

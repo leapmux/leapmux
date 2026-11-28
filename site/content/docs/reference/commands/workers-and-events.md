@@ -48,9 +48,7 @@ Show what the hub knows about a worker (default: the worker of this tab).
 leapmux worker get [worker] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[worker]` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[worker]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worker get
@@ -65,9 +63,7 @@ Show what an online worker reports about itself: name, OS, home and build.
 leapmux worker info [worker] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[worker]` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[worker]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worker info
@@ -81,9 +77,7 @@ Measure end-to-end encrypted round-trip latency to an online worker.
 leapmux worker ping [worker] [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `[worker]` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `[worker]` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worker ping
@@ -100,9 +94,7 @@ _Aliases: `rm` · Mutates state._
 leapmux worker deregister <worker> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<worker>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<worker>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux worker deregister name:old-box
@@ -248,9 +240,7 @@ leapmux tunnel forward <spec> [flags]
 |---|---|
 | `<spec>` | Port forward specification: "[bind:]&lt;local-port&gt;:&lt;target-host&gt;:&lt;target-port&gt;" (for example "5432:127.0.0.1:5432" or "0.0.0.0:8080:localhost:3000"). |
 
-| Flag | Description |
-|---|---|
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Forward local port 5432 to Postgres on a remote Worker.
@@ -262,7 +252,7 @@ leapmux tunnel forward 0.0.0.0:8080:localhost:3000 --worker name:dev-box
 
 ### `leapmux tunnel connect`
 
-Open a Noise_NK end-to-end encrypted channel to a Worker, dial &lt;host&gt;:&lt;port&gt; from that Worker, and bridge stdin and stdout directly to the TCP stream. Useful with "ssh -o ProxyCommand='leapmux tunnel connect %h:%p --worker &lt;name&gt;'".
+Open a Noise_NK end-to-end encrypted channel to a Worker, dial &lt;host&gt;:&lt;port&gt; from that Worker, and bridge stdin and stdout directly to the TCP stream. Useful with "ssh -o ProxyCommand='leapmux tunnel connect %h:%p `--worker` &lt;name&gt;'".
 
 _Aliases: `nc` · Does not support `-q` / `--quiet`._
 
@@ -274,9 +264,7 @@ leapmux tunnel connect <target> [flags]
 |---|---|
 | `<target>` | Target address in "&lt;host&gt;:&lt;port&gt;" form (for example "127.0.0.1:22" or "[::1]:8080"). |
 
-| Flag | Description |
-|---|---|
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Use as an SSH ProxyCommand to reach a remote Worker behind NAT.
@@ -285,26 +273,26 @@ ssh -o ProxyCommand="leapmux tunnel connect %h:%p --worker name:build-box" user@
 
 ## `leapmux events`
 
-Print what happens in your workspaces as it happens: tabs that open, close and move, what each agent does and asks, what each terminal reports, and the health of the stream itself. Each line is the local time, the kind, the ids, and a summary; --json prints one {"data": …} envelope per line instead, with the full ids and a field for each fact. Ctrl-C ends the stream with exit status 0.
+Print what happens in your workspaces as it happens: tabs that open, close and move, what each agent does and asks, what each terminal reports, and the health of the stream itself. Each line is the local time, the kind, the ids, and a summary; `--json` prints one {"data": …} envelope per line instead, with the full ids and a field for each fact. Ctrl-C ends the stream with exit status 0.
 
-The stream watches every workspace, or the one that --workspace selects. A tab that opens while the stream runs joins it, and a tab that closes leaves it. With --tab, the stream watches that tab only and follows its moves between workspaces. If --workspace also selects a workspace, the stream ends when the tab leaves it. The stream also ends when the selected tab closes or the selected workspace is deleted.
+The stream watches every workspace, or the one that `--workspace` selects. A tab that opens while the stream runs joins it, and a tab that closes leaves it. With `--tab`, the stream watches that tab only and follows its moves between workspaces. If `--workspace` also selects a workspace, the stream ends when the tab leaves it. The stream also ends when the selected tab closes or the selected workspace is deleted.
 
-The first stream.ready line reports the sources that the stream watches and which of them can deliver. Read the state that you need after it, such as "leapmux agent list". A new run without --checkpoint starts from the present.
+The first stream.ready line reports the sources that the stream watches and which of them can deliver. Read the state that you need after it, such as "leapmux agent list". A new run without `--checkpoint` starts from the present.
 
-Use --tab with --checkpoint to resume the retained events of one agent or terminal. The command saves its position after writing each selected event. Reuse the same file and --kind selection on the next run. A record can appear again if the process stops after writing its line and before saving its cursor. Use journal_id, tab_stream_id and sequence to deduplicate. The Worker reports gaps when it cannot supply retained history. A replayed agent request has a request_instance that correlates it with its end. It has a request handle only while that exact instance still needs an answer. With --checkpoint, --limit counts only the printed non-stream events. A --tab checkpoint follows the tab across workspace moves and does not take --workspace. After the Worker retires an agent or terminal, resume with its full ID and the same checkpoint. The stream exits after stream.retired confirms the final Worker position. Closing a subagent transcript keeps its history open. A terminal's shell can also exit while its tab stays open.
+Use `--tab` with `--checkpoint` to resume the retained events of one agent or terminal. The command saves its position after writing each selected event. Reuse the same file and `--kind` selection on the next run. A record can appear again if the process stops after writing its line and before saving its cursor. Use journal_id, tab_stream_id and sequence to deduplicate. The Worker reports gaps when it cannot supply retained history. A replayed agent request has a request_instance that correlates it with its end. It has a request handle only while that exact instance still needs an answer. With `--checkpoint`, `--limit` counts only the printed non-stream events. A `--tab` checkpoint follows the tab across workspace moves and does not take `--workspace`. After the Worker retires an agent or terminal, resume with its full ID and the same checkpoint. The stream exits after stream.retired confirms the final Worker position. Closing a subagent transcript keeps its history open. A terminal's shell can also exit while its tab stays open.
 
-Use --checkpoint without --tab or --workspace to resume account events when --kind selects Worker event families (or when --kind is omitted). The checkpoint stores a separate position for each selected Worker event family and for the Hub layout when selected. A membership change can leave a gap in Worker history. The stream reports the gap before recording the new inventory. When --kind selects only Hub layout kinds (workspace.* or tab.*), an unscoped --checkpoint uses a Hub-wide layout checkpoint so a workspace:read credential works without worker:read.
+Use `--checkpoint` without `--tab` or `--workspace` to resume account events when `--kind` selects Worker event families (or when `--kind` is omitted). The checkpoint stores a separate position for each selected Worker event family and for the Hub layout when selected. A membership change can leave a gap in Worker history. The stream reports the gap before recording the new inventory. When `--kind` selects only Hub layout kinds (workspace.* or tab.*), an unscoped `--checkpoint` uses a Hub-wide layout checkpoint so a workspace:read credential works without worker:read.
 
-Use --workspace with --checkpoint to resume that workspace's committed Hub events. Resume with the same scope and kinds. For a deleted workspace, pass its full ID. The command exits after it reaches the final layout position. The Hub retains tabs that opened, moved, or closed between runs.
+Use `--workspace` with `--checkpoint` to resume that workspace's committed Hub events. Resume with the same scope and kinds. For a deleted workspace, pass its full ID. The command exits after it reaches the final layout position. The Hub retains tabs that opened, moved, or closed between runs.
 
-In a stream without --checkpoint, when the Hub or a Worker cannot deliver, it prints stream.unavailable and retries. When the source delivers again, it prints stream.gap with the kinds that it may have lost, then each change of an agent's activity and status, and of the tabs and workspaces, that happened during the gap, marked as reconciled. --kind does not hide these lines: a stream event that it does not select prints on stderr.
+In a stream without `--checkpoint`, when the Hub or a Worker cannot deliver, it prints stream.unavailable and retries. When the source delivers again, it prints stream.gap with the kinds that it may have lost, then each change of an agent's activity and status, and of the tabs and workspaces, that happened during the gap, marked as reconciled. `--kind` does not hide these lines: a stream event that it does not select prints on stderr.
 
 Kinds:
 
 - workspace.created: a workspace was created
 - workspace.renamed: a workspace has a new title
 - workspace.deleted: a workspace was deleted
-- tab.opened: a tab opened, or it moved into the workspace that --workspace selects
+- tab.opened: a tab opened, or it moved into the workspace that `--workspace` selects
 - tab.closed: a tab closed
 - tab.moved: a tab moved to another workspace
 - tab.renamed: a tab was renamed on its Worker
@@ -329,7 +317,7 @@ Kinds:
 - stream.ready: the stream watches every source of its scope
 - stream.unavailable: the hub, a Worker, or a Worker for one tab cannot deliver events; retrying says whether the stream tries again
 - stream.gap: a source delivers again; events of the kinds in lost, between since and time, may be lost
-- stream.heartbeat: the stream runs; only --heartbeat prints it
+- stream.heartbeat: the stream runs; only `--heartbeat` prints it
 - stream.retired: the Worker finished the checkpointed tab's event history
 
 _Aliases: `ev` · Does not support `-q` / `--quiet`._
@@ -379,9 +367,9 @@ leapmux events --checkpoint .leapmux/tmp/account-events.json --kind terminal --j
 
 Show a notification in every LeapMux window that you have open: a toast with the title and the body. While a window is hidden, it also shows a desktop notification, when "Desktop notifications" is on in Preferences.
 
-The Worker identifies the sending tab when the command runs inside one. Use --tab or --workspace to attach a destination the user can open.
+The Worker identifies the sending tab when the command runs inside one. Use `--tab` or `--workspace` to attach a destination the user can open.
 
-With --tab, the notification goes through the destination's Worker. For other notifications, the command uses the sending tab's Worker. Outside a tab, pass --worker. A window hears a Worker while one of your tabs runs there.
+With `--tab`, the notification goes through the destination's Worker. For other notifications, the command uses the sending tab's Worker. Outside a tab, pass `--worker`. A window hears a Worker while one of your tabs runs there.
 
 The command returns the notification ID. Use "notification list" to read the Worker's recent notifications, and "notification clear" to remove one by ID. A window that connects later does not show an old toast.
 
@@ -402,7 +390,8 @@ leapmux notify <title> [flags]
 | `--body string` | more text below the title ("-" reads stdin) |
 | `--tab string` | open this tab from the notification |
 | `--workspace string` | open this workspace from the notification |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux notify "Tests passed"
@@ -427,9 +416,9 @@ Aliases: `notif`.
 
 Show a notification in every LeapMux window that you have open: a toast with the title and the body. While a window is hidden, it also shows a desktop notification, when "Desktop notifications" is on in Preferences.
 
-The Worker identifies the sending tab when the command runs inside one. Use --tab or --workspace to attach a destination the user can open.
+The Worker identifies the sending tab when the command runs inside one. Use `--tab` or `--workspace` to attach a destination the user can open.
 
-With --tab, the notification goes through the destination's Worker. For other notifications, the command uses the sending tab's Worker. Outside a tab, pass --worker. A window hears a Worker while one of your tabs runs there.
+With `--tab`, the notification goes through the destination's Worker. For other notifications, the command uses the sending tab's Worker. Outside a tab, pass `--worker`. A window hears a Worker while one of your tabs runs there.
 
 The command returns the notification ID. Use "notification list" to read the Worker's recent notifications, and "notification clear" to remove one by ID. A window that connects later does not show an old toast.
 
@@ -450,7 +439,8 @@ leapmux notification send <title> [flags]
 | `--body string` | more text below the title ("-" reads stdin) |
 | `--tab string` | open this tab from the notification |
 | `--workspace string` | open this workspace from the notification |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux notification send "Tests passed"
@@ -475,9 +465,7 @@ _Aliases: `ls`._
 leapmux notification list [flags]
 ```
 
-| Flag | Description |
-|---|---|
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux notification list --worker name:build-box
@@ -495,12 +483,13 @@ leapmux notification clear [notification-id]... [flags]
 
 | Argument | Description |
 |---|---|
-| `[notification-id]...` | One or more IDs returned by notify or notification list (or pass --all). |
+| `[notification-id]...` | One or more IDs returned by notify or notification list (or pass `--all`). |
 
 | Flag | Description |
 |---|---|
 | `--all` | clear every recent notification on the Worker |
-| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--worker` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux notification clear 7fe1879a7fe1879a7fe1879a7fe1879a7fe1879a7fe1879a --worker name:build-box

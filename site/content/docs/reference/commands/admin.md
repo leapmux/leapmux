@@ -17,6 +17,8 @@ These selectors and flags repeat across commands on this page.
 
 | Selector / Flag | Description |
 |---|---|
+| `<key>` | A setting key, as "leapmux admin settings list" prints it. |
+| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
 | `--user string` | filter by user: username, "id:&lt;id&gt;", "username:&lt;name&gt;", or user ID prefix (omit for all users) |
 | `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
 | `<idp>` | A sign-in provider id or unique prefix, as "leapmux admin idp list" prints it. |
@@ -52,9 +54,7 @@ Show one setting, its value and its shape.
 leapmux admin settings get <key> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<key>` | A setting key, as "leapmux admin settings list" prints it. |
+_Common: `<key>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin settings get session_duration_seconds
@@ -72,8 +72,9 @@ leapmux admin settings set <key> <value> [flags]
 
 | Argument | Description |
 |---|---|
-| `<key>` | A setting key, as "leapmux admin settings list" prints it. |
 | `<value>` | A JSON value. A word that is not JSON is stored as a string. |
+
+_Common: `<key>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin settings set signup_enabled false
@@ -94,8 +95,9 @@ leapmux admin settings set-secret <key> <json> [flags]
 
 | Argument | Description |
 |---|---|
-| `<key>` | A setting key, as "leapmux admin settings list" prints it. |
 | `<json>` | A JSON object of the secret fields, such as {"password":"..."}. |
+
+_Common: `<key>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin settings set-secret smtp '{"password":"..."}'
@@ -111,9 +113,7 @@ _Mutates state._
 leapmux admin settings reset <key> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<key>` | A setting key, as "leapmux admin settings list" prints it. |
+_Common: `<key>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin settings reset session_duration_seconds
@@ -154,9 +154,7 @@ Show a user.
 leapmux admin user get <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin user get alice
@@ -197,16 +195,14 @@ _Mutates state._
 leapmux admin user update <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
-
 | Flag | Description |
 |---|---|
 | `--display-name string` | new display name |
 | `--email string` | new email address |
 | `--email-verified string` | mark email as verified (one of: true, false) |
 | `--clear-pending-email` | clear any in-flight email verification (token + attempt counter) |
+
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin user update alice --display-name "Alice Kim"
@@ -222,13 +218,11 @@ _Aliases: `rm` · Mutates state · Does not support `-q` / `--quiet`._
 leapmux admin user delete <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
-
 | Flag | Description |
 |---|---|
 | `--force` | required to delete an admin user |
+
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin user delete alice
@@ -244,9 +238,7 @@ _Mutates state._
 leapmux admin user grant-admin <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin user grant-admin alice
@@ -262,13 +254,11 @@ _Mutates state._
 leapmux admin user revoke-admin <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
-
 | Flag | Description |
 |---|---|
 | `--force` | required to remove your own administrator access |
+
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin user revoke-admin alice
@@ -284,13 +274,11 @@ _Mutates state._
 leapmux admin user reset-password <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
-
 | Flag | Description |
 |---|---|
 | `--password string` | new password (prompted for when omitted, so it stays out of the shell history) |
+
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 # Prompt for the new password.
@@ -315,7 +303,8 @@ leapmux admin session list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
+
+_Common: `--user` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin session list
@@ -352,9 +341,7 @@ _Mutates state · Does not support `-q` / `--quiet`._
 leapmux admin session revoke-user <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin session revoke-user alice
@@ -392,8 +379,9 @@ leapmux admin worker list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--status string` | worker status filter (one of: active, deregistering, deleted, all; default: active) |
+
+_Common: `--user` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin worker list
@@ -550,10 +538,6 @@ _Mutates state._
 leapmux admin app update <app> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--name string` | new app name |
@@ -561,6 +545,8 @@ leapmux admin app update <app> [flags]
 | `--redirect-uri string` | replace the redirect list (comma-separated) |
 | `--scope string` | replace the permission ceiling; space-separated permissions this app may ask for, from: account:read, account:write, admin:apps, admin:read, admin:settings, admin:users, admin:workers, agent:read, agent:write, file:read, git:read, git:write, terminal:read, terminal:write, tunnel:open, worker:admin, worker:read, workspace:read, workspace:write |
 | `--grant-type string` | replace the grant-type list (comma-separated) |
+
+_Common: `<app>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin app update lmx_app_x1y2 --name "Release bot 2"
@@ -576,9 +562,7 @@ _Mutates state._
 leapmux admin app verify <app> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<app>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin app verify lmx_app_x1y2
@@ -594,9 +578,7 @@ _Mutates state._
 leapmux admin app unverify <app> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<app>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin app unverify lmx_app_x1y2
@@ -612,9 +594,7 @@ _Mutates state._
 leapmux admin app allow-elevation <app> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<app>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin app allow-elevation lmx_app_x1y2
@@ -630,9 +610,7 @@ _Mutates state._
 leapmux admin app deny-elevation <app> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<app>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin app deny-elevation lmx_app_x1y2
@@ -648,9 +626,7 @@ _Mutates state._
 leapmux admin app revoke <app> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<app>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin app revoke lmx_app_x1y2
@@ -666,9 +642,7 @@ _Aliases: `rm` · Mutates state._
 leapmux admin app delete <app> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<app>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin app delete lmx_app_x1y2
@@ -727,13 +701,11 @@ _Aliases: `rm` · Mutates state._
 leapmux admin idp remove <idp> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--force` | required to remove a provider that is the last login method of an account |
+
+_Common: `<idp>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin idp remove 3hKd9s
@@ -749,9 +721,7 @@ _Mutates state._
 leapmux admin idp enable <idp> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<idp>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin idp enable 3hKd9s
@@ -767,9 +737,7 @@ _Mutates state._
 leapmux admin idp disable <idp> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<idp>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin idp disable 3hKd9s
@@ -785,13 +753,11 @@ _Mutates state._
 leapmux admin idp rotate-secret <idp> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--client-secret string` | new OAuth client secret (required) |
+
+_Common: `<idp>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin idp rotate-secret 3hKd9s --client-secret new-s3cr3t
@@ -918,14 +884,12 @@ _Mutates state._
 leapmux admin rate-limit set <operation> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
-
 | Flag | Description |
 |---|---|
 | `--max-attempts int` | allowed failed attempts (or admitted requests for anonymous/setup limits) per window (1-1000); 0 restores the default |
 | `--window int` | window seconds (60-86400); 0 restores the default |
+
+_Common: `<operation>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin rate-limit set elevation --max-attempts 5 --window 900
@@ -941,9 +905,7 @@ _Mutates state._
 leapmux admin rate-limit enable <operation> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<operation>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin rate-limit enable elevation
@@ -959,9 +921,7 @@ _Mutates state._
 leapmux admin rate-limit disable <operation> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<operation>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin rate-limit disable elevation
@@ -977,9 +937,7 @@ _Mutates state._
 leapmux admin rate-limit reset <operation> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
+_Common: `<operation>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin rate-limit reset elevation
@@ -1003,9 +961,10 @@ leapmux admin api-token list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--client-id string` | filter by app (empty = all apps) |
 | `--include-revoked` | include revoked tokens (forensics; default lists live tokens only) |
+
+_Common: `--user` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin api-token list
@@ -1024,16 +983,14 @@ _Mutates state._
 leapmux admin api-token issue <user> [flags]
 ```
 
-| Argument | Description |
-|---|---|
-| `<user>` | A username, "id:&lt;id&gt;" for a user id, or "username:&lt;name&gt;". |
-
 | Flag | Description |
 |---|---|
 | `--client-id string` | the app this credential belongs to (empty = the built-in service-account registration) |
 | `--installation-name string` | human-visible name for this installation, e.g. ci-runner-3 (required) |
 | `--ttl int` | fixed lifetime in seconds, with no refresh token (0 = the renewing credential: 1h access + refresh) |
 | `--scope string` | space- or comma-separated permissions, e.g. "file:read git:read" (empty = everything except admin:*) |
+
+_Common: `<user>` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin api-token issue ci-bot --installation-name ci-runner-3 --scope "workspace:read"
@@ -1075,8 +1032,9 @@ leapmux admin delegation-token list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--include-revoked` | include revoked tokens (forensics; default lists live tokens only) |
+
+_Common: `--user` (see [common arguments and flags](#common-arguments-and-flags))._
 
 ```sh
 leapmux admin delegation-token list

@@ -43,13 +43,21 @@ The **Resume an existing session** menu merges LeapMux's own agent history with 
 
 Most resumption happens automatically: tabs and transcripts survive Hub restarts, Worker restarts, and browser reconnects. When LeapMux respawns a process, it reconnects through the provider's native resume mechanism. If native resume fails, LeapMux reports the error and keeps the saved transcript instead of replacing it with an empty session; send `/clear` to begin fresh.
 
+### Forking sessions
+
+Run `leapmux agent fork <agent>` to branch a conversation into a new agent tab. On providers that support native session forking (see [Supported Agents & Feature Matrix](/docs/reference/supported-agents/)), LeapMux clones both the provider's native session history and the Worker transcript so the new tab keeps the conversation context and prompt cache.
+
+Pass `--fresh` to copy only the provider, model, startup options, and working directory into a clean empty session instead of cloning history. Because `--fresh` does not clone native session state, it works across Workers (`--worker`) and while the source agent is mid-turn.
+
+Session forking is currently available through the CLI (`leapmux agent fork`). See [Control Command Reference — Agents](/docs/reference/commands/agents/) for all flags, including `--worktree` and `--message`.
+
 ## Chatting with an agent
 
 {{< screenshot src="coding-agent-chat" alt="LeapMux coding agent pane with Claude Code, Antigravity, and Codex tabs, an inline diff edit card, a permission prompt banner, and composer chips" caption="An active coding agent pane displaying inline edit diffs, a permission prompt banner, and composer setting chips." width="992" height="900" >}}
 
 The composer below the transcript is a single-box Markdown editor. It starts one line tall and expands automatically for multi-line messages. Standard Markdown shortcuts format as you type (`**bold**`, `` `code` ``, `# heading`, `- list`, code fences, and links; click any link to edit its URL).
 
-- **Sending:** Press `⌘⏎` / `Ctrl+⏎` (default) or click **Send**. You can switch to plain `Enter` sends from the composer **[+]** menu or **Preferences → Chat & Composer**; see [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/#chat-editor-keys) for all editor keys.
+- **Sending:** Press `⌘Enter` / `Ctrl+Enter` (default) or click **Send**. You can switch to plain `Enter` sends from the composer **[+]** menu or **Preferences → Chat & Composer**; see [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/#chat-editor-keys) for all editor keys.
 - **Attachments:** Use **[+] → Attach file...**, paste from the clipboard, or drag and drop files onto the editor. Supported attachment types vary by provider (see [Supported Agents & Feature Matrix](/docs/reference/supported-agents/)). For example, ZCode rejects image attachments when the selected model is text-only.
 - **Interrupting a turn:** While the agent works with no pending approval prompt, click the square **Interrupt** button to stop the turn cleanly via the provider's native interrupt signal. When a permission or question prompt is active, answer or reject the prompt instead.
 
@@ -90,7 +98,7 @@ Immediate items always deliver ahead of scheduled items, and scheduled items del
 | **Preempt** | Interrupts the active turn and dispatches the first waiting item next on providers that support preemption instead of steering. |
 | **Pause Queue** / **Resume Queue** | Holds or resumes delivery. While paused, the Send button reads **Queue**. When paused for authentication recovery, the button reads **Recover login**. |
 
-With an **empty composer** while a turn runs, pressing `⌘⏎` / `Ctrl+⏎` resumes a paused queue (or opens **Recover login** when login recovery is required) and triggers **Steer** or **Preempt** on the first waiting item in one step. Clicking the row's **Steer** or **Preempt** button directly acts on that item without unpausing a paused queue. If a provider drops a steered item before reading it (for example, after an interrupt), LeapMux re-queues it automatically and notes that in the transcript.
+With an **empty composer** while a turn runs, pressing `⌘Enter` / `Ctrl+Enter` resumes a paused queue (or opens **Recover login** when login recovery is required) and triggers **Steer** or **Preempt** on the first waiting item in one step. Clicking the row's **Steer** or **Preempt** button directly acts on that item without unpausing a paused queue. If a provider drops a steered item before reading it (for example, after an interrupt), LeapMux re-queues it automatically and notes that in the transcript.
 
 ### Messages from other agents
 

@@ -5,427 +5,205 @@ type: docs
 weight: 1
 ---
 
-This is the quick-lookup reference for the `leapmux` command line (also available as the short `lmx` alias). It covers the command trees, daemon lifecycle commands (`leapmux up`, `leapmux down`, and `leapmux daemon <solo|hub|worker|dev>`), Hub resolution order, `version`, `recover`, shell completions, and environment variables.
+Quick-lookup reference for `leapmux` (short alias `lmx`): command trees, daemon lifecycle (`up`, `down`, `daemon <solo|hub|worker|dev>`), Hub resolution order, `version`, `recover`, `commands`, `completion`, environment variables, and file locations.
 
-For task-oriented guides, see [Running LeapMux](/docs/admin/running-leapmux/), [Starting and Stopping](/docs/admin/starting-and-stopping/), [Configuration Reference](/docs/admin/configuration-reference/), [Recovery](/docs/admin/recover/), and [CLI Guide](/docs/using/cli-guide/).
+For task guides, see [Running LeapMux](/docs/admin/running-leapmux/), [Starting and Stopping](/docs/admin/starting-and-stopping/), [Configuration Reference](/docs/admin/configuration-reference/), [Recovery](/docs/admin/recover/), and [CLI Guide](/docs/using/cli-guide/).
 
-## Which `leapmux` command tree?
+## Command trees
 
-`leapmux` ships as a single binary with four distinct command trees:
+`leapmux` ships as one binary with four command trees:
 
-| Command tree | What it does | Where it runs | Auth required | Full reference |
+| Tree | Purpose | Runs on | Auth | Reference |
 |---|---|---|---|---|
-| `up`, `down`, `daemon <solo\|hub\|worker\|dev>` | Start, stop, register, and manage local LeapMux services | Host machine (manages local OS service or foreground process) | None (`daemon worker register` takes a Hub registration key) | [Starting and Stopping](/docs/admin/starting-and-stopping/) |
-| Control commands (`agent`, `terminal`, `workspace`, `file`, `git`, …) | Drive a running Hub and its Workers over RPC | Any machine, scripts, or inside spawned LeapMux tabs | `leapmux auth login`, local solo IPC, or Worker-injected tab token | [Control Command Reference](/docs/reference/commands/) |
-| `admin` | Online Hub administration (users, sessions, settings, apps, Workers) | External shell against a running Hub (refuses to run inside a tab) | Administrator login (sensitive writes require step-up elevation) | [Admin CLI](/docs/admin/admin-cli/) |
-| `recover` | Offline break-glass repair (first-admin bootstrap, password reset, key rotation, DB inspection) | Hub host with the Hub **stopped** (opens the database directly) | Local filesystem access to Hub data dir and config | [Recovery](/docs/admin/recover/) |
+| `up`, `down`, `daemon <solo\|hub\|worker\|dev>` | Manage local OS services or foreground daemons | Host | None (`worker register` takes a key) | [Starting and Stopping](/docs/admin/starting-and-stopping/) |
+| Control (`agent`, `terminal`, `workspace`, `file`, `git`, …) | Drive a Hub and Workers over RPC | Any machine, scripts, or tabs | `auth login`, solo IPC, or tab token | [Control Command Reference](/docs/reference/commands/) |
+| `admin` | Online Hub admin (users, sessions, settings, apps, Workers) | External shell (refuses in tab) | Admin login + step-up | [Admin CLI](/docs/admin/admin-cli/) |
+| `recover` | Offline break-glass repair (admin, passwords, keys, DB) | Hub host (Hub **stopped**) | Local Hub data dir + config | [Recovery](/docs/admin/recover/) |
 
 ### Disambiguating Worker deregistration commands
 
-Three commands share the words `worker deregister` and act on different layers:
-
-| Command | Target | Where to run it | What it removes |
+| Command | Target | Where to run | Effect |
 |---|---|---|---|
-| `leapmux daemon worker deregister` | The local Worker in `--data-dir` | On the Worker machine, **with the Worker stopped** | Deletes this Worker on the Hub, then deletes local `state.json` (keeps `worker.db`) |
-| `leapmux worker deregister <worker>` | One of **your own** Workers | Anywhere with a user CLI login | Deletes the Worker record on the Hub over RPC |
-| `leapmux admin worker deregister <worker>` | **Any user's** Worker | External shell with an **admin** login | Deletes the Worker record on the Hub over RPC |
+| `leapmux daemon worker deregister` | Local Worker in `--data-dir` | Worker host, **stopped** | Deletes Worker on Hub and removes `state.json` (keeps `worker.db`) |
+| `leapmux worker deregister <worker>` | Your own Worker | Anywhere with user login | Deletes Worker record on Hub over RPC |
+| `leapmux admin worker deregister <worker>` | Any user's Worker | External shell, **admin** login | Deletes Worker record on Hub over RPC |
 
 ## Hub resolution order
 
-When you run a control command or `leapmux admin`, the CLI resolves which Hub to contact in this exact precedence order:
+Control commands and `leapmux admin` resolve the Hub in this order:
 
 | Priority | Source | Notes |
 |---|---|---|
-| 1 | `--hub <url>` flag | Explicit flag always wins, even inside a LeapMux tab. |
-| 2 | `LEAPMUX_CONTROL_SOCK` | Worker-injected local inter-process communication (IPC) socket inside a spawned tab (paired with `LEAPMUX_CONTROL_TOKEN`). |
+| 1 | `--hub <url>` | Always wins, even inside a tab. |
+| 2 | `LEAPMUX_CONTROL_SOCK` | Worker-injected local inter-process communication (IPC) socket inside a tab (with `LEAPMUX_CONTROL_TOKEN`). |
 | 3 | `LEAPMUX_HUB` | Environment variable for external shells and scripts. |
-| 4 | `context.json` | Persistent default Hub set with `leapmux context use --hub <url>` or `leapmux auth use <url>`. |
-| 5 | Stored credential default | Uses the sole stored credential when only one exists. |
-| 6 | Local auto-discovery | Connects to a live local `solo` or `dev` Hub IPC socket when no stored credential file exists. |
+| 4 | `context.json` | Default set via `leapmux context use --hub <url>` or `leapmux auth use <url>`. |
+| 5 | Stored credential default | Used when only one stored credential exists. |
+| 6 | Local auto-discovery | Live local `solo` or `dev` IPC socket when no credential file exists. |
 
-## Top-level usage
+## Top-level command groups and global flags
 
-`leapmux --help` prints:
+Run `leapmux --help` or `leapmux help <command>` for live usage. Unambiguous command prefixes work interactively, though scripts should use full names or documented aliases (`ag`, `term`, `ws`, `ls`, `rm`, `mv`).
 
-```text
-LeapMux runs coding agents and terminals on your machines and shows them in
-your browser.
+| Group | Commands | Reference |
+|---|---|---|
+| Daily Work | `tree`, `workspace`, `section`, `tab`, `agent`, `terminal`, `events`, `notify`, `notification` | [Workspaces & Tabs](/docs/reference/commands/workspaces-and-tabs/), [Agents](/docs/reference/commands/agents/), [Terminals](/docs/reference/commands/terminals/) |
+| Files & Git | `file`, `git`, `worktree` | [Git & Files](/docs/reference/commands/git-and-files/) |
+| Layout & Windows | `tile`, `window`, `layout` | [Layout & Windows](/docs/reference/commands/layout-and-windows/) |
+| Fleet & Auth | `whoami`, `doctor`, `auth`, `context`, `settings`, `worker`, `tunnel` | [Auth & Session](/docs/reference/commands/auth-and-session/), [Workers & Events](/docs/reference/commands/workers-and-events/) |
+| Admin & Recovery | `admin`, `rpc`, `recover` | [Admin](/docs/reference/commands/admin/), [Recovery](/docs/admin/recover/) |
+| Meta | `guide`, `skill`, `version`, `commands`, `completion`, `help` | [CLI Guide](/docs/using/cli-guide/) |
+| Local Daemon | `daemon`, `up` (`daemon solo start`), `down` (`daemon solo stop`) | [Mode commands](#mode-commands) |
 
-Start a local instance with "leapmux up" (or "leapmux daemon solo start").
-Drive workspaces, agents, terminals, files, and layouts directly with
-"leapmux <command>" (or the short "lmx" alias).
+**Global flags** (control commands; see [CLI Guide](/docs/using/cli-guide/) for output schemas):
 
-Usage:
-  leapmux <command>
+| Flag | Default | Meaning |
+|---|---|---|
+| `--hub <url>` | auto | Target Hub URL or local IPC socket. |
+| `--format <fmt>` | `text` | `text`, `json`, `ndjson`, or `tsv`. |
+| `--json` | off | One `{"data": ...}` JSON line per result. |
+| `-q`, `--quiet` | off | Bare result IDs, one per line. |
+| `--fields <cols>` | all | Comma-separated columns or fields. |
+| `--no-header` | off | Omit table/TSV header row. |
+| `-w`, `--wide` | off | Do not truncate columns. |
+| `--color <mode>` | `auto` | TTY ANSI color: `auto`, `always`, `never`. |
+| `-v`, `--version` | — | Binary build version offline (top-level only). |
 
-Daily Work:
-  tree          Show a hierarchical overview of sections, workspaces, tiles, agents, terminals and files
-  workspace     List, create, organize, export, apply, and delete workspaces
-  section       List, create, rename, move, and delete sidebar sections
-  tab           List, close, rename, move and reveal tabs of every type, and set their status
-  agent         Start, message, watch and configure coding agents
-  terminal      Open, type into, read and resize terminals
-  events        Print what happens in your workspaces as it happens, one event per line
-  notify        Show a notification in every LeapMux window that you have open
-  notification  Send, list and clear recent Worker notifications
-
-Files & Git:
-  file          List, read, search, glob, and open files on a worker
-  git           Read and change the git state of a directory on a worker
-  worktree      List, inspect, create, and remove git worktrees on a worker
-
-Layout & Windows:
-  tile          Split, close and arrange the tiles of a workspace
-  window        List, create, position, resize, and close floating windows
-  layout        Read, replace and watch the whole tile tree of a workspace
-
-Fleet & Auth:
-  whoami        Show the identity and tab context that this CLI acts as
-  doctor        Check local daemons, Hub connectivity, auth, pins, and online Workers
-  auth          Sign this CLI in to a hub, and manage its credentials
-  context       Show, set, or clear persistent default hub, worker, workspace, and provider outside a tab
-  settings      Read and change your account preferences on the hub
-  worker        List workers, read what they report, and register new ones
-  tunnel        Forward TCP ports or connect stdio to a host on a worker over E2EE
-
-Admin & Recovery:
-  admin         Administer the hub; needs an administrator's login (offline repair: "leapmux recover")
-  rpc           Call one procedure of the hub or of a Worker with a request in protobuf JSON
-  recover       Offline break-glass recovery (opens the database directly)
-
-Meta:
-  guide         Print the guide for an agent that drives LeapMux
-  skill         Inspect and install LeapMux agent skills locally or on a Worker
-  version       Print the version of this CLI, and of the hub and worker when connected
-  commands      List commands; with --json, include arguments, flags and examples
-  completion    Print the shell completion script
-  help          Print the help of a command
-
-Local Daemon:
-  daemon        Manage local LeapMux services (solo, hub, worker, dev)
-  up            Start the local solo LeapMux daemon (shortcut for daemon solo start)
-  down          Stop the local solo LeapMux daemon (shortcut for daemon solo stop)
-
-Flags:
-      --color string   when to emit ANSI colors on TTY output (one of: auto, always, never; default: auto)
-      --fields string  comma-separated columns or fields to print
-      --format string  output format (one of: text, json, ndjson, tsv; default: text)
-      --hub string     hub URL (default: tab socket, else $LEAPMUX_HUB, else context/default credential, else local solo/dev Hub)
-      --json           print the result as one JSON envelope per line
-      --no-header      omit the header row from table and TSV output
-  -q, --quiet          print only the ids of the result, one per line
-  -v, --version        print the version of this binary
-  -w, --wide           do not truncate table columns
-
-Run "leapmux <command> --help" for the help of a command.
-Any command name can be shortened as far as it stays unambiguous. A later
-release can make an ad-hoc prefix ambiguous, so scripts use full names or
-documented aliases (such as ag, term, ws, ls, rm, mv).
-```
-
-Dispatch rules:
-
-- The default TCP port for `solo`, `hub`, and `dev` is **4327**.
-- `-h` and `--help` work at every command level (exit `0`), and `leapmux help <command>` prints help for a command.
-- `-v` and `--version` print the binary build version offline without dialing a Hub. `leapmux version` prints the CLI version and, when connected, the Hub and Worker versions. Subcommands do not accept `--version`.
-- Daemon modes require a subcommand, and flags follow the subcommand: `leapmux daemon solo start --listen ...`. Placing a mode flag before the subcommand fails.
-- Every command uses two hyphens for long flags (`--listen`) and one hyphen only for one-letter flags (`-q`, `-v`).
+**Dispatch rules:** Default TCP port for `solo`/`hub`/`dev` is **4327**. `-h`/`--help` works everywhere (exit `0`). Daemon modes require a subcommand before flags (`leapmux daemon solo start --listen ...`). Long flags use `--`; single-letter flags use `-`.
 
 {{< callout type="info" >}}
-**Duration formats.** Daemon and config flags whose default is a duration (`1h`, `5m`, …) accept unit suffixes (`ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w`) and combined parts; a bare number is a count of **seconds** (see [Configuration Reference](/docs/admin/configuration-reference/)). Control-command duration flags (`--timeout`, `--heartbeat`, `--since`) use Go duration units (`ms`, `s`, `m`, `h`).
+**Duration formats.** Daemon/config flags accept `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w`, combined parts, or bare **seconds**. Control flags (`--timeout`, `--heartbeat`, `--since`) use Go units (`ms`, `s`, `m`, `h`).
 {{< /callout >}}
 
 ## Mode commands
 
-Every daemon mode (`leapmux daemon <mode>`) requires a subcommand. The eight lifecycle commands work in every mode, and `daemon worker` adds three Worker-specific commands. Start and stop an instance with `start` and `stop` (or `leapmux up` and `leapmux down` for `solo`); use `run` only in a container. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
+Every `leapmux daemon <mode>` requires a subcommand. The first eight work in every mode; `daemon worker` adds three Worker commands. Use `run` only in containers.
 
-| Command | What it does |
+| Command | Action |
 |---|---|
-| `daemon <mode> start` | Creates the OS service when needed, starts it, waits until ready, and prints the URL to open. |
-| `daemon <mode> stop` | Stops the instance (service or foreground) and waits for shutdown to complete. |
-| `daemon <mode> restart` | Stops the instance, then starts it as a service. |
-| `daemon <mode> status` | Reports process state, readiness, browser URL, registration, and the last failure. |
-| `daemon <mode> logs` | Prints or follows (`--follow`, `--lines`) the latest attempt log of the service. |
-| `daemon <mode> enable` | Registers the OS service for startup at login or boot without starting it. |
-| `daemon <mode> disable` | Removes the OS service. Requires a stopped instance. |
-| `daemon <mode> run` | Runs in the foreground without creating a service. Used by the container image. |
-| `daemon worker register` | Registers the Worker with a Hub and saves its credentials without starting it. See [below](#worker-register). |
-| `daemon worker deregister` | Deletes the Worker on the Hub and removes local credentials. Requires a stopped Worker. See [below](#worker-deregister). |
-| `daemon worker cross-worker-pins` | Manages the Worker's local trust-on-first-use (TOFU) pin store. See [below](#worker-cross-worker-pins). |
+| `daemon <mode> start` | Creates OS service if needed, starts it, waits until ready, prints browser URL. |
+| `daemon <mode> stop` | Stops service or foreground process and waits for shutdown. |
+| `daemon <mode> restart` | Stops, then starts as a service. |
+| `daemon <mode> status` | Reports state, readiness, browser URL, registration, and last failure. |
+| `daemon <mode> logs` | Prints or follows (`-f`, `-n`) latest attempt log. |
+| `daemon <mode> enable` | Registers OS startup (`login`/`boot`) without starting. |
+| `daemon <mode> disable` | Removes OS service (requires stopped instance). |
+| `daemon <mode> run` | Foreground process without OS service (containers). |
+| `daemon worker register` | Registers Worker and saves credentials without starting. |
+| `daemon worker deregister` | Deletes Worker on Hub and removes local credentials (stopped only). |
+| `daemon worker cross-worker-pins` | Manages local trust-on-first-use (TOFU) pin store. |
 
-`start`, `restart`, `enable`, and `run` accept the runtime flags of the mode, and the service persists the flags you pass. `stop`, `status`, `logs`, and `disable` take only `--data-dir` and `--config` from the mode, plus their own options below.
-
-**Options of the mode commands**
+`start`, `restart`, `enable`, and `run` accept and persist mode runtime flags. `stop`, `status`, `logs`, and `disable` take only `--data-dir`, `--config`, and the options below:
 
 | Flag | Commands | Default | Meaning |
 |---|---|---|---|
-| `--data-dir`, `--config` | all | Mode defaults | Select the instance. Pass the same values to every command for one instance. |
-| `--timeout` | `start`, `restart`, `stop`, `status`, `up`, `down`, `worker register`, `worker deregister` | `60s` (`start`/`up`), `4m` (`restart`), `3m` (`stop`/`down`), `30s` (`deregister`), `3s` (`status`), `5m` (`register`) | How long to wait: a positive duration or bare number of seconds. The operation can continue after the wait expires. |
-| `--startup` | `start`, `restart`, `enable`, `up` | Saved choice, else prompt | `login` or `boot` |
-| `--yes` | `start`, `restart`, `enable`, `up` | off | Accept the proposed configuration without the consent prompt. Does not choose `--startup`. |
-| `--environment-file` | `start`, `restart`, `enable`, `up` | none | Path to a YAML map of environment variables for the service. `--environment-file=` clears the saved file. |
-| `-f`, `--follow` | `logs` | off | Follow the log file as new lines appear. |
-| `-n`, `--lines` | `logs` | `100` | Number of trailing lines to print (`0` prints the entire log). |
-| `--json` | `status`, `logs`, `start`, `stop`, `restart`, `enable`, `disable`, `up`, `down`, `worker cross-worker-pins`, `recover *` | off | Print the result as one `{"data": ...}` line (or one JSON line per log entry with `logs --follow --json`). `daemon worker register` and `daemon worker deregister` accept `--json` syntactically from the root flag set but print plain text. |
+| `--data-dir`, `--config` | all | Mode defaults | Select the instance (pass identical values to all commands). |
+| `--timeout` | `start`, `restart`, `stop`, `status`, `up`, `down`, `worker register`, `worker deregister` | `60s` (`start`/`up`), `4m` (`restart`), `3m` (`stop`/`down`), `30s` (`deregister`), `3s` (`status`), `5m` (`register`) | Max wait (duration or seconds); action may continue after timeout. |
+| `--startup` | `start`, `restart`, `enable`, `up` | Saved or prompt | `login` or `boot`. |
+| `--yes` | `start`, `restart`, `enable`, `up` | off | Skip consent prompt (does not choose `--startup`). |
+| `--environment-file` | `start`, `restart`, `enable`, `up` | none | YAML env-var map for service (`--environment-file=` clears it). |
+| `-f`, `--follow` | `logs` | off | Stream new log lines. |
+| `-n`, `--lines` | `logs` | `100` | Trailing lines (`0` = full log). |
+| `--json` | `status`, `logs`, `start`, `stop`, `restart`, `enable`, `disable`, `up`, `down`, `worker cross-worker-pins`, `recover *` | off | One `{"data": ...}` line (per-entry JSON lines for `logs --follow --json`). `worker register`/`deregister` accept `--json` syntactically but print plain text. |
 
-`status` exits with `0` when the instance is running, `8` when stopped, `1` on failure or when unresponsive, and `2` on invalid usage. A Worker without a Hub connection and a `dev` instance waiting for `/setup` both count as running.
-
-Every other mode command and every `recover` command reports failures as `error: <code>: <message>` on stderr (or `{"error": ...}` with `--json`) and maps the error code to the exit status table in [CLI Guide](/docs/using/cli-guide/). Interrupted commands (`Ctrl+C`) exit with `130`.
+**Exit codes:** `status` exits `0` running (including disconnected Worker or `dev` awaiting `/setup`), `8` stopped, `1` failed/unresponsive, `2` usage. Other mode commands and `recover` print `error: <code>: <message>` on stderr (`{"error": ...}` with `--json`) using the [CLI Guide](/docs/using/cli-guide/) exit codes (`Ctrl+C` exits `130`).
 
 ### `status --json`
 
-`status --json` prints one `{"data": <report>}` line. Unavailable values are `null`.
+Prints one `{"data": <report>}` line (`null` when unavailable):
 
 | Field | Shape |
 |---|---|
 | `instance_id`, `mode`, `startup` | String or `null` |
 | `execution` | `foreground`, `service`, or `null` |
-| `configured` | Boolean: the service matches the saved configuration |
-| `process` | `state` (`starting`, `running`, `stopping`, `stopped`, `failed`, `unresponsive`), `pid`, `started_at` |
+| `configured` | Boolean: service matches saved config |
+| `process` | `{state, pid, started_at}` (`starting`, `running`, `stopping`, `stopped`, `failed`, `unresponsive`) |
 | `readiness` | `starting`, `ready`, `ready_for_setup`, `failed`, or `null` |
-| `url` | Browser URL resolved at startup (`public_url`, or `http://localhost:<port>`). `null` for Workers, IPC-only instances, and stopped instances. |
-| `registration` | `state` (`not_applicable`, `unregistered`, `pending`, `registered`, `invalid`), `worker_id`, `hub_url` |
-| `connection` | `state` (`not_applicable`, `pending_setup`, `connecting`, `connected`, `disconnected`), `last_error` |
-| `attempt` | Latest start: `id`, `started_at`, `ended_at`, `exit_code`, `error`, `log_path` (each nullable) |
-| `diagnostics` | Array of `{kind, title, body, source}` objects |
+| `url` | Startup browser URL (`public_url` or `http://localhost:<port>`); `null` for Workers, IPC-only, or stopped |
+| `registration` | `{state, worker_id, hub_url}` (`not_applicable`, `unregistered`, `pending`, `registered`, `invalid`) |
+| `connection` | `{state, last_error}` (`not_applicable`, `pending_setup`, `connecting`, `connected`, `disconnected`) |
+| `attempt` | `{id, started_at, ended_at, exit_code, error, log_path}` (nullable) |
+| `diagnostics` | Array of `{kind, title, body, source}` |
 
-## `solo`
+## Daemon mode flags
 
-Run a Hub and a Worker in one process on loopback. Local IPC needs no credential; TCP browsers complete first-password setup for the `solo` account, after which every TCP address requires login. See [Running LeapMux](/docs/admin/running-leapmux/).
+See [Configuration Reference](/docs/admin/configuration-reference/) for complete key semantics, defaults, and database settings.
 
-```bash
-leapmux up [flags]
-# or equivalently:
-leapmux daemon solo start [flags]
-```
+### `solo` and `dev`
 
-`restart`, `enable`, and `run` take the same flags.
+`solo` (`leapmux up` / `leapmux daemon solo start`) runs a Hub + bundled Worker on loopback with credential-free local IPC and first-password TCP setup. `dev` (`leapmux daemon dev start`) binds `:4327`, defaults `signup_enabled=true`, stores data in `~/.config/leapmux/dev/`, and bootstraps the first admin via `/setup` (auto-registering its bundled Worker afterward).
+
+| Flag | Default (`solo` / `dev`) | Meaning |
+|---|---|---|
+| `--listen` | `127.0.0.1:4327` (`solo`), `:4327` (`dev`) + IPC | Repeatable TCP or IPC (`unix:<path>`, `npipe:<name>`) bind; local IPC added if omitted. |
+| `--data-dir` / `--config` | `~/.config/leapmux/solo` (`solo.yaml`) or `/dev` (`dev.yaml`) | Data dir (`hub/` and `worker/` subdirs) and config file. |
+| `--dev-frontend` / `--log-level` | empty / `info` | Dev frontend proxy URL; log level (`debug`, `info`, `warn`, `error`). |
+| `--storage-sqlite-max-conns` / `-cache-size` / `-mmap-size` | `4` / `0` / `0` | SQLite pool, page cache (`+` pages / `-` KiB), mmap bytes. |
+| `--encryption-mode` / `--use-login-shell` | `post-quantum` / `true` | Bundled Worker E2EE (`post-quantum`/`classic`) and login-shell wrap. |
+| `--agent-startup-concurrency` | `0` (`min(4, CPUs)`) | Concurrent agent restarts on bundled Worker. |
+
+Binding `solo` to a non-loopback address logs a warning because the first TCP caller can claim an unset `solo` password. `public_url` also applies in `solo` for startup URLs and **Register worker** commands.
+
+### `hub`
+
+Standalone Hub (`leapmux daemon hub start [flags]`). Policies live in the database via `leapmux admin settings`. `encryption_key_path` has no CLI flag — use YAML or `LEAPMUX_HUB_ENCRYPTION_KEY_PATH` (default `<data-dir>/encryption.key`).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--listen` | `127.0.0.1:4327` plus platform local IPC URL | Repeatable listen address: TCP address or local IPC URL (`unix:<path>`, `npipe:<name>`). The platform local IPC URL is added automatically if the list specifies none. |
-| `--data-dir` | `~/.config/leapmux/solo` | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
-| `--dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
-| `--storage-sqlite-max-conns` | `4` | SQLite maximum open connections |
-| `--storage-sqlite-cache-size` | `0` | SQLite page cache: positive = pages, negative = KiB (for example `-65536` = 64 MiB) |
-| `--storage-sqlite-mmap-size` | `0` | SQLite memory-mapped I/O size in bytes (`0` = disabled) |
-| `--agent-startup-concurrency` | `0` (`min(4, CPU count)`) | Maximum agents starting concurrently on the bundled Worker |
-| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` (for the bundled Worker) |
-| `--use-login-shell` | `true` | Wrap agent launches in the user's login shell (for the bundled Worker) |
-| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
-| `--config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
+| `--listen` | `:4327` + IPC | Repeatable TCP or IPC listen address. |
+| `--data-dir` / `--config` | `~/.config/leapmux/hub` (`hub.yaml`) | Data dir and YAML config path. |
+| `--dev-frontend` / `--log-level` | empty / `info` | Frontend proxy URL and log level. |
+| `--storage-type` | `sqlite` | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb`. |
+| `--storage-sqlite-path` / `-max-conns` / `-cache-size` / `-mmap-size` | `<data-dir>/hub.db` / `4` / `0` / `0` | SQLite path and tuning. |
+| `--storage-postgres-dsn` / `--storage-mysql-dsn` | empty | External DB connection URL (required). |
 
-Binding `solo` to a non-loopback address logs a warning: before the `solo` account has a password, the first TCP caller can claim it. Set the password first, or use `hub` or `dev` for multi-user deployments. The `public_url` setting also applies in `solo` mode for the startup URL and the **Register worker** command.
+Shared external pool defaults (`--storage-<name>-*`):
 
-## `hub`
-
-Run only the Hub: authentication, workspace management, Worker registration, and the encrypted relay. Binds all interfaces (`:4327`) by default and requires login. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration Reference](/docs/admin/configuration-reference/).
-
-```bash
-leapmux daemon hub start [flags]
-```
-
-`restart`, `enable`, and `run` take the same flags. Runtime policies (sign-up, verification, sessions, SMTP, `secure_cookies`, `public_url`, timeouts, limits) are Hub database settings managed with `leapmux admin settings` (see [Admin CLI](/docs/admin/admin-cli/)).
-
-**Server and config options**
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--listen` | `:4327` plus platform local IPC URL | Repeatable listen address (`:4327`, `127.0.0.1:4327`, `unix:<path>`, `npipe:<name>`). The platform local IPC URL is added automatically if the list specifies none. |
-| `--data-dir` | `~/.config/leapmux/hub` | Data directory |
-| `--dev-frontend` | empty | Frontend dev-server URL for the reverse proxy |
-| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
-| `--config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
-
-**Storage options**
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--storage-type` | `sqlite` | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
-| `--storage-sqlite-path` | `<data-dir>/hub.db` | SQLite database file path |
-| `--storage-sqlite-max-conns` | `4` | SQLite maximum open connections |
-| `--storage-sqlite-cache-size` | `0` | Page cache: positive = pages, negative = KiB (for example `-65536` = 64 MiB) |
-| `--storage-sqlite-mmap-size` | `0` | Memory-mapped I/O size in bytes (`0` = disabled) |
-| `--storage-postgres-dsn` | empty | PostgreSQL connection string (required for `postgres`) |
-| `--storage-mysql-dsn` | empty | MySQL connection string (required for `mysql`) |
-
-The Postgres family (`postgres`, `cockroachdb`, `yugabytedb`) and MySQL family (`mysql`, `tidb`) share these pool defaults (see [Configuration Reference](/docs/admin/configuration-reference/) for every flag and DSN format):
-
-| Family | `max-conns` | `min-conns` | `max-idle-conns` | `conn-max-lifetime` | Idle-time flag & default | `health-check-period` |
+| Family | `max-conns` | `min-conns` | `max-idle-conns` | `conn-max-lifetime` | Idle-time flag | `health-check-period` |
 |---|---|---|---|---|---|---|
-| Postgres (`postgres`, `cockroachdb`, `yugabytedb`) | 25 | 5 | — | `1h` | `max-conn-idle-time` (`5m`) | `30s` |
-| MySQL (`mysql`, `tidb`) | 25 | — | 5 | `1h` | `conn-max-idle-time` (`5m`) | — |
+| Postgres (`postgres`, `cockroachdb`, `yugabytedb`) | `25` | `5` | — | `1h` | `max-conn-idle-time` (`5m`) | `30s` |
+| MySQL (`mysql`, `tidb`) | `25` | — | `5` | `1h` | `conn-max-idle-time` (`5m`) | — |
 
-{{< callout type="info" >}}
-One Hub config key has no CLI flag and is set only through YAML or environment variable: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). See [Encryption & Data](/docs/admin/encryption-and-data/).
-{{< /callout >}}
+### `worker`
 
-## `worker`
-
-Run a standalone Worker that connects outbound to a Hub. Workers do not listen on an inbound HTTP port. Register the Worker once with `daemon worker register` before starting it. See [Managing Workers](/docs/admin/managing-workers/).
-
-```bash
-# Once: register with a key from the Hub's Register worker dialog
-leapmux daemon worker register --hub https://hub.example.com --registration-key <key>
-
-# Then start it as a background service
-leapmux daemon worker start [flags]
-```
-
-`restart`, `enable`, and `run` take the same flags. Runtime commands read the Hub URL saved during registration and reject `--hub` and `--registration-key`.
-
-**Worker options**
+Standalone outbound-only Worker (`daemon worker register` once, then `start`/`restart`/`enable`/`run`). Runtime commands use the saved Hub URL and reject `--hub` and `--registration-key`.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--name` | hostname | Worker display name |
-| `--data-dir` | `~/.config/leapmux/worker` | Data directory (holds `state.json` and `worker.db`) |
-| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `--use-login-shell` | `true` | Wrap each agent launch in the user's login shell |
-| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
-| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
+| `--name` | hostname | Worker display name. |
+| `--data-dir` / `--config` | `~/.config/leapmux/worker` (`worker.yaml`) | Data dir (`state.json`, `worker.db`) and config file. |
+| `--encryption-mode` / `--use-login-shell` / `--log-level` | `post-quantum` / `true` / `info` | E2EE mode, login-shell wrap, log level. |
+| `--max-message-size` | `0` (`16 MiB`) | Max payload size in bytes. |
+| `--agent-startup-timeout` / `--api-timeout` | `5m` / `10s` | Agent startup and JSON-RPC timeouts. |
+| `--agent-startup-concurrency` | `0` (`min(4, CPUs)`) | Concurrent agent restorations on restart. |
+| `--db-max-conns` / `--db-cache-size` / `--db-mmap-size` | `4` / `0` / `0` | Worker SQLite pool, page cache, mmap bytes. |
 
-**Timeout and limit options**
+#### `worker register`, `worker deregister`, and `worker cross-worker-pins`
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--max-message-size` | `0` (`16 MiB`) | Maximum application payload size in bytes |
-| `--agent-startup-timeout` | `5m` | Agent startup timeout |
-| `--api-timeout` | `10s` | JSON-RPC request timeout |
-| `--agent-startup-concurrency` | `0` (`min(4, CPU count)`) | Maximum agents restored concurrently after a Worker restart |
+- **`daemon worker register --hub <url> --registration-key <key> [--timeout 5m] [--data-dir] [--config]`** — registers and saves credentials without starting (`--hub` accepts `http[s]://`, `unix:`, `npipe:`; flags only). Re-running with identical values resumes an interrupted registration; existing credentials are refused.
+- **`daemon worker deregister [--timeout 30s] [--data-dir] [--config]`** — deletes Worker on Hub and removes `state.json` (keeps `worker.db`). Stop Worker first; credentials remain if deletion cannot be confirmed.
+- **`daemon worker cross-worker-pins <list|get <id>|remove <id>> [--data-dir] [--config]`** — local-only sibling-Worker TOFU pins (no running Worker). `get`/`remove` exit `4` (`not_found`) when absent; `--json` emits `{"data": {"pins": [...]}}` or `{"data": {"removed": "<id>"}}`.
 
-**SQLite database options**
+## `version`, `recover`, `commands`, and `completion`
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--db-max-conns` | `4` | Maximum open database connections |
-| `--db-cache-size` | `0` | Page cache: positive = pages, negative = KiB (for example `-65536` = 64 MiB) |
-| `--db-mmap-size` | `0` | Memory-mapped I/O size in bytes (`0` = disabled) |
-
-### `worker register`
-
-Register the Worker with a Hub, save its credentials in `--data-dir`, and exit without starting the Worker.
-
-```bash
-leapmux daemon worker register --hub <url> --registration-key <key> [flags]
-```
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--hub` | required | Hub URL (`http[s]://...`, `unix:<socket>`, or `npipe:<name>`). Saved for all future runs. |
-| `--registration-key` | required | Single-use key from the Hub's **Register worker** dialog. |
-| `--timeout` | `5m` | Total wait time for the Hub, including retries. |
-| `--data-dir` | `~/.config/leapmux/worker` | Data directory. |
-| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path (supplies `data_dir`). |
-
-`--hub` and `--registration-key` are flags only (no config key or environment variable sets them). Re-running the same command completes an interrupted registration without spending a new key. If credentials already exist in `--data-dir`, the command refuses; see [Managing Workers](/docs/admin/managing-workers/).
-
-### `worker deregister`
-
-Delete this Worker on its Hub, then remove its credentials from `--data-dir`. Stop the Worker first.
-
-```bash
-leapmux daemon worker deregister [flags]
-```
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--timeout` | `30s` | How long to wait for the Hub. |
-| `--data-dir` | `~/.config/leapmux/worker` | Data directory. |
-| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path (supplies `data_dir`). |
-
-`worker deregister` preserves `worker.db`. If the Hub cannot confirm deletion, local credentials are preserved so you can retry.
-
-### `worker cross-worker-pins`
-
-Local-only management of the Worker's trust-on-first-use (TOFU) pin store for sibling Workers. Operates on local files without starting a Worker. See [Security & Authentication](/docs/admin/security-and-auth/).
-
-```bash
-leapmux daemon worker cross-worker-pins list [flags]
-leapmux daemon worker cross-worker-pins get <worker-id> [flags]
-leapmux daemon worker cross-worker-pins remove <worker-id> [flags]
-```
-
-| Command | Action |
-|---|---|
-| `list` | Print all pinned sibling Worker IDs and timestamps (with `--json`, `{"data": {"pins": [...]}}` including keys). |
-| `get <worker-id>` | Print the pin and keys for one sibling Worker. |
-| `remove <worker-id>` | Delete the pin for one sibling Worker (with `--json`, `{"data": {"removed": "<worker-id>"}}`). |
-
-`get` and `remove` fail with `not_found` (exit status `4`) if no pin exists for `<worker-id>`. All three commands accept `--data-dir` and `--config`.
-
-## `dev`
-
-Run a Hub and a Worker in one process with real authentication, binding `:4327` (all interfaces), storing data in `~/.config/leapmux/dev/`, and bootstrapping the first administrator through `/setup`. `dev` accepts the same flags as `solo` and enables `signup_enabled=true` by default; the bundled Worker registers automatically after `/setup` completes. See [Running LeapMux](/docs/admin/running-leapmux/).
-
-```bash
-leapmux daemon dev start [flags]
-```
-
-## `version`
-
-Print the CLI build version, plus the Hub version (and host Worker version inside a tab) when connected. With no selected Hub, `leapmux version` prints only the CLI version; if the selected Hub is unreachable, it prints the CLI version and the connection error.
-
-```bash
-$ leapmux --version
-0.0.1-dev · 9c81b87 · feature/foo · Thu, 4/23/2026, 11:45:00 PM KST
-```
-
-Top-level `-v` and `--version` run offline without contacting a Hub.
-
-## `recover`
-
-`leapmux recover` is the offline break-glass tree: it operates directly on the Hub database and encryption key file while the Hub is stopped, with no network calls and no login. See [Recovery](/docs/admin/recover/) for full flags and procedures.
-
-```bash
-leapmux recover <command> [arguments] [flags]
-```
+- **`version`:** Top-level `-v`/`--version` prints build info offline (`0.0.1-dev · <commit> · <branch> · <timestamp>`). `leapmux version` also prints connected Hub and host Worker versions.
+- **`recover <command> [args] [--data-dir] [--config]`:** Offline Hub repair while **stopped** (opens `<data-dir>/hub.db` directly; pass `--config` for Postgres/MySQL). See [Recovery](/docs/admin/recover/):
 
 | Command / Group | Subcommands |
 |---|---|
-| `create-admin <username>` | Bootstrap the first administrator (refuses once any admin exists) |
-| `reset-password <user>` | Reset a password (`<username>`, `username:<name>`, or `id:<id>`) |
+| `create-admin <username>` | Bootstrap first admin (refuses if any admin exists) |
+| `reset-password <user>` | Reset password (`<username>`, `username:<name>`, `id:<id>`) |
 | `encryption-key` | `rotate`, `remove <version>`, `reencrypt`, `rotate-pepper` |
 | `db` | `path`, `migrate`, `version` |
 
-Every `recover` command takes `--data-dir` and, for external PostgreSQL or MySQL databases, `--config`. Without `--config`, `recover` opens `<data-dir>/hub.db` directly.
-
-## Control commands
-
-Top-level `leapmux <group> <command>` drives a running Hub and its Workers over RPC. Use it interactively, in scripts (`leapmux auth login`), or inside spawned agents and terminals. All control commands support `--format text|json|ndjson|tsv`, `--json`, `-q`, `--fields`, `--no-header`, `-w`, and `--color`.
-
-For every control command, argument, flag, and example, see the generated [Control Command Reference](/docs/reference/commands/). For target selection, output formats, exit codes, and scripting patterns, see [CLI Guide](/docs/using/cli-guide/). For online Hub administration (`leapmux admin`), see [Admin CLI](/docs/admin/admin-cli/).
-
-## `commands` and `completion`
-
-### `commands [prefix...]`
-
-Print the command tree as a text summary or machine-readable JSON schema (`--json`):
-
-```bash
-leapmux commands
-leapmux commands agent --depth 1 --compact --json
-```
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--depth <n>` | `0` (unlimited) | Maximum command depth relative to `[prefix...]` |
-| `--compact` | off | Omit flag tables, argument help, and examples in JSON output |
-
-### `completion <shell>`
-
-Generate dynamic shell completion scripts for `leapmux` and `lmx`. Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`, `nushell`.
-
-```bash
-leapmux completion zsh > "${fpath[1]}/_leapmux"
-leapmux completion bash > /etc/bash_completion.d/leapmux
-```
+- **`commands [prefix...] [--depth <n>] [--compact] [--json]`:** Print command tree or JSON schema (`--depth 0` = unlimited; `--compact` omits flags, arg help, and examples in JSON).
+- **`completion <shell>`:** Generate completion scripts for `leapmux`/`lmx` (`bash`, `zsh`, `fish`, `powershell`, `elvish`, `nushell`), e.g. `leapmux completion zsh > "${fpath[1]}/_leapmux"`.
 
 ## Environment variables
 
-### Daemon configuration (`hub` / `solo` / `dev` and `worker`)
+### Daemon configuration (`LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*`)
 
-Hub-family modes (`hub`, `solo`, `dev`) read `LEAPMUX_HUB_*` variables; standalone Workers read `LEAPMUX_WORKER_*`. The suffix is lowercased to form the top-level config key. OS services do not inherit variables from the shell that starts them; pass `--environment-file` instead (see [Starting and Stopping](/docs/admin/starting-and-stopping/)).
+Hub modes (`hub`, `solo`, `dev`) read `LEAPMUX_HUB_*`; standalone Workers read `LEAPMUX_WORKER_*` (lowercase suffix = top-level YAML key). Precedence: `defaults < config < env < flags`. Nested `storage.*` keys require YAML or `--storage-*` flags. OS services ignore shell env vars — use `--environment-file`.
 
 | Variable | Config key | Example |
 |---|---|---|
@@ -439,57 +217,52 @@ Hub-family modes (`hub`, `solo`, `dev`) read `LEAPMUX_HUB_*` variables; standalo
 | `LEAPMUX_WORKER_LOG_LEVEL` | Worker `log_level` | `info` |
 | `LEAPMUX_WORKER_AGENT_STARTUP_CONCURRENCY` | Worker `agent_startup_concurrency` | `4` |
 
-Nested storage keys (`storage.type`, `storage.postgres.dsn`, …) cannot be set through `LEAPMUX_HUB_*` environment variables because underscores are not translated to dots; use YAML or `--storage-*` flags instead. See [Configuration Reference](/docs/admin/configuration-reference/) for full precedence rules (`defaults < config file < env vars < CLI flags`).
-
 ### Control CLI (`leapmux`)
 
-**User-set variables** (set these in your own shell or scripts):
+**User-set variables:**
 
 | Variable | Meaning |
 |---|---|
-| `LEAPMUX_HUB` | Hub URL when neither `--hub` nor `LEAPMUX_CONTROL_SOCK` selects one. |
-| `LEAPMUX_CONTROL_CONFIG_DIR` | Override the credential, context, and pin directory (default `$XDG_CONFIG_HOME/leapmux/control`, `%APPDATA%\leapmux\control` on Windows, or `~/.config/leapmux/control`). |
-| `XDG_CONFIG_HOME` | Base config directory on POSIX when `LEAPMUX_CONTROL_CONFIG_DIR` is unset. |
+| `LEAPMUX_HUB` | Hub URL when neither `--hub` nor `LEAPMUX_CONTROL_SOCK` is set. |
+| `LEAPMUX_CONTROL_CONFIG_DIR` | Override credential/context/pin dir (default `$XDG_CONFIG_HOME/leapmux/control`, `%APPDATA%\leapmux\control`, or `~/.config/leapmux/control`). |
+| `XDG_CONFIG_HOME` | POSIX base config dir when `LEAPMUX_CONTROL_CONFIG_DIR` is unset. |
 | `LEAPMUX_CONTROL_NO_PROMPT` | Disable interactive step-up elevation prompts. |
-| `LEAPMUX_FOCUS_NEW` | Override default focus behavior for `agent open`, `terminal open`, and `file open` (`0` = background, `1` = focus). |
-| `NO_COLOR`, `CLICOLOR_FORCE` | Disable or force ANSI color output under `--color auto` (`NO_COLOR` also disables TTY wait spinners). |
+| `LEAPMUX_NO_CONTROL_HANDOFF` | Disable automatic hand-off to `$LEAPMUX_CONTROL_CLI` inside a managed tab when non-empty (for example, `1`). |
+| `LEAPMUX_FOCUS_NEW` | Default focus for `agent`/`terminal`/`file open` (`0` = background, `1` = focus). |
+| `NO_COLOR`, `CLICOLOR_FORCE` | Disable or force ANSI colors under `--color auto` (`NO_COLOR` also disables TTY spinners). |
 
-**Worker-injected tab variables** (set automatically inside spawned agents and terminals; do not set by hand):
+**Worker-injected tab variables** (set automatically in spawned tabs; do not set manually):
 
 | Variable | Meaning |
 |---|---|
-| `LEAPMUX_CONTROL_CLI` | Full path to the Worker's matching `leapmux` binary for version hand-off. |
-| `LEAPMUX_CONTROL_SOCK` | Local IPC socket URL for the tab (`leapmux admin` refuses to run when set). |
+| `LEAPMUX_CONTROL_CLI` | Path to Worker's matching `leapmux` binary for version hand-off. |
+| `LEAPMUX_CONTROL_SOCK` | Local IPC socket URL (`leapmux admin` refuses when set). |
 | `LEAPMUX_CONTROL_TOKEN` | Per-process delegation token for the local IPC socket. |
 | `LEAPMUX_CONTROL_USER_ID` | Authenticated user ID (informational). |
-| `LEAPMUX_CONTROL_WORKER_ID` | Host Worker ID (`self` for Worker targets and default `--worker`). |
-| `LEAPMUX_CONTROL_TAB_ID` | Spawning tab ID (`self` for tab, agent, or terminal targets). |
+| `LEAPMUX_CONTROL_WORKER_ID` | Host Worker ID (`self` for Workers; default `--worker`). |
+| `LEAPMUX_CONTROL_TAB_ID` | Spawning tab ID (`self` for tab/agent/terminal targets). |
 | `LEAPMUX_CONTROL_TAB_TYPE` | `agent` or `terminal`. |
-| `LEAPMUX_CONTROL_TERMINAL_ID` | Current terminal ID (`self` for `terminal` commands; in a Quake panel, set without `_TAB_ID` or `_TAB_TYPE`). |
+| `LEAPMUX_CONTROL_TERMINAL_ID` | Current terminal ID (`self` for `terminal`; set alone in Quake panels). |
 | `LEAPMUX_CONTROL_WORKING_DIR` | Working directory at spawn (default `--dir`). |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | Agent provider in agent tabs (default `--provider`). |
 
-`LEAPMUX_CONTROL_CONFIG_DIR` and `LEAPMUX_CONTROL_NO_PROMPT` are user-set CLI variables; all other `LEAPMUX_CONTROL_*` variables are Worker-injected into spawned tabs. See [CLI Guide](/docs/using/cli-guide/) for the full tab environment contract.
-
 ## Config and data locations
 
-Each mode reads an optional YAML config file matching the mode and skips missing config files silently.
+Missing YAML config files are skipped silently.
 
 | Mode | Config file | Default data directory |
 |---|---|---|
-| `solo` | `~/.config/leapmux/solo/solo.yaml` | `~/.config/leapmux/solo` (`hub/` and `worker/` subdirectories) |
+| `solo` | `~/.config/leapmux/solo/solo.yaml` | `~/.config/leapmux/solo` (`hub/`, `worker/`) |
 | `hub` | `~/.config/leapmux/hub/hub.yaml` | `~/.config/leapmux/hub` |
 | `worker` | `~/.config/leapmux/worker/worker.yaml` | `~/.config/leapmux/worker` |
-| `dev` | `~/.config/leapmux/dev/dev.yaml` | `~/.config/leapmux/dev` (`hub/` and `worker/` subdirectories) |
-| `control` | `<ConfigDir>/<hub-key>.json` (credentials, mode `0600`), `context.json`, `<hub-key>/pins.json` | — |
+| `dev` | `~/.config/leapmux/dev/dev.yaml` | `~/.config/leapmux/dev` (`hub/`, `worker/`) |
+| `control` | `<ConfigDir>/<hub-key>.json` (`0600`), `context.json`, `<hub-key>/pins.json` | — |
 
-### Managed files inside a data directory
+**Managed files inside `<data-dir>`** (internal schema; use `status --json` in scripts; see [Managing Workers](/docs/admin/managing-workers/) for backups):
 
 | Path | Mode | Holds |
 |---|---|---|
-| `<data-dir>/.lifecycle/` | every mode | Lock files, saved service settings, local control token, and the last ten start logs. Do not edit manually. |
-| `<data-dir>/state.json` | `worker` | Hub URL, Worker ID, auth token, and private keys (secret). |
+| `<data-dir>/.lifecycle/` | every mode | Locks, saved service settings, local control token, last ten start logs (do not edit). |
+| `<data-dir>/state.json` | `worker` | Hub URL, Worker ID, auth token, private keys (secret). |
 | `<data-dir>/pending-registration.json` | `worker` | Unfinished registration state and private keys (secret; deleted on completion). |
-| `<data-dir>/worker.db` | `worker` | Agent transcripts, queues, and terminal state. |
-
-Use `status --json` in scripts; the internal files above have no stable schema. See [Managing Workers](/docs/admin/managing-workers/) for backup guidance.
+| `<data-dir>/worker.db` | `worker` | Agent transcripts, input queues, terminal state. |
