@@ -894,6 +894,8 @@
 .lm-video-clip video {
   width: 100%;
   height: auto;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
   margin: 0;
   border-radius: 0;
 }
@@ -1395,6 +1397,8 @@
 .lm-hero-panel video {
   width: 100%;
   height: auto;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
   margin: 0;
   border-radius: 0;
 }
