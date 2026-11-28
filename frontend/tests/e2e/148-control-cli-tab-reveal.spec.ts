@@ -50,6 +50,11 @@ test.describe('control CLI tab reveal', () => {
 
       await expect(workspaceRow(page, home)).toHaveAttribute('data-active', 'true')
       await expect(tabById(page, authenticatedWorkspace.agentId)).toHaveAttribute('aria-selected', 'true')
+
+      // Negative guard: revealing an unknown tab ID must fail cleanly without changing active selection.
+      await expect(runCLI(cli, ['tab', 'reveal', 'nonexistent-tab-id-e2e'])).rejects.toMatchObject({ code: 'not_found' })
+      await expect(workspaceRow(page, home)).toHaveAttribute('data-active', 'true')
+      await expect(tabById(page, authenticatedWorkspace.agentId)).toHaveAttribute('aria-selected', 'true')
     })
   })
 })

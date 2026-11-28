@@ -24,7 +24,7 @@ import { test } from './fixtures'
 import { cliAgentOpen, mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { withExtraClients } from './helpers/multiClient'
 import { createTestDirectory } from './helpers/runDirectory'
-import { expectAgentTabCount, loginViaToken, openTerminalViaUI, openWorkspace, tabById } from './helpers/ui'
+import { expectAgentTabCount, loginViaToken, openTerminalViaUI, openWorkspace, tabById, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('control CLI live broadcast', () => {
   test('uses the same generated ID format for browser and CLI creation', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
@@ -42,6 +42,21 @@ test.describe('control CLI live broadcast', () => {
     expect(newAgentID).toMatch(/^[a-z0-9]{48}$/i)
     await expect(tabById(page, newAgentID)).toBeVisible()
     await expectAgentTabCount(page, 2)
+
+    // The CLI-created tab must survive a browser reload, and closing it via CLI must remove it from the DOM.
+    await page.reload()
+    await waitForWorkspaceReady(page)
+    await expect(tabById(page, newAgentID)).toBeVisible()
+    await expectAgentTabCount(page, 2)
+
+    await runCLI(cli, [
+      'agent',
+      'close',
+      newAgentID,
+      '--allow-busy',
+    ])
+    await expect(tabById(page, newAgentID)).toHaveCount(0)
+    await expectAgentTabCount(page, 1)
   })
 
   test('restores a saved grid without moving its split to another cell', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
@@ -114,6 +129,14 @@ test.describe('control CLI live broadcast', () => {
     await restore(reshaped)
     await expect(page.getByTestId('tile-grid').getByTestId('tile-split')).toHaveCount(0)
     await expect(tabById(page, agentId)).toBeVisible()
+
+    // Reloading must preserve the reshaped 1x3 grid in both DOM and CLI layout reads.
+    await page.reload()
+    await waitForWorkspaceReady(page)
+    await expect(page.getByTestId('tile-grid').getByTestId('tile-split')).toHaveCount(0)
+    await expect(tabById(page, agentId)).toBeVisible()
+    const afterReload = await readLayout()
+    expect(afterReload.tree.children).toHaveLength(3)
   })
 
   test('two browsers viewing the same workspace both reflect the broadcast', async ({ browser, workspace, leapmuxServer }) => {

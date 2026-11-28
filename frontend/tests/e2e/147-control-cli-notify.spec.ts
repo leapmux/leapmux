@@ -12,7 +12,7 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
-import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
+import { CLIError, mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { typeInTerminal, waitForTerminalReady } from './helpers/terminal'
 import { expectToastRecorded } from './helpers/toast'
 import { tabById, workspaceRow } from './helpers/ui'
@@ -136,6 +136,21 @@ test.describe('control CLI notify', () => {
     ]) as { notifications: { id: string, tab_id?: string }[] }
     expect(recent.notifications).toContainEqual(expect.objectContaining({ id: addressed.id, tab_id: opened.id }))
     expect(recent.notifications).not.toContainEqual(expect.objectContaining({ id: other.id }))
+
+    // Negative guards: blank title and unknown notification ID must fail with structured CLIError codes.
+    await expect(runCLI(cli, [
+      'notify',
+      '   ',
+      '--worker',
+      leapmuxServer.workerId,
+    ])).rejects.toMatchObject({ code: 'usage' })
+    await expect(runCLI(cli, [
+      'notification',
+      'clear',
+      'nonexistent-notification-id-e2e',
+      '--worker',
+      leapmuxServer.workerId,
+    ])).rejects.toBeInstanceOf(CLIError)
   })
 
   test('opens a workspace destination that has no tabs', async ({ page, authenticatedWorkspace, leapmuxServer }) => {

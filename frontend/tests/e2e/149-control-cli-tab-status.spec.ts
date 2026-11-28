@@ -69,6 +69,29 @@ test.describe('control CLI tab status', () => {
     await runCLI(cli, ['tab', 'status', 'clear', agentId])
     await expect(tab.getByTestId('tab-status')).toHaveCount(0)
     await expect(leaf.getByTestId('tab-status')).toHaveCount(0)
+
+    // Reloading after clear must keep the status absent, and invalid bounds/tones must fail with usage.
+    await page.reload()
+    await waitForWorkspaceReady(page)
+    await expect(tab.getByTestId('tab-status')).toHaveCount(0)
+    await expect(runCLI(cli, [
+      'tab',
+      'status',
+      'set',
+      agentId,
+      'Out of bounds',
+      '--progress',
+      '101',
+    ])).rejects.toMatchObject({ code: 'usage' })
+    await expect(runCLI(cli, [
+      'tab',
+      'status',
+      'set',
+      agentId,
+      'Bad tone',
+      '--tone',
+      'nonexistent',
+    ])).rejects.toMatchObject({ code: 'usage' })
   })
 
   test('keeps independent status keys through reconnect and clear', async ({ page, authenticatedWorkspace, leapmuxServer }) => {

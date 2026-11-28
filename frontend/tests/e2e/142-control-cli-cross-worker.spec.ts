@@ -106,6 +106,22 @@ test.describe('control CLI cross-worker', () => {
         const tabBInfo = await fetchTab(harness, workspaceId, agentB)
         expect(tabBInfo.workerId).toBe(workerB.id)
         expect(tabBInfo.workerId).not.toBe(workerA.id)
+
+        // Confirm CLI agent queries filter and report Worker B accurately.
+        const workerBAgents = await runCLI(cli, [
+          'agent',
+          'list',
+          '--workspace',
+          workspaceId,
+          '--worker',
+          workerB.id,
+        ]) as { agents: Array<{ id: string }> }
+        expect(workerBAgents.agents.map(a => a.id)).toContain(agentB)
+        expect(workerBAgents.agents.map(a => a.id)).not.toContain(agentA)
+
+        const gotB = await runCLI(cli, ['agent', 'get', agentB]) as { id: string, worker_id: string }
+        expect(gotB.id).toBe(agentB)
+        expect(gotB.worker_id).toBe(workerB.id)
       })
     })
   })

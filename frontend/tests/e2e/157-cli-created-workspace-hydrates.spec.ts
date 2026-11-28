@@ -56,5 +56,15 @@ test.describe('cli-created workspace hydrates', () => {
       tab,
       'a bare "Agent" here means the already-open channel could not serve the CLI-made workspace',
     ).toHaveText(HYDRATED_AGENT_LABEL)
+
+    // Renaming the CLI-created workspace via CLI must update the sidebar live while preserving hydration.
+    await runCLI(cli, [
+      'workspace',
+      'rename',
+      second,
+      'Hydrated Renamed',
+    ])
+    await expect(workspaceRowTitle(page, second)).toHaveText('Hydrated Renamed')
+    await expect(tab).toHaveText(HYDRATED_AGENT_LABEL)
   })
 })
