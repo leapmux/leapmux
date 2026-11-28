@@ -109,16 +109,18 @@ export async function mintCLITokenForAdmin(
     throw new Error('mintCLITokenForAdmin: no accessToken in IssueAPIToken response')
   }
 
-  // LEAPMUX_CONTROL_CONFIG_DIR selects the exact credential directory. Files reside directly below it.
-  // Do not add control/. The CLI appends leapmux/control only when it derives the default from XDG_CONFIG_HOME.
+  // LEAPMUX_CONTROL_CONFIG_DIR selects the control CLI config root. Credential
+  // files live under `<configDir>/credentials/<hubHost>.json` (mirroring
+  // `control.CredentialsPath` in backend/internal/cli/control/creds.go).
   const configDir = createTestDirectory('leapmux-cli-cfg-')
-  mkdirSync(configDir, { recursive: true })
+  const credsDir = join(configDir, 'credentials')
+  mkdirSync(credsDir, { recursive: true })
 
   // The CLI keys the credential file by HubHost(hubURL); replicate
   // that here. For http(s) URLs the host is `<host>_<port>`; for
   // unix:/npipe: sockets the helper flattens the URL.
   const hubHost = hubHostForURL(hubURL)
-  const credPath = join(configDir, `${hubHost}.json`)
+  const credPath = join(credsDir, `${hubHost}.json`)
   const cred = {
     hub_url: hubURL,
     hub_id: 'e2e',
@@ -194,6 +196,22 @@ async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: s
 }
 
 /**
+ * Approve an OAuth device-code authorization request (for `leapmux auth login --device-code`)
+ * against the real Hub `/oauth/device` endpoint using an authenticated browser session cookie.
+ */
+export async function approveOAuthDeviceCode(hubUrl: string, cookie: string, userCode: string): Promise<void> {
+  const approved = await fetchHub(`${hubUrl}/oauth/device`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
+    body: new URLSearchParams({ user_code: userCode, decision: 'allow' }).toString(),
+    redirect: 'manual',
+  })
+  if (approved.status !== 200) {
+    throw new Error(`approveOAuthDeviceCode: /oauth/device returned ${approved.status}: ${await approved.text()}`)
+  }
+}
+
+/**
  * Run leapmux against the configured hub with --json. Return the data payload of the JSON envelope on standard output.
  * A CLIError preserves the error code, message and hints for assertions.
  * Remove inherited LEAPMUX_CONTROL_* variables except the configured credential directory.
@@ -231,6 +249,189 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
       }
     }
     throw new Error(`leapmux ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
+  }
+}
+
+/** Raw stdout, stderr, and exit code from a text-mode CLI invocation. */
+export interface CLITextResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+/**
+ * Run leapmux against the configured hub in text mode (without `--json`).
+ * Returns stdout, stderr, and exit code without throwing on non-zero exit when `allowNonZero` is set.
+ */
+export async function runCLIText(cfg: CLIConfigDir, args: string[], options?: {
+  env?: Record<string, string>
+  cwd?: string
+  allowNonZero?: boolean
+}): Promise<CLITextResult> {
+  const { binaryPath } = getGlobalState()
+  const env = scrubLeapMuxEnv({
+    ...process.env,
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
+  })
+  const cliArgs = ['--hub', cfg.hubURL, ...args]
+  return execTextCLI(binaryPath, cliArgs, env, options?.cwd, options?.allowNonZero ?? false)
+}
+
+/**
+ * Run a local-only leapmux command (no `--hub` flag) with `--json`, returning its decoded `data` payload.
+ */
+export async function runCLILocal(args: string[], options?: {
+  configDir?: string
+  env?: Record<string, string>
+  cwd?: string
+}): Promise<unknown> {
+  const { binaryPath } = getGlobalState()
+  const configDir = options?.configDir ?? createTestDirectory('leapmux-cli-local-')
+  const env = scrubLeapMuxEnv({
+    ...process.env,
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: configDir,
+  })
+  const cliArgs = ['--json', ...args]
+  try {
+    const { stdout } = await execFileAsync(binaryPath, cliArgs, {
+      env,
+      cwd: options?.cwd,
+      timeout: 30_000,
+    })
+    return parseEnvelope(stdout, args)
+  }
+  catch (err) {
+    const e = err as { stdout?: string, stderr?: string, code?: number | string, message?: string }
+    if (e.stdout) {
+      try {
+        return parseEnvelope(e.stdout, args)
+      }
+      catch (parseErr) {
+        if (parseErr instanceof CLIError)
+          throw parseErr
+      }
+    }
+    throw new Error(`leapmux ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
+  }
+}
+
+/**
+ * Run a local-only leapmux command (no `--hub`, no `--json`) and return raw stdout, stderr, and exit code.
+ */
+export async function runCLILocalText(args: string[], options?: {
+  configDir?: string
+  env?: Record<string, string>
+  cwd?: string
+  allowNonZero?: boolean
+}): Promise<CLITextResult> {
+  const { binaryPath } = getGlobalState()
+  const configDir = options?.configDir ?? createTestDirectory('leapmux-cli-local-text-')
+  const env = scrubLeapMuxEnv({
+    ...process.env,
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: configDir,
+  })
+  return execTextCLI(binaryPath, args, env, options?.cwd, options?.allowNonZero ?? false)
+}
+
+async function execTextCLI(
+  binaryPath: string,
+  cliArgs: string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string | undefined,
+  allowNonZero: boolean,
+): Promise<CLITextResult> {
+  try {
+    const { stdout, stderr } = await execFileAsync(binaryPath, cliArgs, {
+      env,
+      cwd,
+      timeout: 30_000,
+    })
+    return { code: 0, stdout, stderr }
+  }
+  catch (err) {
+    const e = err as { stdout?: string, stderr?: string, code?: number | string, message?: string }
+    const numericCode = typeof e.code === 'number'
+      ? e.code
+      : 1
+    if (allowNonZero) {
+      return { code: numericCode, stdout: e.stdout ?? '', stderr: e.stderr ?? '' }
+    }
+    throw new Error(`leapmux ${cliArgs.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
+  }
+}
+
+/** A live streaming or interactive CLI child process. */
+export interface LiveCLIProcess {
+  child: ReturnType<typeof spawn>
+  finished: Promise<{ code: number | null, signal: string | null, error?: string }>
+  stdout: () => string
+  stderr: () => string
+  jsonLines: () => unknown[]
+  diagnostic: () => string
+  stop: () => Promise<{ code: number | null, signal: string | null, error?: string }>
+}
+
+/**
+ * Start a streaming or interactive leapmux command (such as `layout watch`,
+ * `tunnel forward`, `tunnel connect`, `terminal attach`, or `auth login --device-code`).
+ */
+export function spawnCLILive(
+  cfg: CLIConfigDir | null,
+  args: string[],
+  options?: { json?: boolean, env?: Record<string, string>, cwd?: string },
+): LiveCLIProcess {
+  const { binaryPath } = getGlobalState()
+  const configDir = cfg?.path ?? createTestDirectory('leapmux-cli-live-')
+  const env = scrubLeapMuxEnv({
+    ...process.env,
+    ...options?.env,
+    LEAPMUX_CONTROL_CONFIG_DIR: configDir,
+  })
+  const cliArgs: string[] = []
+  if (cfg)
+    cliArgs.push('--hub', cfg.hubURL)
+  if (options?.json)
+    cliArgs.push('--json')
+  cliArgs.push(...args)
+
+  const child = spawn(binaryPath, cliArgs, { env, cwd: options?.cwd })
+  let stdoutText = ''
+  let stderrText = ''
+  child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+    stdoutText += chunk
+  })
+  child.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+    stderrText += chunk
+  })
+  const finished = new Promise<{ code: number | null, signal: string | null, error?: string }>((resolve) => {
+    child.once('error', err => resolve({ code: null, signal: null, error: err.message }))
+    child.once('close', (code, signal) => resolve({ code, signal }))
+  })
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.stdin?.end()
+      child.kill(process.platform === 'win32'
+        ? 'SIGTERM'
+        : 'SIGINT')
+    }
+    return finished
+  }
+  return {
+    child,
+    finished,
+    stdout: () => stdoutText,
+    stderr: () => stderrText,
+    jsonLines: () => {
+      const complete = stdoutText.slice(0, stdoutText.lastIndexOf('\n') + 1).trim()
+      if (!complete)
+        return []
+      return complete.split('\n').filter(Boolean).map(line => parseEnvelope(line, args))
+    },
+    diagnostic: () => `stdout:\n${stdoutText}\nstderr:\n${stderrText}`,
+    stop,
   }
 }
 
