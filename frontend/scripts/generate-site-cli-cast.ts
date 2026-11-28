@@ -377,7 +377,7 @@ async function main(): Promise<void> {
     // Assemble the asciicast v2 replay from the real CLI outputs captured above.
     const cast = new AsciicastWriter({
       width: 100,
-      height: 23,
+      height: 18,
       title: 'LeapMux CLI — parallel worktree agents',
     })
 
@@ -423,7 +423,8 @@ async function main(): Promise<void> {
 
     cast.pause(550)
     nextPrompt()
-    cast.typeLine('leapmux agent messages "$A1" --json | jq -r \'.data.messages[] | select(.source=="agent") | .reply_text // empty\'', { baseCharMs: 22 })
+    cast.typeLine('leapmux agent messages "$A1" --json | \\', { baseCharMs: 24 })
+    cast.typeLine('  jq -r \'.data.messages[] | select(.source=="agent") | .reply_text // empty\'', { baseCharMs: 22 })
     cast.pause(280)
     cast.writeOutputLines(clean(completedReply), 30)
 

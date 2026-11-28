@@ -46,7 +46,8 @@ leapmux agent list
 leapmux agent send "$A1" "Implement the /health endpoint with tests."
 leapmux agent send "$A2" "Add the health subcommand and JSON output."
 leapmux agent wait "$A1" "$A2" --any --json
-leapmux agent messages "$A1" --json | jq -r '.data.messages[] | select(.source=="agent") | .reply_text // empty'</code></pre>
+leapmux agent messages "$A1" --json | \
+  jq -r '.data.messages[] | select(.source=="agent") | .reply_text // empty'</code></pre>
     </noscript>
   </div>
   {{- if $caption }}

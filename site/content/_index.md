@@ -119,7 +119,7 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
       <a class="lm-showcase-link" href="/docs/using/cli-guide/">Explore the CLI guide &rarr;</a>
     </div>
     <div class="lm-showcase-media">
-      {{< cli-cast src="cli-fleet-demo" title="zsh — payments-api" cols="100" rows="23" caption="Live leapmux CLI capture: open Claude Code and Codex on isolated git worktrees, list active agents, dispatch tasks in parallel, wait for the first completion, and read its reply." >}}
+      {{< cli-cast src="cli-fleet-demo" title="zsh — payments-api" cols="100" rows="18" caption="Live leapmux CLI capture: open Claude Code and Codex on isolated git worktrees, list active agents, dispatch tasks in parallel, wait for the first completion, and read its reply." >}}
     </div>
   </section>
 </div>
