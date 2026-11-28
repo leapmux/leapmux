@@ -9,8 +9,11 @@ schemas without dumping the full tree.
 `leapmux` (and its short alias `lmx`) on your `PATH` is the CLI of the Worker
 that started you, so it matches the Worker's version. A shell profile can move
 another `leapmux` ahead of it. That `leapmux` hands each control command to the
-Worker's CLI, `$LEAPMUX_CONTROL_CLI`, so the command still matches the Worker.
-`"$LEAPMUX_CONTROL_CLI"` always runs the Worker's own CLI directly.
+Worker's CLI, `$LEAPMUX_CONTROL_CLI`, so the command still matches the Worker
+(local-only commands such as `context`, `guide`, `skill` without `--worker`,
+and `auth list|use` stay local, and setting `LEAPMUX_NO_CONTROL_HANDOFF=1`
+disables hand-off explicitly). `"$LEAPMUX_CONTROL_CLI"` always runs the
+Worker's own CLI directly.
 
 ## Rules that keep you safe <!-- topic: safety -->
 
@@ -29,13 +32,12 @@ Worker's CLI, `$LEAPMUX_CONTROL_CLI`, so the command still matches the Worker.
   aliases (`lmx`, `ag`, `term`, `ws`, `wt`, `wk`, `win`, `ev`, `notif`, `ctx`,
   `tun`, `pref`/`prefs`, `q`, `req`, `msg`, `skills`, `fwd`, `nc`, `grep`,
   `find`, `overview`, `ps`, `ls`, `rm`, `mv`, `cat`) are guaranteed; ad-hoc
-  prefix abbreviations such as `leapmux ag s` can become ambiguous in a later
-  release.
+  prefix abbreviations such as `ag s` can become ambiguous in a later release.
 - `agent send`, `agent open`, `agent fork`, and `terminal run` automatically
   generate a `--request-id` ID when omitted. On transport or wait errors,
   inspect the reported `request_id` and disposition (`not_sent`, `in_progress`,
   or `outcome_unknown`), retry safely with `--request-id <key>`, and (for
-  `agent send` or the post-open message of `agent open`/`agent fork`) query
+  `agent send` or an initial message of `agent open`/`agent fork`) query
   `leapmux agent request-status <agent> <request-id>`.
 - Pass `--output-schema <file|json>` (with `--wait` and optional
   `--schema-retries <n>`) on `agent send`, `agent open`, or `agent fork` when
@@ -48,7 +50,8 @@ Worker's CLI, `$LEAPMUX_CONTROL_CLI`, so the command still matches the Worker.
   under `<git toplevel>/.leapmux/tmp/` (part of the `.leapmux/<category>`
   layout, with `.leapmux/conf` reserved for future repository settings). LeapMux
   adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating
-  worktrees or writing checkpoints and exports.
+  worktrees, reading `--file` / `--output-schema`, or writing checkpoints and
+  exports.
 
 ## How a command finds its object <!-- topic: targets -->
 
@@ -125,7 +128,7 @@ leapmux agent send "$A" "Run the tests and summarize failures" --wait --timeout 
 Or open and wait in one shot:
 
 ```sh
-leapmux agent open --provider claude --message "Run the tests" --wait --timeout 15m
+leapmux agent open --provider claude "Run the tests" --wait --timeout 15m
 ```
 
 Handle pending permission prompts, plans, and questions:

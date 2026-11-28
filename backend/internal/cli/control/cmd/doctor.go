@@ -162,8 +162,9 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 	}
 
 	var (
-		hc      *control.HubClient
-		isAdmin bool
+		hc        *control.HubClient
+		pinHubURL string
+		isAdmin   bool
 	)
 	switch peer := c.(type) {
 	case *control.WorkerIPCClient:
@@ -176,9 +177,12 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 			Status: "ok",
 			Detail: connDetail,
 		})
-		addCheck(checkDoctorTabDirectHubAuth())
+		directAuthCheck, directHub := checkDoctorTabDirectHubAuth()
+		addCheck(directAuthCheck)
+		pinHubURL = directHub
 	case *control.HubClient:
 		hc = peer
+		pinHubURL = hc.HubURL
 		addCheck(doctorCheck{
 			Name:   "connection",
 			Status: "ok",
@@ -211,11 +215,11 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 		defer wg.Done()
 		hubCheck = checkDoctorHubVersion(inv.Context, c)
 	}()
-	if hc != nil {
+	if pinHubURL != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			chk := checkDoctorPins(inv.Context, hc.HubURL)
+			chk := checkDoctorPins(inv.Context, pinHubURL)
 			pinsCheck = &chk
 		}()
 	}
@@ -249,7 +253,7 @@ func finishDoctorReport(inv *cli.Invocation, report doctorReport) (any, error) {
 	return report, nil
 }
 
-func checkDoctorTabDirectHubAuth() doctorCheck {
+func checkDoctorTabDirectHubAuth() (doctorCheck, string) {
 	hub, source, err := control.DefaultHubWithSource()
 	if err != nil {
 		var noHub *control.NoHubError
@@ -260,19 +264,19 @@ func checkDoctorTabDirectHubAuth() doctorCheck {
 					Status: "warn",
 					Detail: fmt.Sprintf("no default hub selected for direct CLI use (%d stored credentials)", noHub.Stored),
 					Fix:    `run "leapmux auth use <hub>" to select a default hub`,
-				}
+				}, ""
 			}
 			return doctorCheck{
 				Name:   "direct_hub_auth",
 				Status: "info",
 				Detail: "no direct hub configured for outside-tab CLI use (tab IPC handles in-tab commands)",
-			}
+			}, ""
 		}
 		return doctorCheck{
 			Name:   "direct_hub_auth",
 			Status: "warn",
 			Detail: fmt.Sprintf("could not read direct hub config: %v", err),
-		}
+		}, ""
 	}
 
 	sourceLabel := doctorHubSourceLabel(source)
@@ -295,7 +299,7 @@ func checkDoctorTabDirectHubAuth() doctorCheck {
 				Status: "warn",
 				Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s refresh token expired%s", hub, sourceLabel, userLabel, precedenceNote),
 				Fix:    fmt.Sprintf(`run "%s"`, authLoginCommand(hub)),
-			}
+			}, hub
 		}
 		if exp.AccessExpired {
 			if exp.CanRefresh {
@@ -303,41 +307,41 @@ func checkDoctorTabDirectHubAuth() doctorCheck {
 					Name:   "direct_hub_auth",
 					Status: "ok",
 					Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s (access token expired; will refresh)%s", hub, sourceLabel, userLabel, precedenceNote),
-				}
+				}, hub
 			}
 			return doctorCheck{
 				Name:   "direct_hub_auth",
 				Status: "warn",
 				Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s access token expired%s", hub, sourceLabel, userLabel, precedenceNote),
 				Fix:    fmt.Sprintf(`run "%s"`, authLoginCommand(hub)),
-			}
+			}, hub
 		}
 		return doctorCheck{
 			Name:   "direct_hub_auth",
 			Status: "ok",
 			Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s%s", hub, sourceLabel, userLabel, precedenceNote),
-		}
+		}, hub
 	case errors.Is(loadErr, control.ErrNotLoggedIn):
 		if locallisten.IsLocal(hub) {
 			return doctorCheck{
 				Name:   "direct_hub_auth",
 				Status: "ok",
 				Detail: fmt.Sprintf("direct hub %s (%s): local IPC hub (no stored credential required)%s", hub, sourceLabel, precedenceNote),
-			}
+			}, hub
 		}
 		return doctorCheck{
 			Name:   "direct_hub_auth",
 			Status: "warn",
 			Detail: fmt.Sprintf("direct hub %s (%s): no stored credential%s", hub, sourceLabel, precedenceNote),
 			Fix:    fmt.Sprintf(`run "%s"`, authLoginCommand(hub)),
-		}
+		}, hub
 	default:
 		return doctorCheck{
 			Name:   "direct_hub_auth",
 			Status: "warn",
 			Detail: fmt.Sprintf("direct hub %s (%s): stored credential unreadable (%v)%s", hub, sourceLabel, loadErr, precedenceNote),
 			Fix:    fmt.Sprintf(`run "%s" to replace it`, authLoginCommand(hub)),
-		}
+		}, hub
 	}
 }
 

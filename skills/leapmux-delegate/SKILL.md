@@ -21,7 +21,7 @@ Before spawning agents:
 
 ## 2. Launch Parallel Agents in Isolated Worktrees
 
-Write each detailed assignment under `.leapmux/tmp/` and pass `--file` so multiline prompts never break shell quoting:
+Write each detailed assignment under `.leapmux/tmp/` (`mkdir -p .leapmux/tmp` first) and pass `--file` so multiline prompts never break shell quoting:
 
 ```sh
 A1=$(leapmux agent open \

@@ -50,7 +50,7 @@ Guide the user through these steps:
 3. **Isolate in a git worktree:** Under **Git options**, select **Create new worktree** so the agent runs on its own branch and linked worktree. Creating the workspace automatically opens its first agent.
 4. **Add a second parallel agent:** Click **`+`** on the tab bar, choose **New agent...**, pick the same repository with **Create new worktree** on a second branch, and split the tile so both agents sit side by side.
 5. **Adjust settings mid-session:** Change the model, reasoning effort, or provider-specific mode (such as **Permission Mode** in Claude Code) from the composer's status-bar chips or **`[+]`** menu.
-6. **Install Agent Skills (optional):** Run `leapmux skill install --all` (installs to `~/.agents/skills`; pass `--target claude` for Claude Code) or enable skills in **Preferences → Chat & Composer → Agent skills**.
+6. **Install Agent Skills (optional):** Run `leapmux skill install --all` (uses `--target auto`: installs to `~/.agents/skills` and automatically includes `~/.claude/skills` when `~/.claude` exists, plus existing tool-specific directories) or enable skills in **Preferences → Chat & Composer → Agent skills**.
 
 ## Diagnose problems safely
 

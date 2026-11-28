@@ -632,7 +632,11 @@ func prepareSpawnSession(inv *cli.Invocation, wait bool, setup *leapmuxv1.GitSet
 		closeAll()
 		return nil, nil, nil, placement{}, "", err
 	}
-	dir = workingDir(inv)
+	if inv.Changed("dir") {
+		dir = stringFlag(inv, "dir")
+	} else {
+		dir = callSession.defaultWorkerDir(p.WorkerID)
+	}
 	if selector := setup.GetUseWorktree(); selector != nil {
 		dir, err = callSession.worktreeRepoDir(p.WorkerID, selector)
 		if err != nil {

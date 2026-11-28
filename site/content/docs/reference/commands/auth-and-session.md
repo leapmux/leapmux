@@ -17,7 +17,6 @@ These selectors and flags repeat across commands on this page.
 
 | Selector / Flag | Description |
 |---|---|
-| `--target string` | local target directory: auto (default; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
 | `--scope string` | local install scope: user (home directory) or project (current working directory) (one of: user, project; default: user) |
 | `--worker string` | the Worker to inspect or manage skills on: an id, a unique id prefix, "name:&lt;name&gt;" or "self"; omit for local machine |
 
@@ -159,7 +158,7 @@ leapmux context show
 
 Save persistent default hub, worker, workspace, or provider in context.json.
 
-Inside a LeapMux tab, hub, worker, and workspace come from the tab environment ($LEAPMUX_CONTROL_SOCK, $LEAPMUX_CONTROL_WORKER_ID, and $LEAPMUX_CONTROL_WORKSPACE_ID), which supersede saved context.json defaults. The saved provider still serves as a fallback in terminal tabs where $LEAPMUX_CONTROL_AGENT_PROVIDER is unset.
+Inside a LeapMux tab, hub, worker, and workspace come from the tab environment ($LEAPMUX_CONTROL_SOCK, $LEAPMUX_CONTROL_WORKER_ID, and the workspace derived from $LEAPMUX_CONTROL_TAB_ID), which supersede saved context.json defaults. The saved provider still serves as a fallback in terminal tabs where $LEAPMUX_CONTROL_AGENT_PROVIDER is unset.
 
 _Mutates state · Does not support `-q` / `--quiet`._
 
@@ -311,7 +310,7 @@ leapmux skill list [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--target string` | local target directory: auto (default; local only, rejected with --worker), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
 | `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
@@ -363,7 +362,7 @@ leapmux skill status [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--target string` | local target directory: auto (default; local only, rejected with --worker), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
 | `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
@@ -386,7 +385,7 @@ leapmux skill diff [skill]... [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--target string` | local target directory: auto (default; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
 | `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | include every bundled skill, including uninstalled skills |
 

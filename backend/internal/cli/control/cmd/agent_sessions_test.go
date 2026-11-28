@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -194,16 +195,22 @@ func TestAgentSessionsOverIPC_Refusals(t *testing.T) {
 	w := &sessionsWorker{providers: []leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}}
 	startSessionsWorker(t, w)
 
-	f := runControl(t, "agent", "sessions", "--provider", "claude").requireFailure(t, cli.CodeUsage)
-	assert.Contains(t, f.Message, "no directory selected")
-	f = runControl(t, "agent", "sessions", "--provider", "claude", "--dir", " ").requireFailure(t, cli.CodeUsage)
-	assert.Contains(t, f.Message, "no directory selected")
+	// Without --dir or $LEAPMUX_CONTROL_WORKING_DIR on local IPC, falls back to local CWD.
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	runControl(t, "agent", "sessions", "--provider", "claude").Data(t)
+	requests, _ := w.recorded()
+	require.Len(t, requests, 1)
+	assert.Equal(t, cwd, requests[0].GetWorkingDir())
+
+	f := runControl(t, "agent", "sessions", "--provider", "claude", "--dir", " ").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "--dir is empty")
 	f = runControl(t, "agent", "sessions", "--provider", "no-such-agent", "--dir", "/src/app").requireFailure(t, cli.CodeUsage)
 	assert.Contains(t, f.Message, `unknown --provider "no-such-agent"`)
 	f = runControl(t, "agent", "sessions", "--dir", "/src/app").requireFailure(t, cli.CodeUsage)
 	assert.Contains(t, f.Message, "more than one provider")
-	requests, _ := w.recorded()
-	assert.Empty(t, requests, "no refused listing reached the Worker")
+	requests, _ = w.recorded()
+	assert.Len(t, requests, 1, "no refused listing reached the Worker")
 
 	w.mu.Lock()
 	w.refuse = "path is empty"

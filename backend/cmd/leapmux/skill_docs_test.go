@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -26,6 +28,44 @@ func normalizeNewlines(s string) string {
 	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
+func validateMarkdownCommandDocs(t *testing.T, root *cobra.Command, source, body string, requireNonEmpty bool) {
+	t.Helper()
+	body = normalizeNewlines(body)
+	// 1. Validate every inline or fenced `leapmux`/`lmx` command mention.
+	inlineCmds := extractInlineLeapmuxCommands(root, body)
+	if requireNonEmpty {
+		require.NotEmpty(t, inlineCmds, "%s should demonstrate leapmux commands", source)
+	}
+	for _, parts := range inlineCmds {
+		assertCommandResolves(t, root, source, parts)
+	}
+
+	// 2. Shell-tokenize every fenced sh/bash/zsh block and validate every
+	// command AND flag on each `leapmux`/`lmx` invocation.
+	blocks, err := extractShellCodeBlocks(body)
+	require.NoError(t, err, "%s has malformed code fence", source)
+	for _, snippet := range blocks {
+		invocations, err := extractLeapmuxInvocations(snippet)
+		require.NoError(t, err, "%s has malformed shell snippet:\n%s", source, snippet)
+		for _, tokens := range invocations {
+			assertInvocationCommandsAndFlags(t, root, source, tokens)
+		}
+	}
+
+	// 3. Shell-tokenize every inline backtick span that mentions
+	// `leapmux`/`lmx` and validate every command AND flag on it.
+	for _, span := range extractInlineBacktickSpans(body) {
+		if !skillInlineMention.MatchString(span) {
+			continue
+		}
+		invocations, err := extractLeapmuxInvocations(span)
+		require.NoError(t, err, "%s has malformed inline code span: %q", source, span)
+		for _, tokens := range invocations {
+			assertInvocationCommandsAndFlags(t, root, source, tokens)
+		}
+	}
+}
+
 // TestBundledSkills_CommandsAndFlagsExistInTree verifies that every `leapmux ...`
 // command path AND every flag documented inside bundled SKILL.md and
 // references/*.md files resolves cleanly in the live root Cobra command tree.
@@ -43,42 +83,23 @@ func TestBundledSkills_CommandsAndFlagsExistInTree(t *testing.T) {
 					body = after
 				}
 			}
-			source := s.Name + "/" + f.RelPath
-
-			// 1. Validate every inline or fenced `leapmux`/`lmx` command mention.
-			inlineCmds := extractInlineLeapmuxCommands(root, body)
-			if f.RelPath == "SKILL.md" {
-				require.NotEmpty(t, inlineCmds, "skill %s should demonstrate leapmux commands", s.Name)
-			}
-			for _, parts := range inlineCmds {
-				assertCommandResolves(t, root, source, parts)
-			}
-
-			// 2. Shell-tokenize every fenced sh/bash/zsh block and validate every
-			// command AND flag on each `leapmux`/`lmx` invocation.
-			blocks, err := extractShellCodeBlocks(body)
-			require.NoError(t, err, "%s has malformed code fence", source)
-			for _, snippet := range blocks {
-				invocations, err := extractLeapmuxInvocations(snippet)
-				require.NoError(t, err, "%s has malformed shell snippet:\n%s", source, snippet)
-				for _, tokens := range invocations {
-					assertInvocationCommandsAndFlags(t, root, source, tokens)
-				}
-			}
-
-			// 3. Shell-tokenize every inline backtick span that mentions
-			// `leapmux`/`lmx` and validate every command AND flag on it.
-			for _, span := range extractInlineBacktickSpans(body) {
-				if !skillInlineMention.MatchString(span) {
-					continue
-				}
-				invocations, err := extractLeapmuxInvocations(span)
-				require.NoError(t, err, "%s has malformed inline code span: %q", source, span)
-				for _, tokens := range invocations {
-					assertInvocationCommandsAndFlags(t, root, source, tokens)
-				}
-			}
+			validateMarkdownCommandDocs(t, root, s.Name+"/"+f.RelPath, body, f.RelPath == "SKILL.md")
 		}
+	}
+}
+
+// TestAgentGuides_CommandsAndFlagsExistInTree validates both the bundled CLI
+// agent guide and the website's static agent guide against the live Cobra tree.
+func TestAgentGuides_CommandsAndFlagsExistInTree(t *testing.T) {
+	root := newRootCommand(testCLIRunners(t))
+	repoRoot := filepath.Join("..", "..", "..")
+	for _, rel := range []string{
+		filepath.Join("backend", "internal", "cli", "control", "cmd", "guide", "agent-guide.md"),
+		filepath.Join("site", "static", "agent-guide.md"),
+	} {
+		raw, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		require.NoError(t, err, "read %s", rel)
+		validateMarkdownCommandDocs(t, root, filepath.ToSlash(rel), string(raw), true)
 	}
 }
 

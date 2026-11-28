@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/util/repopaths"
 )
 
 // isTerminalIO reports whether v is an *os.File attached to an interactive
@@ -40,5 +41,6 @@ func readFileOrStdin(stdin io.Reader, path, flagName string) ([]byte, error) {
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "read "+flagName)
 	}
+	_ = repopaths.EnsureTmpExcludedIfInside(path)
 	return data, nil
 }

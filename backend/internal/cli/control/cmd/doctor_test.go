@@ -762,3 +762,25 @@ func TestDoctor_DirectAuthUsesCredentialExpiryState(t *testing.T) {
 		assert.Contains(t, chk["fix"], "leapmux auth login --hub "+srv.URL)
 	})
 }
+
+func TestDoctor_TabIPCChecksWorkerPinsWhenDirectHubConfigured(t *testing.T) {
+	isolateCLIEnv(t)
+	const hubURL = "https://pins-check.example.test"
+	require.NoError(t, control.SetDefaultHub(hubURL))
+	require.NoError(t, control.SaveCredentials(hubURL, control.CredentialFile{
+		HubURL:           hubURL,
+		AccessToken:      "lmx_a_valid",
+		RefreshToken:     "lmx_r_valid",
+		Username:         "alice",
+		UserID:           "u-1",
+		ExpiresAt:        time.Now().Add(time.Hour),
+		RefreshExpiresAt: time.Now().Add(24 * time.Hour),
+	}))
+	hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+	startSpawnIPC(t, hub, nil)
+
+	data := runControl(t, "doctor").Data(t)
+	assert.Equal(t, true, data["healthy"])
+	pinsChk := doctorCheckByName(t, data, "worker-pins")
+	assert.Equal(t, "ok", pinsChk["status"])
+}

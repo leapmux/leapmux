@@ -18,7 +18,7 @@ Read the **leapmux** skill first. Load [references/cross-examination.md](referen
 
 ## 2. Launch Blind Round 1 in Parallel
 
-Write one sharp, unbiased problem brief under `.leapmux/tmp/` — avoid steering members toward a conclusion you already suspect. Always include:
+Write one sharp, unbiased problem brief under `.leapmux/tmp/` (`mkdir -p .leapmux/tmp` first) — avoid steering members toward a conclusion you already suspect. Always include:
 
 - Observed symptoms, constraints, and relevant entry-point file paths
 - Explicit ask: root-cause hypotheses or architectural options, trade-offs, load-bearing assumptions, and concrete evidence from the code

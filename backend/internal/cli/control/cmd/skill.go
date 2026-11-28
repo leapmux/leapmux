@@ -21,6 +21,7 @@ import (
 
 const (
 	localSkillTargetUsage = "local target directory: auto (default; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:<path>; repeat for multiple"
+	listSkillTargetUsage  = "local target directory: auto (default; local only, rejected with --worker), agents, claude, codex, cursor, gemini, or dir:<path>; repeat for multiple"
 	skillTargetUsage      = "target directory: auto (default locally; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:<path> (local only); repeat for multiple"
 )
 
@@ -75,7 +76,7 @@ func newSkillCommand() *cobra.Command {
 				{Comment: "Inspect project-scoped skills in the current repository.", Command: "leapmux skill list --scope project"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, localSkillTargetUsage)
+				addSkillScopeFlags(fs, listSkillTargetUsage)
 			},
 			Run: runSkillList,
 		}),
@@ -88,7 +89,7 @@ func newSkillCommand() *cobra.Command {
 				{Command: "leapmux skill status --worker name:build-box --json"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, localSkillTargetUsage)
+				addSkillScopeFlags(fs, listSkillTargetUsage)
 			},
 			Run: runSkillStatus,
 		}),
@@ -415,9 +416,11 @@ func (r skillMutationResult) QuietLines() []string {
 }
 
 type skillDiffResult struct {
-	Scope   string             `json:"scope"`
-	Targets []string           `json:"targets"`
-	Diffs   []skills.SkillDiff `json:"diffs"`
+	Scope        string             `json:"scope"`
+	Targets      []string           `json:"targets"`
+	Diffs        []skills.SkillDiff `json:"diffs"`
+	hasInstalled bool
+	explicit     bool
 }
 
 func (r skillDiffResult) RenderText(w io.Writer) error {
@@ -474,6 +477,10 @@ func (r skillDiffResult) RenderText(w io.Writer) error {
 		}
 	}
 	if printed == 0 {
+		if !r.explicit && !r.hasInstalled {
+			_, err := fmt.Fprintln(w, `No LeapMux skills are installed in the selected targets (run "leapmux skill install --all" to install).`)
+			return err
+		}
 		_, err := fmt.Fprintln(w, "All installed skills match the bundled catalog.")
 		return err
 	}
@@ -740,6 +747,7 @@ func runSkillDiff(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	diffs := make([]skills.SkillDiff, 0)
+	hasInstalled := false
 	for i, dir := range dirs {
 		dirDiffs, err := skills.DiffAll(dir, names, skills.DiffOptions{
 			SkipNotInstalled: !explicit,
@@ -748,6 +756,9 @@ func runSkillDiff(inv *cli.Invocation) (any, error) {
 			return nil, mapSkillDiskError(err, "")
 		}
 		for _, d := range dirDiffs {
+			if d.State != skills.StateNotInstalled {
+				hasInstalled = true
+			}
 			d.Target = normTargets[i]
 			if !explicit && (d.State == skills.StateNotInstalled || (d.State == skills.StateUpToDate && len(d.Files) == 0)) {
 				continue
@@ -756,9 +767,11 @@ func runSkillDiff(inv *cli.Invocation) (any, error) {
 		}
 	}
 	return skillDiffResult{
-		Scope:   scope,
-		Targets: normTargets,
-		Diffs:   diffs,
+		Scope:        scope,
+		Targets:      normTargets,
+		Diffs:        diffs,
+		hasInstalled: hasInstalled,
+		explicit:     explicit,
 	}, nil
 }
 

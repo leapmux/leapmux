@@ -1123,3 +1123,12 @@ func TestSkillCLI_DiffSanitizesTerminalEscapes(t *testing.T) {
 	assert.NotContains(t, o.Stdout, "pwned-title")
 	assert.Contains(t, o.Stdout, "red-alert")
 }
+
+func TestSkillCLI_DiffWhenNoSkillsInstalledPrintsInstallHint(t *testing.T) {
+	emptyDir := filepath.Join(t.TempDir(), "empty-skills")
+	o := runControlText(t, "skill", "diff", "--target", "dir:"+emptyDir)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Contains(t, o.Stdout, "No LeapMux skills are installed in the selected targets")
+	assert.Contains(t, o.Stdout, "leapmux skill install --all")
+	assert.NotContains(t, o.Stdout, "All installed skills match")
+}

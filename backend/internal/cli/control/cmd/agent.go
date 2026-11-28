@@ -40,7 +40,7 @@ func newAgentCommand() *cobra.Command {
 				cli.SetEnum(fs, "state", enumTokens(leapmuxv1.AgentActivityState(0))...)
 				fs.String("provider", "", `list only the agents of this provider (such as claude, codex)`)
 				fs.String("parent", "", `list only direct child subagents or spawned agents of this parent agent (an id, prefix, title, or "self")`)
-				fs.Bool("all", false, "include inactive or non-active agent process statuses in the table")
+				fs.Bool("all", false, "always show the STATUS column even when every listed agent is active")
 			},
 			FlagComplete: map[string]cobra.CompletionFunc{
 				"provider": completeProviderFlag,
@@ -344,7 +344,7 @@ An agent cannot answer its own requests.`,
 				{Command: `leapmux agent deny 87a19d5f 3kQ9xZ1b --message "Run the unit tests only"`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				fs.String("message", "", "the reason of the refusal, which the agent reads")
+				fs.StringP("message", "m", "", "the reason of the refusal, which the agent reads")
 				addTargetWorkspaceFlag(fs)
 			},
 			Complete: completeOtherAgents,
@@ -397,7 +397,7 @@ An agent cannot answer its own requests.`,
 				fs.StringArray("option", nil, `an option by its number, or "<question>:<number>" with several questions; repeat it for more than one`)
 				fs.StringArray("text", nil, `a typed answer (or "-" to read stdin); repeat for more than one`)
 				fs.StringArray("field", nil, "a form field as <name>=<value>; repeat it for more than one")
-				fs.String("message", "", "the reason of a refusing option or choice, which the agent reads")
+				fs.StringP("message", "m", "", "the reason of a refusing option or choice, which the agent reads")
 				addPlanApprovalFlags(fs)
 				addTargetWorkspaceFlag(fs)
 			},

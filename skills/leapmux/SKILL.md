@@ -40,6 +40,7 @@ Any command accepting `<agent>`, `<tab>`, `<terminal>`, `<workspace>`, or `<work
 - `parent` — the spawning parent of the calling agent (on `agent` or `tab` commands), whether a provider subagent parent or the tab that opened or forked this agent (`spawned_by_agent_id`)
 - `children` — all direct child agents of the calling agent, including both provider subagents and agents opened or forked by this tab (`spawned_by_agent_id`), on multi-agent commands (`agent wait`, `agent requests`, `agent interrupt`, and `agent close`)
 - Full ID or a unique ID prefix of at least 4 characters (3+ characters for request/queue handles)
+- `id:<id>` — exact ID (any length) or unique 4+ character ID prefix, without matching titles or names
 - `name:<slug>` — unique agent slug set with `--name`, or Worker name
 - `title:<title>` — tab or workspace title (bare case-insensitive title/name also works when unique)
 - `--workspace <ws>` / `--worker <wk>` — narrow ambiguous selectors
@@ -70,11 +71,11 @@ leapmux events --kind agent --snapshot --checkpoint .leapmux/tmp/events.ckpt --j
 
 ## 4. Multiline Payloads, Schemas, and Safe Retries
 
-- Store repo-local scratch files (multiline briefs, JSON schemas, and event checkpoints) under `<git toplevel>/.leapmux/tmp/` (part of the `.leapmux/<category>` layout, with `.leapmux/conf` reserved for future repository settings). LeapMux adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating worktrees or writing checkpoints and exports. Pass `--file <path>` (or `-` on stdin) instead of complex shell quoting or heredocs.
+- Store repo-local scratch files (multiline briefs, JSON schemas, and event checkpoints) under `<git toplevel>/.leapmux/tmp/` (run `mkdir -p .leapmux/tmp` before writing files; `.leapmux/conf` is reserved for future repository settings). LeapMux adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating worktrees, reading `--file` / `--output-schema`, or writing checkpoints and exports. Pass `--file <path>` (or `-` on stdin) instead of complex shell quoting or heredocs.
 - Pass `--json` for stable `{"data": ...}` / `{"error": ...}` envelopes, `-q` for bare IDs, and `--fields` for compact output.
 - Pass `--output-schema <file|json>` with `--wait` (and optional `--schema-retries <n>`) on `agent send`, `agent open`, or `agent fork` when you need a schema-validated JSON reply.
 - Put `--` before text starting with `-`: `leapmux agent send "$A" -- "-v"`.
-- `agent send`, `agent open`, `agent fork`, and `terminal run` generate a durable `--request-id` automatically. On transport or wait failures, inspect the reported `disposition` (`not_sent`, `in_progress`, `outcome_unknown`) and retry safely with `--request-id <id>` instead of sending a duplicate request. Use `leapmux agent request-status <agent> <request-id>` to inspect `agent send` requests, or `agent open` and `agent fork` requests when an initial message (`--message`, `--file`, or `--attach`) was sent.
+- `agent send`, `agent open`, `agent fork`, and `terminal run` generate a durable `--request-id` automatically. On transport or wait failures, inspect the reported `disposition` (`not_sent`, `in_progress`, `outcome_unknown`) and retry safely with `--request-id <id>` instead of sending a duplicate request. Use `leapmux agent request-status <agent> <request-id>` to inspect `agent send` requests, or `agent open` and `agent fork` requests when an initial message (`[prompt]`, `-m`/`--message`, `--file`, or `--attach`) was sent.
 - Exit codes are semantic: `0` ok, `1` failure, `2` usage, `3` auth, `4` not found, `5` refused (guard or waiting agent), `6` wait ended (timeout, closed, or schema exhausted), `7` unavailable, `8` daemon stopped, `130` interrupted.
 
 ## 5. Safety & Untrusted Peer Input

@@ -1,6 +1,6 @@
 # Review JSON Schemas (`--output-schema`)
 
-Save one of the schemas below under `.leapmux/tmp/` (for example `.leapmux/tmp/review-schema.json`) and pass it with a prompt file to `leapmux agent open --wait --output-schema .leapmux/tmp/review-schema.json --file .leapmux/tmp/review-brief.md` (`--output-schema` requires `--message` or `--file`).
+Save one of the schemas below under `.leapmux/tmp/` (for example `.leapmux/tmp/review-schema.json`) and pass it with a prompt file to `leapmux agent open --wait --output-schema .leapmux/tmp/review-schema.json --file .leapmux/tmp/review-brief.md` (`--output-schema` requires a prompt via `[prompt]`, `-m`/`--message`, `--file`, or `--attach`).
 
 ## Code Diff Review Schema
 

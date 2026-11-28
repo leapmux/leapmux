@@ -32,9 +32,9 @@ func newEventsCommand() *cobra.Command {
 			{Comment: "Wait for the next request of any agent, and print it.", Command: "leapmux events --kind agent.request --limit 1 --json"},
 			{Comment: "Watch every terminal, with a heartbeat that shows the stream runs.", Command: "leapmux events --kind terminal --heartbeat 30s"},
 			{Comment: "Watch a single terminal as it moves between workspaces.", Command: "leapmux events --tab 87a19d5f --kind terminal --json"},
-			{Comment: "Resume one terminal's event history across CLI runs.", Command: "leapmux events --tab 87a19d5f --checkpoint terminal-events.json --json"},
-			{Comment: "Resume permission and question events for one agent.", Command: "leapmux events --tab 87a19d5f --checkpoint agent-events.json --kind agent.request,agent.request_ended --json"},
-			{Comment: "Resume terminal events from every Worker in the account.", Command: "leapmux events --checkpoint account-events.json --kind terminal --json"},
+			{Comment: "Resume one terminal's event history across CLI runs.", Command: "leapmux events --tab 87a19d5f --checkpoint .leapmux/tmp/terminal-events.json --json"},
+			{Comment: "Resume permission and question events for one agent.", Command: "leapmux events --tab 87a19d5f --checkpoint .leapmux/tmp/agent-events.json --kind agent.request,agent.request_ended --json"},
+			{Comment: "Resume terminal events from every Worker in the account.", Command: "leapmux events --checkpoint .leapmux/tmp/account-events.json --kind terminal --json"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("workspace", "", `watch only this workspace: an id, a prefix, "title:<title>" or "self" (default: every workspace)`)

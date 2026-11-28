@@ -30,12 +30,12 @@
 
 ## Agent Skills (SKILL.md)
 
-Install all curated LeapMux skills with `leapmux skill install --all` (add `--target claude` for Claude Code; matches the installed binary offline) or `npx skills add leapmux/leapmux` (tracks `main`), or fetch each raw `SKILL.md` directly:
+Install all curated LeapMux skills with `leapmux skill install --all` (uses `--target auto` to detect `~/.agents/skills`, `~/.claude/skills`, and existing tool directories; matches the installed binary offline) or `npx skills add leapmux/leapmux` (tracks `main`), or fetch each raw `SKILL.md` directly:
 - [leapmux]({{ "skills/leapmux/SKILL.md" | absURL }}): Foundational reference for driving LeapMux tabs, workspaces, coding agents, terminals, worktrees, and Workers via the `leapmux` CLI.
 - [leapmux-delegate]({{ "skills/leapmux-delegate/SKILL.md" | absURL }}): Split an engineering task across parallel LeapMux agents in isolated git worktrees, wait without polling, inspect their diffs, and integrate or clean up their results ([worker-brief-template]({{ "skills/leapmux-delegate/references/worker-brief-template.md" | absURL }})).
 - [leapmux-review]({{ "skills/leapmux-review/SKILL.md" | absURL }}): Spawn an independent read-only LeapMux reviewer agent from a contrasting provider family with optional forwarded skills and `--output-schema` JSON validation ([review-schemas]({{ "skills/leapmux-review/references/review-schemas.md" | absURL }})).
 - [leapmux-council]({{ "skills/leapmux-council/SKILL.md" | absURL }}): Convene two or more contrasting read-only LeapMux agents in parallel for deep root-cause analysis or architecture planning, with optional anonymous cross-examination ([cross-examination]({{ "skills/leapmux-council/references/cross-examination.md" | absURL }})).
-- [leapmux-handoff]({{ "skills/leapmux-handoff/SKILL.md" | absURL }}): Transfer an in-progress task cleanly to another LeapMux agent via a cloned-config fork, fresh worktree agent, or another Worker ([handoff-template]({{ "skills/leapmux-handoff/references/handoff-template.md" | absURL }})).
+- [leapmux-handoff]({{ "skills/leapmux-handoff/SKILL.md" | absURL }}): Transfer an in-progress task cleanly to another LeapMux agent via a native history fork (idle agents), a clean cloned-config fork (`--fresh`), a fresh worktree agent, or another Worker ([handoff-template]({{ "skills/leapmux-handoff/references/handoff-template.md" | absURL }})).
 - [leapmux-help]({{ "skills/leapmux-help/SKILL.md" | absURL }}): Answer questions about installing, configuring, using, or troubleshooting LeapMux by consulting live `/llms.txt` Markdown docs and running read-only diagnostics ([diagnostics-checklist]({{ "skills/leapmux-help/references/diagnostics-checklist.md" | absURL }})).
 
 ---

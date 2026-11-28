@@ -50,7 +50,7 @@ leapmux agent list [flags]
 | `--state string` | list only the agents in this activity state (one of: idle, working, waiting_for_user) |
 | `--provider string` | list only the agents of this provider (such as claude, codex) |
 | `--parent string` | list only direct child subagents or spawned agents of this parent agent (an id, prefix, title, or "self") |
-| `--all` | include inactive or non-active agent process statuses in the table |
+| `--all` | always show the STATUS column even when every listed agent is active |
 
 ```sh
 leapmux agent list
@@ -353,7 +353,7 @@ leapmux agent deny <agent> [request] [flags]
 
 | Flag | Description |
 |---|---|
-| `--message string` | the reason of the refusal, which the agent reads |
+| `-m, --message string` | the reason of the refusal, which the agent reads |
 | `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
@@ -389,7 +389,7 @@ leapmux agent answer <agent> [request] [text]... [flags]
 | `--option string` | an option by its number, or "&lt;question&gt;:&lt;number&gt;" with several questions; repeat it for more than one (repeatable) |
 | `--text string` | a typed answer (or "-" to read stdin); repeat for more than one (repeatable) |
 | `--field string` | a form field as &lt;name&gt;=&lt;value&gt;; repeat it for more than one (repeatable) |
-| `--message string` | the reason of a refusing option or choice, which the agent reads |
+| `-m, --message string` | the reason of a refusing option or choice, which the agent reads |
 | `--permission-mode string` | with a plan's approval, the permission mode to implement it in (default: the agent's own) |
 | `--clear-context` | with a plan's approval, implement it in a fresh context |
 | `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |

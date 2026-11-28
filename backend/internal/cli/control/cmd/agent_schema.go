@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/util/repopaths"
 )
 
 const (
@@ -50,7 +51,7 @@ func readOutputSchemaSpec(inv *cli.Invocation, wait, hasMessage, stdinConsumed b
 		return nil, cli.Usagef("--%s needs --wait", outputSchemaFlag)
 	}
 	if !hasMessage {
-		return nil, cli.Usagef("--%s needs a prompt (--message or --file)", outputSchemaFlag)
+		return nil, cli.Usagef("--%s needs a prompt ([prompt], --message, --file, or --attach)", outputSchemaFlag)
 	}
 	retries := defaultSchemaRetries
 	if hasRetries {
@@ -85,6 +86,7 @@ func readOutputSchemaSpec(inv *cli.Invocation, wait, hasMessage, stdinConsumed b
 		if err != nil {
 			return nil, cli.Wrap(cli.CodeUsage, err, "read --"+outputSchemaFlag)
 		}
+		_ = repopaths.EnsureTmpExcludedIfInside(rawArg)
 	}
 	spec, err := compileOutputSchema(rawBytes, retries)
 	if err != nil {

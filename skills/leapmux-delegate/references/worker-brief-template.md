@@ -33,7 +33,7 @@ Report:
 
 When `leapmux agent wait` returns exit code `6` (timeout or closed) or an agent stops making progress:
 
-1. Check live status: `leapmux agent list`
+1. Check live status: `leapmux agent tree` (or `leapmux agent list --parent self`)
 2. Check pending prompts: `leapmux agent requests <agent>`
 3. Read recent output: `leapmux agent messages <agent> --limit 5 --markdown`
 4. Decide the next step:

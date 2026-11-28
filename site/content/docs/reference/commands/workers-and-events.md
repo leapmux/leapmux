@@ -366,13 +366,13 @@ leapmux events --kind terminal --heartbeat 30s
 leapmux events --tab 87a19d5f --kind terminal --json
 
 # Resume one terminal's event history across CLI runs.
-leapmux events --tab 87a19d5f --checkpoint terminal-events.json --json
+leapmux events --tab 87a19d5f --checkpoint .leapmux/tmp/terminal-events.json --json
 
 # Resume permission and question events for one agent.
-leapmux events --tab 87a19d5f --checkpoint agent-events.json --kind agent.request,agent.request_ended --json
+leapmux events --tab 87a19d5f --checkpoint .leapmux/tmp/agent-events.json --kind agent.request,agent.request_ended --json
 
 # Resume terminal events from every Worker in the account.
-leapmux events --checkpoint account-events.json --kind terminal --json
+leapmux events --checkpoint .leapmux/tmp/account-events.json --kind terminal --json
 ```
 
 ## `leapmux notify`

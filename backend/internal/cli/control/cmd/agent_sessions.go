@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"strings"
-
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -73,20 +71,11 @@ type agentSessionList struct {
 // Worker. The provider resolution and the listing share one channel, as they
 // do for `agent open`.
 func runAgentSessions(inv *cli.Invocation) (any, error) {
-	dir := workingDir(inv)
-	if strings.TrimSpace(dir) == "" {
-		return nil, cli.Usagef("no directory selected").
-			WithHint("pass --dir <dir>, or run the command inside a LeapMux tab")
-	}
-	s, err := openSession(inv)
+	s, workerID, dir, err := openWorkerSessionWithDir(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, err := s.workerScope()
-	if err != nil {
-		return nil, err
-	}
 	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
 		return nil, err
 	}

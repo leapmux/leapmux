@@ -34,8 +34,8 @@ func newContextCommand() *cobra.Command {
 		Long: `Save persistent default hub, worker, workspace, or provider in context.json.
 
 Inside a LeapMux tab, hub, worker, and workspace come from the tab environment
-($LEAPMUX_CONTROL_SOCK, $LEAPMUX_CONTROL_WORKER_ID, and
-$LEAPMUX_CONTROL_WORKSPACE_ID), which supersede saved context.json defaults.
+($LEAPMUX_CONTROL_SOCK, $LEAPMUX_CONTROL_WORKER_ID, and the workspace derived
+from $LEAPMUX_CONTROL_TAB_ID), which supersede saved context.json defaults.
 The saved provider still serves as a fallback in terminal tabs where
 $LEAPMUX_CONTROL_AGENT_PROVIDER is unset.`,
 		Examples: []cli.Example{

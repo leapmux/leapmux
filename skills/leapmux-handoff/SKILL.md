@@ -21,7 +21,7 @@ Inspect `leapmux worker list`, `leapmux agent providers`, and `leapmux git statu
 
 ## 2. Prepare an Accurate Briefing
 
-For clean-session handoffs (`agent fork self --fresh` or `agent open`), write the briefing under `.leapmux/tmp/` (for example `.leapmux/tmp/handoff-brief.md`) using the 7-section template in [references/handoff-template.md](references/handoff-template.md):
+For clean-session handoffs (`agent fork self --fresh` or `agent open`), create `.leapmux/tmp` (`mkdir -p .leapmux/tmp`) and write the briefing under `.leapmux/tmp/` (for example `.leapmux/tmp/handoff-brief.md`) using the 7-section template in [references/handoff-template.md](references/handoff-template.md):
 
 - **Preserve exact task scope.** Never turn an *investigate-only* or *plan-only* task into an *implement* task (or vice versa).
 - **Never fabricate verification.** Do not claim a build, lint, or test passed unless that command ran and succeeded in the current worktree; list unverified checks explicitly under Remaining Work.
@@ -59,7 +59,7 @@ leapmux agent open \
 leapmux agent fork <idle-agent-id> \
   --worktree feat/next-phase \
   --name handoff-impl \
-  --message "Continue with phase 2 using the settled design."
+  "Continue with phase 2 using the settled design."
 ```
 
 ## 4. Confirm and Stop (Fire-and-Forget)

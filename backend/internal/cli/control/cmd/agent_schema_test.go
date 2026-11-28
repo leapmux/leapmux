@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -213,4 +216,43 @@ func TestAgentSendWithSchemaOverIPC_ZeroRetriesFailsWithConflictAndPreservesRece
 		}
 	}
 	assert.Equal(t, 1, enqueueCalls, "--schema-retries 0 must not send a corrective follow-up turn")
+}
+
+func TestReadFileAndOutputSchemaAutoExcludeLeapMuxTmp(t *testing.T) {
+	t.Run("readFileOrStdin excludes .leapmux/tmp in git info exclude", func(t *testing.T) {
+		repo := testutil.NewGitRepo(t)
+		tmpDir := filepath.Join(repo, ".leapmux", "tmp")
+		require.NoError(t, os.MkdirAll(tmpDir, 0o755))
+		briefPath := filepath.Join(tmpDir, "review-brief.md")
+		require.NoError(t, os.WriteFile(briefPath, []byte("Review this diff."), 0o644))
+
+		got, err := readFileOrStdin(strings.NewReader(""), briefPath, "--file")
+		require.NoError(t, err)
+		assert.Equal(t, "Review this diff.", string(got))
+
+		excludeBytes, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+		require.NoError(t, err)
+		assert.Contains(t, string(excludeBytes), ".leapmux/tmp/")
+	})
+
+	t.Run("readOutputSchemaSpec excludes .leapmux/tmp in git info exclude", func(t *testing.T) {
+		repo := testutil.NewGitRepo(t)
+		tmpDir := filepath.Join(repo, ".leapmux", "tmp")
+		require.NoError(t, os.MkdirAll(tmpDir, 0o755))
+		schemaPath := filepath.Join(tmpDir, "review-schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`), 0o644))
+
+		cmd := &cobra.Command{Use: "open"}
+		addOutputSchemaFlags(cmd.Flags())
+		require.NoError(t, cmd.Flags().Set(outputSchemaFlag, schemaPath))
+		inv := &cli.Invocation{Command: cmd, Stdin: strings.NewReader("")}
+
+		spec, err := readOutputSchemaSpec(inv, true, true, false)
+		require.NoError(t, err)
+		require.NotNil(t, spec)
+
+		excludeBytes, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+		require.NoError(t, err)
+		assert.Contains(t, string(excludeBytes), ".leapmux/tmp/")
+	})
 }
